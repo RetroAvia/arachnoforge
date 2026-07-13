@@ -1332,6 +1332,13 @@ export function ArachnoForgeProvider({ children }) {
       karenQuotas: karenAutoRouter.quotas,
       karenQuotaByMateriaId: karenAutoRouter.byMateriaId,
       karenEventHorizonList: karenAutoRouter.eventHorizonList,
+      // V29.0 — Pillar 1 (Planner Restriction) + Pillar 2 (Precedence
+      // Engine): tre liste distinte per la UI — mai più "tutto insieme".
+      karenDailyFocusIds: karenAutoRouter.dailyFocusIds,
+      karenMonotaskActive: karenAutoRouter.monotaskActive,
+      karenDailyFocusQuotas: karenAutoRouter.dailyFocusQuotas,
+      karenQueuedQuotas: karenAutoRouter.queuedQuotas,
+      karenFrozenQuotas: karenAutoRouter.frozenQuotas,
       // Karen's Tactical Suggestor — Primary Target (V18.0/V20.0).
       primaryTarget,
       // V27.0 — Pillar 3 (Maximum Carnage Mode): stato derivato, letto da

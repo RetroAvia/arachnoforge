@@ -222,7 +222,7 @@ const ChildNodeRow = memo(function ChildNodeRow({ node, materia, onSelect }) {
         tabIndex={0}
         onClick={() => onSelect(node)}
         onKeyDown={(e) => e.key === 'Enter' && onSelect(node)}
-        className={`group flex items-center gap-3 p-4 rounded-2xl border ${meta.border} bg-surface/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:bg-surface/85 cursor-pointer`}
+        className={`group flex items-center gap-3 p-3 sm:p-4 rounded-2xl border ${meta.border} bg-surface/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:bg-surface/85 cursor-pointer`}
       >
         <StatusIcon meta={meta} size="sm" />
         <div className="flex-1 min-w-0">
@@ -678,35 +678,50 @@ export default function QuadrantHub() {
                       const status = quota?.status;
                       const critico = status === 'CRITICO';
                       const attenzione = status === 'ATTENZIONE';
+                      // V29.0 — Pillar 2 (Automatic Precedence Engine): la
+                      // Materia resta pienamente visibile/cliccabile (mai
+                      // bloccata) ma segnalata come "congelata" per il
+                      // planner automatico finché le propedeuticità
+                      // ufficiali non sono soddisfatte.
+                      const congelata = status === 'CONGELATA';
                       return (
                         <button
                           key={m.id}
                           type="button"
                           onClick={() => setSelectedMateriaId(m.id)}
-                          className={`relative w-full text-left p-4 rounded-2xl border transition-all duration-300 backdrop-blur-2xl overflow-hidden ${
+                          className={`relative w-full text-left p-3 sm:p-4 rounded-2xl border transition-all duration-300 backdrop-blur-2xl overflow-hidden ${
                             critico
                               ? 'af-event-horizon border-primary/70 bg-primary/10'
                               : goblin
                               ? 'af-goblin border-primary/60 bg-primary/10'
                               : attenzione
                               ? 'af-attenzione-pulse border-accent/60 bg-accent/10'
+                              : congelata
+                              ? 'bg-surface/40 border-slate-500/20 opacity-70'
                               : active
                               ? 'bg-surface/80 border-secondary/60 shadow-secondary-glow'
                               : 'bg-surface/60 border-secondary/15 hover:border-secondary/40'
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
                             <span className="font-semibold text-base flex items-center gap-1.5 min-w-0 truncate text-slate-100">
                               {critico ? (
                                 <Icon name="alertTriangle" className="w-4 h-4 text-primary shrink-0" />
                               ) : attenzione ? (
                                 <Icon name="alertTriangle" className="w-4 h-4 text-accent shrink-0" />
+                              ) : congelata ? (
+                                <Icon name="lock" className="w-4 h-4 text-slate-500 shrink-0" />
                               ) : (
                                 goblin && <Icon name="skull" className="w-4 h-4 text-primary shrink-0" />
                               )}
                               <span className="truncate">{m.nome}</span>
                             </span>
-                            <span className="flex items-center gap-1.5 shrink-0">
+                            <span className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                              {congelata && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-slate-800/60 text-slate-400 border border-slate-500/30 px-2.5 py-0.5 text-[11px] font-mono">
+                                  Congelata
+                                </span>
+                              )}
                               <span className={BADGE.blue}>{m.cfu} CFU</span>
                               <span className={BADGE.amber} title="Spider-Score — Time-Weaver Formula">
                                 <Icon name="bolt" className="w-3.5 h-3.5" />
@@ -740,6 +755,12 @@ export default function QuadrantHub() {
                             <p className="text-xs text-accent mt-2 font-medium flex items-start gap-1.5">
                               <Icon name="alertTriangle" className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                               Karen: ritmo leggermente indietro rispetto alla Fine Prevista.
+                            </p>
+                          )}
+                          {congelata && (
+                            <p className="text-xs text-slate-500 mt-2 flex items-start gap-1.5">
+                              <Icon name="lock" className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                              Propedeuticità mancante: {quota.missingPrereqNames.join(', ')}. Esclusa dal planner automatico, preparabile a mano.
                             </p>
                           )}
                         </button>

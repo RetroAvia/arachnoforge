@@ -1,48 +1,54 @@
 import { useMemo, useState, useEffect } from 'react';
 import { daysUntilDateOnly, todayDateOnlyKey, dateOnlyToUtcMs } from '../utils/dateUtils.js';
 import { computeEstimatedCompletion } from '../utils/materiaMeta.js';
+import { getMissingPrerequisites } from '../data/vanvitelliCourseMap.js';
 
 /**
- * K.A.R.E.N. AUTO-ROUTER — V23.0 "The Quantum Router" (Modulo 1).
+ * K.A.R.E.N. AUTO-ROUTER — V23.0 "The Quantum Router" (Modulo 1), esteso in
+ * V29.0 "The Quantum Syllabus & Mobile Overhaul" (Pillar 1 + Pillar 2).
  *
- * PROBLEMA RISOLTO: nella build precedente, la Quota Odierna assumeva
- * SEMPRE "Monte Ore = CFU * 10", anche quando l'utente aveva già spezzato
- * l'esame in Nodi con una propria stima di giorni (`sfida.giorni`). I due
- * motori (K.A.R.E.N. e la "Fine Prevista" dello Skill Tree) calcolavano il
- * carico di lavoro con unità di misura diverse e arrivavano a conclusioni
- * contraddittorie: la card poteva lampeggiare DEFCON 1 anche quando la
- * "Fine Prevista" mostrata nel Web-Matrix cadeva TRANQUILLAMENTE prima
- * dell'esame. Falso allarme.
- *
- * DYNAMIC FALLBACK LOGIC (fix chirurgico):
+ * DYNAMIC FALLBACK LOGIC (invariata da V23.0):
  *   - SE la Materia ha Nodi (sfide.length > 0): il Monte Ore Residuo si
  *     costruisce dal BASSO, nodo per nodo — `giorni` di ciascun nodo
  *     ANCORA incompleto convertito in ore (HOURS_PER_NODE_DAY), meno le
- *     ore di Focus già tracciate su quello specifico nodo. Karen ragiona
- *     con gli stessi identici dati dello Skill Tree, mai un doppio
- *     standard.
+ *     ore di Focus già tracciate su quello specifico nodo.
  *   - SE la Materia ha 0 Nodi creati: fallback puro sul monte-ore
- *     accademico standard (CFU * 10) — l'unica stima disponibile quando
- *     non esiste ancora una scomposizione in nodi.
+ *     accademico standard (CFU * 10).
  *
- * OVERRIDE DEFCON 1 (Direttiva Suprema): quando esistono Nodi, la "Data
- * Fine Prevista" è calcolata dalla STESSA funzione `computeEstimatedCompletion`
- * già usata in QuadrantHub (single source of truth — mai due calcoli che
- * possano disallinearsi). Se `Data Fine Prevista <= Data Esame`, lo stato
- * è FORZATAMENTE "Ottimale": nessun allarme, indipendentemente da quanto
- * "alta" possa sembrare la quota oraria grezza. Altrimenti la severità è
- * decisa dal rapporto fra giorni-di-lavoro-stimati e giorni-rimasti
- * (`paceRatio`): è la stessa matematica della Fine Prevista, non un
- * secondo giudizio arbitrario basato sulle ore.
+ * V29.0 — Pillar 1 (Realistic Hour Balancing): `HOURS_PER_NODE_DAY` passa
+ * da 2 a 4.5 — un "giorno stimato" di un nodo ora pesa un monte ore
+ * REALMENTE sostenibile per uno studente (4-5 ore di studio effettivo al
+ * giorno), non più una frazione irrisoria. Un nodo da 3 giorni pesa quindi
+ * ~13.5 ore reali di carico, non le 6 ore riduttive di prima.
+ *
+ * V29.0 — Pillar 1 (Planner Restriction): il Quantum Router non elenca più
+ * "tutto insieme" come consiglio attivo. `selectDailyFocus` isola al
+ * massimo `MAX_DAILY_FOCUS_MATERIE` materie come "in focus oggi",
+ * ordinate per URGENZA ASSOLUTA (stato + giorni residui, MAI il monte-ore
+ * grezzo a scavalcare una scadenza vicina) — e forza il monotask (1 sola
+ * materia) quando la più urgente è a distanza critica
+ * (`CRITICAL_DISTANCE_DAYS`).
+ *
+ * V29.0 — Pillar 2 (Automatic Precedence Engine): ogni Materia con
+ * propedeuticità ufficiali (piano di studi Vanvitelli) non ancora
+ * superate risulta `frozen` — stato di planner forzato a CONGELATA,
+ * esclusa da `selectDailyFocus` e dal Primary Target (vedi
+ * `utils/karenSuggestor.js`). Resta comunque calcolabile e visibile: la
+ * congelazione riguarda SOLO la spinta automatica del planner, mai la
+ * possibilità di aprire la scheda e preparare i nodi in anticipo.
  */
 export const HOURS_PER_CFU = 10;
-export const HOURS_PER_NODE_DAY = 2; // 1 "giorno stimato" di un nodo ~= 2 ore reali di Focus dedicato.
+export const HOURS_PER_NODE_DAY = 4.5; // monte ore giornaliero sostenibile per nodo (V29.0 — era 2).
 export const EVENT_HORIZON_THRESHOLD_HOURS = 8;
+
+export const MAX_DAILY_FOCUS_MATERIE = 2; // limite rigido: mai più di 2 materie spinte nello stesso giorno.
+export const CRITICAL_DISTANCE_DAYS = 10; // sotto questa soglia: monotask intensivo forzato (1 sola materia).
 
 export const QUOTA_STATUS = {
   OTTIMALE: 'OTTIMALE',
   ATTENZIONE: 'ATTENZIONE',
-  CRITICO: 'CRITICO'
+  CRITICO: 'CRITICO',
+  CONGELATA: 'CONGELATA' // V29.0 — Pillar 2: propedeuticità non soddisfatte, planner automatico disattivato.
 };
 
 export const QUOTA_STATUS_META = {
@@ -66,6 +72,13 @@ export const QUOTA_STATUS_META = {
     dotClass: 'bg-primary',
     cardClass: 'af-event-horizon border-primary/70 bg-primary/10',
     glowStyle: {}
+  },
+  CONGELATA: {
+    label: 'Congelata',
+    badgeClass: 'bg-slate-800/60 text-slate-400 border-slate-500/30',
+    dotClass: 'bg-slate-500',
+    cardClass: 'opacity-60 border-slate-500/20',
+    glowStyle: {}
   }
 };
 
@@ -81,7 +94,14 @@ function computeNodeBasedLoad(materia) {
   return { hoursRemaining, remainingNodeCount: incomplete.length };
 }
 
-function computeMateriaQuota(materia) {
+/** V29.0 — Pillar 2: propedeuticità ufficiali NON ancora soddisfatte per questa Materia (grafo Vanvitelli), sempre calcolate sullo stato REALE (`examPassed`) delle altre Materie dell'utente. */
+function computePrereqFreeze(materia, allMaterie) {
+  if (!materia.courseId) return { frozen: false, missingPrereqNames: [] };
+  const missing = getMissingPrerequisites(materia.courseId, allMaterie, materia.id);
+  return { frozen: missing.length > 0, missingPrereqNames: missing.map((c) => c.nome) };
+}
+
+function computeMateriaQuota(materia, allMaterie) {
   const sfide = Array.isArray(materia.sfide) ? materia.sfide : [];
   const hasNodes = sfide.length > 0;
   const daysRemaining = materia.examDate ? daysUntilDateOnly(materia.examDate) : null;
@@ -143,6 +163,13 @@ function computeMateriaQuota(materia) {
     else status = QUOTA_STATUS.CRITICO;
   }
 
+  const rawStatus = status;
+  const { frozen, missingPrereqNames } = computePrereqFreeze(materia, allMaterie);
+  // V29.0 — Pillar 2: la congelazione da propedeuticità mancante scavalca
+  // SEMPRE lo stato "grezzo" (anche se sarebbe Critico) — Karen non spinge
+  // mai una materia che l'utente non può ancora ufficialmente sostenere.
+  if (frozen) status = QUOTA_STATUS.CONGELATA;
+
   return {
     materiaId: materia.id,
     nome: materia.nome,
@@ -154,14 +181,58 @@ function computeMateriaQuota(materia) {
     paceRatio: paceRatio != null ? Math.round(paceRatio * 100) / 100 : null,
     overdue,
     status,
+    rawStatus,
+    frozen,
+    missingPrereqNames,
     // Alias di retro-compatibilità per l'HUD Rosso Lampeggiante già cablato altrove.
     eventHorizon: status === QUOTA_STATUS.CRITICO
   };
 }
 
+/** V29.0 — Pillar 1: ordinamento a precedenza assoluta — stato (Critico > Attenzione > Ottimale > Congelata) e poi giorni residui ascendenti. Mai il monte-ore grezzo a scavalcare una scadenza più vicina. */
+const STATUS_RANK = {
+  [QUOTA_STATUS.CRITICO]: 0,
+  [QUOTA_STATUS.ATTENZIONE]: 1,
+  [QUOTA_STATUS.OTTIMALE]: 2,
+  [QUOTA_STATUS.CONGELATA]: 3
+};
+
+function compareByUrgency(a, b) {
+  const rankA = STATUS_RANK[a.status] ?? 4;
+  const rankB = STATUS_RANK[b.status] ?? 4;
+  if (rankA !== rankB) return rankA - rankB;
+  const daysA = a.daysRemaining == null ? Infinity : a.daysRemaining;
+  const daysB = b.daysRemaining == null ? Infinity : b.daysRemaining;
+  if (daysA !== daysB) return daysA - daysB;
+  return (b.dailyQuotaHours || 0) - (a.dailyQuotaHours || 0);
+}
+
+/**
+ * V29.0 — Pillar 1: seleziona quali Materie il planner "spinge" oggi.
+ * Regole rigide, nessuna eccezione:
+ *   1. Mai una Materia congelata (propedeuticità mancante, Pillar 2).
+ *   2. Mai più di MAX_DAILY_FOCUS_MATERIE materie insieme.
+ *   3. Se la Materia più urgente (già in cima a `sortedQuotas`, ordinata
+ *      da `compareByUrgency`) è a CRITICAL_DISTANCE_DAYS giorni o meno,
+ *      monotask intensivo forzato: una sola Materia in focus.
+ */
+function selectDailyFocus(sortedQuotas) {
+  const eligible = sortedQuotas.filter((q) => !q.frozen);
+  if (eligible.length === 0) return { focusIds: new Set(), monotaskActive: false };
+  const topDays = eligible[0].daysRemaining;
+  const monotaskActive = topDays != null && topDays <= CRITICAL_DISTANCE_DAYS;
+  const limit = monotaskActive ? 1 : MAX_DAILY_FOCUS_MATERIE;
+  const focusIds = new Set(eligible.slice(0, limit).map((q) => q.materiaId));
+  return { focusIds, monotaskActive };
+}
+
 /**
  * @param {Array} materie - state.materie corrente
- * @returns {{quotas: Array, byMateriaId: Map, eventHorizonList: Array, criticalCount: number}}
+ * @returns {{
+ *   quotas: Array, byMateriaId: Map, eventHorizonList: Array, criticalCount: number,
+ *   dailyFocusIds: Set, monotaskActive: boolean,
+ *   dailyFocusQuotas: Array, queuedQuotas: Array, frozenQuotas: Array
+ * }}
  */
 export function useKarenAutoRouter(materie) {
   const [dayKey, setDayKey] = useState(todayDateOnlyKey);
@@ -182,8 +253,8 @@ export function useKarenAutoRouter(materie) {
     const safe = Array.isArray(materie) ? materie : [];
     return safe
       .filter((m) => m && !m.examPassed)
-      .map(computeMateriaQuota)
-      .sort((a, b) => (b.dailyQuotaHours || 0) - (a.dailyQuotaHours || 0));
+      .map((m) => computeMateriaQuota(m, safe))
+      .sort(compareByUrgency);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [materie, dayKey]);
 
@@ -193,9 +264,29 @@ export function useKarenAutoRouter(materie) {
     return map;
   }, [quotas]);
 
+  const { focusIds, monotaskActive } = useMemo(() => selectDailyFocus(quotas), [quotas]);
+
+  // V29.0 — Pillar 1: tre liste distinte per la UI (Quota Odierna) — "in
+  // focus oggi" (planner attivo, max 1-2), "in coda" (visibile ma non
+  // spinta oggi, resta calcolabile) e "congelata" (propedeuticità
+  // mancante, Pillar 2) — mai più un'unica lista indifferenziata.
+  const dailyFocusQuotas = useMemo(() => quotas.filter((q) => focusIds.has(q.materiaId)), [quotas, focusIds]);
+  const queuedQuotas = useMemo(() => quotas.filter((q) => !focusIds.has(q.materiaId) && !q.frozen), [quotas, focusIds]);
+  const frozenQuotas = useMemo(() => quotas.filter((q) => q.frozen), [quotas]);
+
   const eventHorizonList = useMemo(() => quotas.filter((q) => q.status === QUOTA_STATUS.CRITICO), [quotas]);
 
-  return { quotas, byMateriaId, eventHorizonList, criticalCount: eventHorizonList.length };
+  return {
+    quotas,
+    byMateriaId,
+    eventHorizonList,
+    criticalCount: eventHorizonList.length,
+    dailyFocusIds: focusIds,
+    monotaskActive,
+    dailyFocusQuotas,
+    queuedQuotas,
+    frozenQuotas
+  };
 }
 
 export default useKarenAutoRouter;

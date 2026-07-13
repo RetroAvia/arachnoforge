@@ -17,6 +17,59 @@ import { QUEST_DIFFICULTY_META } from '../utils/dailyPatrol.js';
 import { QUOTA_STATUS_META } from '../hooks/useKarenAutoRouter.js';
 import { CARD, CARD_ALERT, BTN_PRIMARY, BTN_SECONDARY, BTN_AMBER, BTN_GHOST, INPUT, H1, BADGE } from '../utils/designSystem.js';
 
+/** V29.0 — Pillar 1/2: riga singola della Quota Odierna, riusata per le tre sezioni (In Focus Oggi / In Coda / Congelata) — mai tre markup duplicati. */
+function QuotaRow({ q }) {
+  const statusMeta = QUOTA_STATUS_META[q.status];
+  return (
+    <div className={`p-2.5 sm:p-3.5 rounded-xl border transition-all duration-300 ${statusMeta.cardClass || 'bg-surface/60 border-secondary/15'}`}>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <span className="text-sm font-semibold text-slate-100 flex items-center gap-1.5 min-w-0 max-w-full">
+          <span className={`w-2 h-2 rounded-full shrink-0 ${statusMeta.dotClass}`} style={statusMeta.glowStyle} />
+          <span className="truncate">{q.nome}</span>
+        </span>
+        <span className="flex items-center gap-1.5 shrink-0 flex-wrap">
+          <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-mono border ${statusMeta.badgeClass}`}>
+            {statusMeta.label}
+          </span>
+          {!q.frozen && (
+            <span className={BADGE.blue}>
+              {q.dailyQuotaHours == null ? 'n/d' : `Oggi: ${formatHoursMinutes(q.dailyQuotaHours)}`}
+            </span>
+          )}
+        </span>
+      </div>
+      {q.frozen ? (
+        <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
+          Karen: propedeuticità mancante — {q.missingPrereqNames.join(', ')}. Scheda visualizzabile e nodi preparabili a mano, ma esclusa dal planner automatico finché non sblocchi.
+        </p>
+      ) : (
+        <>
+          {q.status === 'CRITICO' && (
+            <p className="text-xs text-primary mt-1.5 leading-relaxed font-semibold">
+              Karen: traiettoria insostenibile. Rischio esaurimento. Consigliato rinvio appello.
+            </p>
+          )}
+          {q.status === 'ATTENZIONE' && q.hasNodes && (
+            <p className="text-xs text-accent mt-1.5 leading-relaxed">
+              Karen: il ritmo attuale è leggermente indietro rispetto alla Fine Prevista — nessun panico, ma non rallentare.
+            </p>
+          )}
+          <p className="text-xs text-slate-500 mt-1">
+            {q.daysRemaining == null
+              ? 'Nessuna data esame impostata'
+              : q.daysRemaining <= 0
+              ? 'Esame oggi o scaduto'
+              : `${q.daysRemaining}gg all'esame`}
+            {' · '}
+            {formatHoursMinutes(q.hoursRemaining)} residue
+            {q.hasNodes && <span className="text-slate-600"> · basata sui Nodi dello Skill Tree</span>}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function MissionControl() {
   const { state, actions, timer, derived, sensoryZero, setSensoryZero, TIMER_STATUS, spiderSenseSurgeAt } = useArachnoForge();
   const [selectedMateriaId, setSelectedMateriaId] = useState('');
@@ -310,51 +363,41 @@ export default function MissionControl() {
               subtitle="Apri un nodo nel Web-Matrix con una data d'esame per calcolare la Quota Odierna."
             />
           ) : (
-            <div className="relative space-y-2.5 max-h-80 overflow-y-auto af-scroll pr-1">
-              {derived.karenQuotas.map((q) => {
-                const statusMeta = QUOTA_STATUS_META[q.status];
-                return (
-                  <div
-                    key={q.materiaId}
-                    className={`p-3.5 rounded-xl border transition-all duration-300 ${statusMeta.cardClass || 'bg-surface/60 border-secondary/15'}`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-slate-100 truncate flex items-center gap-1.5">
-                        <span className={`w-2 h-2 rounded-full shrink-0 ${statusMeta.dotClass}`} style={statusMeta.glowStyle} />
-                        {q.nome}
-                      </span>
-                      <span className="flex items-center gap-1.5 shrink-0">
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-mono border ${statusMeta.badgeClass}`}>
-                          {statusMeta.label}
-                        </span>
-                        <span className={BADGE.blue}>
-                          {q.dailyQuotaHours == null ? 'n/d' : `Oggi: ${formatHoursMinutes(q.dailyQuotaHours)}`}
-                        </span>
-                      </span>
-                    </div>
-                    {q.status === 'CRITICO' && (
-                      <p className="text-xs text-primary mt-1.5 leading-relaxed font-semibold">
-                        Karen: traiettoria insostenibile. Rischio esaurimento. Consigliato rinvio appello.
-                      </p>
-                    )}
-                    {q.status === 'ATTENZIONE' && q.hasNodes && (
-                      <p className="text-xs text-accent mt-1.5 leading-relaxed">
-                        Karen: il ritmo attuale è leggermente indietro rispetto alla Fine Prevista — nessun panico, ma non rallentare.
-                      </p>
-                    )}
-                    <p className="text-xs text-slate-500 mt-1">
-                      {q.daysRemaining == null
-                        ? 'Nessuna data esame impostata'
-                        : q.daysRemaining <= 0
-                        ? 'Esame oggi o scaduto'
-                        : `${q.daysRemaining}gg all'esame`}
-                      {' · '}
-                      {formatHoursMinutes(q.hoursRemaining)} residue
-                      {q.hasNodes && <span className="text-slate-600"> · basata sui Nodi dello Skill Tree</span>}
-                    </p>
-                  </div>
-                );
-              })}
+            <div className="relative space-y-4 max-h-80 overflow-y-auto af-scroll pr-1">
+              {/* V29.0 — Pillar 1 (Planner Restriction): mai più "tutto
+                  insieme" — al massimo 2 materie spinte oggi (1 in
+                  monotask se una è a distanza critica), il resto resta
+                  visibile ma in coda o congelato. */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <span className="text-[11px] font-mono tracking-widest text-secondary">IN FOCUS OGGI</span>
+                  {derived.karenMonotaskActive && (
+                    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-mono border border-primary/50 bg-primary/10 text-primary">
+                      <Icon name="crosshair" className="w-3 h-3" />
+                      MONOTASK — distanza critica
+                    </span>
+                  )}
+                </div>
+                {derived.karenDailyFocusQuotas.length === 0 ? (
+                  <p className="text-xs text-slate-500 italic">Nessuna materia da spingere oggi.</p>
+                ) : (
+                  derived.karenDailyFocusQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} />)
+                )}
+              </div>
+
+              {derived.karenQueuedQuotas.length > 0 && (
+                <div className="space-y-2.5 pt-3 border-t border-white/10">
+                  <span className="text-[11px] font-mono tracking-widest text-slate-500">IN CODA</span>
+                  {derived.karenQueuedQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} />)}
+                </div>
+              )}
+
+              {derived.karenFrozenQuotas.length > 0 && (
+                <div className="space-y-2.5 pt-3 border-t border-white/10">
+                  <span className="text-[11px] font-mono tracking-widest text-slate-500">CONGELATE — propedeuticità mancante</span>
+                  {derived.karenFrozenQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} />)}
+                </div>
+              )}
             </div>
           )}
         </div>

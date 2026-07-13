@@ -29,7 +29,7 @@ export const VANVITELLI_COURSES = [
   { id: 'meccanica', nome: 'Elementi di Meccanica', cfu: 6, anno: 2, semestre: '1', prereq: ['analisi1', 'algebra'] },
   { id: 'elettrotecnica', nome: 'Elettrotecnica', cfu: 6, anno: 2, semestre: '1', prereq: ['analisi1', 'algebra', 'fisica', 'chimica'] },
   { id: 'inglese', nome: 'Inglese', cfu: 3, anno: 2, semestre: '1', prereq: [] },
-  { id: 'aerodinamica', nome: 'Aerodinamica', cfu: 15, anno: 2, semestre: '1-2', prereq: ['analisi1', 'algebra'] },
+  { id: 'aerodinamica', nome: 'Aerodinamica', cfu: 15, anno: 2, semestre: '1-2', prereq: ['analisi1', 'algebra', 'fisica', 'chimica'] },
   { id: 'materiali', nome: "Materiali per l'Aeronautica e lo Spazio", cfu: 6, anno: 2, semestre: '2', prereq: ['analisi1', 'fisica', 'chimica'] },
   { id: 'calcoloNumerico', nome: 'Calcolo Numerico', cfu: 6, anno: 2, semestre: '2', prereq: [] },
   { id: 'scienzaCostruzioni', nome: 'Scienza delle Costruzioni', cfu: 9, anno: 2, semestre: '2', prereq: ['meccanica'] },

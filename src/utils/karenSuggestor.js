@@ -1,4 +1,4 @@
-import { computeSpiderScore, computeDirectUnlockCount } from '../data/vanvitelliCourseMap.js';
+import { computeSpiderScore, computeDirectUnlockCount, getMissingPrerequisites } from '../data/vanvitelliCourseMap.js';
 import { daysUntilDateOnly } from './dateUtils.js';
 
 /**
@@ -39,18 +39,33 @@ function buildReason(materia, unlocksCount, daysRemaining) {
   return `Spider-Score più alto del Web-Matrix (mancano ${daysRemaining} giorni): il miglior bilancio fra difficoltà, tempo e impatto strategico.`;
 }
 
+/** V29.0 — Pillar 2 (Automatic Precedence Engine): una Materia con propedeuticità ufficiali del piano di studi non ancora superate è "congelata" per il planner automatico. */
+function isPrereqFrozen(materia, allMaterie) {
+  if (!materia.courseId) return false;
+  return getMissingPrerequisites(materia.courseId, allMaterie, materia.id).length > 0;
+}
+
 /**
  * @param {Array} materie - state.materie corrente
- * @returns {null|{materia, spiderScore, unlocksCount, daysRemaining, reason}} null se non ci sono materie da superare.
+ * @returns {null|{materia, spiderScore, unlocksCount, daysRemaining, reason}} null se non ci sono materie da superare (o se sono tutte congelate).
  */
 export function computePrimaryTarget(materie) {
   const safeMaterie = Array.isArray(materie) ? materie : [];
   const pending = safeMaterie.filter((m) => m && !m.examPassed);
   if (pending.length === 0) return null;
 
+  // V29.0 — Pillar 2: Karen non spinge MAI una Materia le cui
+  // propedeuticità ufficiali non sono ancora superate (es. Aerodinamica
+  // prima di Analisi 1) — resta comunque aperta e preparabile a mano nel
+  // Web-Matrix, ma esclusa dal Primary Target automatico finché non si
+  // sblocca. Se risultano TUTTE congelate, Karen non ha nulla da spingere
+  // (nessun fallback silenzioso su una materia bloccata).
+  const eligible = pending.filter((m) => !isPrereqFrozen(m, safeMaterie));
+  if (eligible.length === 0) return null;
+
   let best = null;
   let bestScore = -Infinity;
-  pending.forEach((m) => {
+  eligible.forEach((m) => {
     const score = computeSpiderScore(m);
     if (score > bestScore) {
       bestScore = score;

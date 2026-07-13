@@ -30,7 +30,7 @@ function SkillCard({ skill, unlocked, unlockable, prereqMissing, techTokens, onU
 
   return (
     <div
-      className={`relative rounded-2xl border p-4 transition-all duration-300 overflow-hidden group ${
+      className={`relative rounded-2xl border p-3 sm:p-4 transition-all duration-300 overflow-hidden group ${
         unlocked
           ? `bg-surface/70 backdrop-blur-2xl ${meta.border} shadow-[0_8px_24px_rgba(0,0,0,0.4)]`
           : prereqMissing
