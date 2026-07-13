@@ -252,6 +252,14 @@ const StatusIcon = memo(function StatusIcon({ meta, size = 'md' }) {
  * si basa `memo`. */
 const EMPTY_SET = new Set();
 
+// V34.6 — "Accordion Nodi Figlio": soglia oltre la quale la lista di nodi
+// figlio di un Boss (ParentModuleCard o un Nodo Figlio che è a sua volta un
+// Boss annidato) parte CHIUSA invece che aperta. Un Boss con pochi
+// sotto-argomenti resta comodo da vedere a colpo d'occhio; un Boss con
+// decine di nodi (vedi caso reale "Cinematica del corpo rigido", 14 nodi)
+// non trasforma più l'intero Web-Matrix in una lista infinita.
+const CHILD_LIST_AUTO_COLLAPSE_THRESHOLD = 6;
+
 /**
  * Livello 3 — Nodo Figlio: riga compatta connessa visivamente al proprio
  * Nodo Padre tramite un vero e proprio "ramo" (linea verticale del
@@ -268,7 +276,15 @@ const ChildNodeRow = memo(function ChildNodeRow({
   bountyIds = EMPTY_SET,
   selectionMode = false,
   selectedIds = EMPTY_SET,
-  onToggleSelect
+  onToggleSelect,
+  // V34.6 — "Accordion Nodi Figlio": presenti solo quando questo nodo
+  // figlio è a sua volta un Boss annidato (ha propri sotto-argomenti).
+  // Il toggle vive nel ChildTree genitore (unica fonte di verità per lo
+  // stato aperto/chiuso di TUTTI i suoi figli diretti), qui arriva solo
+  // in lettura + callback.
+  hasChildren = false,
+  isExpanded = false,
+  onToggleExpand
 }) {
   if (!node) return null;
   const siblingSfide = Array.isArray(materia?.sfide) ? materia.sfide : [];
@@ -315,8 +331,20 @@ const ChildNodeRow = memo(function ChildNodeRow({
             <span className={`text-xs font-mono px-2 py-0.5 rounded-full border shrink-0 ${diffMeta.border} ${diffMeta.color}`}>
               {diffMeta.label}
             </span>
-            {ownChildren.length > 0 && (
-              <span className="text-xs font-mono px-2 py-0.5 rounded-full border border-secondary/30 text-secondary shrink-0">Boss</span>
+            {hasChildren && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleExpand?.();
+                }}
+                onKeyDown={(e) => e.stopPropagation()}
+                title={isExpanded ? 'Nascondi sotto-argomenti' : 'Mostra sotto-argomenti'}
+                className="text-xs font-mono px-2 py-0.5 rounded-full border border-secondary/30 text-secondary shrink-0 flex items-center gap-1 hover:bg-secondary/10 hover:border-secondary/60 transition-all duration-200"
+              >
+                Boss · {ownChildren.length}
+                <Icon name="chevronDown" className={`w-3 h-3 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`} />
+              </button>
             )}
             {isBounty && (
               <span className={`${BADGE.red} shrink-0`} title="Bounty Target — alta frizione nei ripassi">
@@ -346,7 +374,14 @@ const ChildNodeRow = memo(function ChildNodeRow({
   );
 });
 
-/** Ricorsione dei Nodi Figli — tronco verticale reattivo al costume, mai un semplice rientro senza segno grafico. */
+/** Ricorsione dei Nodi Figli — tronco verticale reattivo al costume, mai un semplice rientro senza segno grafico.
+ * V34.6 — "Accordion Nodi Figlio": questo componente è ora anche l'unica
+ * fonte di verità per lo stato aperto/chiuso dei sotto-alberi dei propri
+ * figli diretti (`expandedIds`, uno per livello di ricorsione — ogni
+ * chiamata ricorsiva di ChildTree ha il proprio Set indipendente). Un
+ * figlio che è a sua volta un Boss annidato parte aperto solo se ha
+ * "poche" sotto-voci (CHILD_LIST_AUTO_COLLAPSE_THRESHOLD), altrimenti
+ * chiuso di default — stessa euristica di ParentModuleCard. */
 const ChildTree = memo(function ChildTree({
   parentId,
   sfide,
@@ -358,35 +393,67 @@ const ChildTree = memo(function ChildTree({
   selectedIds = EMPTY_SET,
   onToggleSelect
 }) {
-  if (!Array.isArray(sfide) || sfide.length === 0) return null;
-  const children = sfide.filter((s) => s && (s.parentId || null) === parentId);
+  const safeSfide = Array.isArray(sfide) ? sfide : [];
+  const children = safeSfide.filter((s) => s && (s.parentId || null) === parentId);
+
+  const [expandedIds, setExpandedIds] = useState(() => {
+    const initial = new Set();
+    children.forEach((child) => {
+      const grandchildCount = safeSfide.filter((s) => s && s.parentId === child.id).length;
+      if (grandchildCount > 0 && grandchildCount <= CHILD_LIST_AUTO_COLLAPSE_THRESHOLD) {
+        initial.add(child.id);
+      }
+    });
+    return initial;
+  });
+
   if (children.length === 0) return null;
+
+  const toggleExpand = (id) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   return (
     <div className="ml-6 md:ml-7 pl-5 md:pl-6 border-l-2 border-secondary/25 space-y-3 relative">
-      {children.map((child) => (
-        <div key={child.id} className="space-y-3">
-          <ChildNodeRow
-            node={child}
-            materia={materia}
-            onSelect={onSelect}
-            bountyIds={bountyIds}
-            selectionMode={selectionMode}
-            selectedIds={selectedIds}
-            onToggleSelect={onToggleSelect}
-          />
-          <ChildTree
-            parentId={child.id}
-            sfide={sfide}
-            depth={depth + 1}
-            materia={materia}
-            onSelect={onSelect}
-            bountyIds={bountyIds}
-            selectionMode={selectionMode}
-            selectedIds={selectedIds}
-            onToggleSelect={onToggleSelect}
-          />
-        </div>
-      ))}
+      {children.map((child) => {
+        const grandchildCount = safeSfide.filter((s) => s && s.parentId === child.id).length;
+        const hasChildren = grandchildCount > 0;
+        const isExpanded = expandedIds.has(child.id);
+        return (
+          <div key={child.id} className="space-y-3">
+            <ChildNodeRow
+              node={child}
+              materia={materia}
+              onSelect={onSelect}
+              bountyIds={bountyIds}
+              selectionMode={selectionMode}
+              selectedIds={selectedIds}
+              onToggleSelect={onToggleSelect}
+              hasChildren={hasChildren}
+              isExpanded={isExpanded}
+              onToggleExpand={hasChildren ? () => toggleExpand(child.id) : undefined}
+            />
+            {hasChildren && isExpanded && (
+              <ChildTree
+                parentId={child.id}
+                sfide={safeSfide}
+                depth={depth + 1}
+                materia={materia}
+                onSelect={onSelect}
+                bountyIds={bountyIds}
+                selectionMode={selectionMode}
+                selectedIds={selectedIds}
+                onToggleSelect={onToggleSelect}
+              />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 });
@@ -421,6 +488,12 @@ const ParentModuleCard = memo(function ParentModuleCard({
   const isBounty = bountyIds.has(node.id);
   const isSelected = selectedIds.has(node.id);
   const handleActivate = () => (selectionMode ? onToggleSelect(node.id) : onSelect(node));
+
+  // V34.6 — "Accordion Nodi Figlio": un Boss con pochi figli resta comodo
+  // da vedere subito aperto; oltre la soglia parte chiuso, cosi' una
+  // Materia con molti Boss "densi" (14+ nodi ciascuno, vedi screenshot
+  // utente) non produce più una pagina a scorrimento infinito.
+  const [childrenOpen, setChildrenOpen] = useState(() => childCount <= CHILD_LIST_AUTO_COLLAPSE_THRESHOLD);
 
   return (
     <div className={`${CARD} space-y-4 border-l-4 ${isSelected ? 'border-primary ring-1 ring-primary/50' : meta.border}`}>
@@ -457,11 +530,23 @@ const ParentModuleCard = memo(function ParentModuleCard({
           </div>
           {node.obiettivo && <p className="text-base text-slate-400 mt-1.5 truncate">{node.obiettivo}</p>}
           {childCount > 0 && (
-            <p className="text-sm text-slate-500 mt-1 flex items-center gap-1.5">
-              <Icon name="grid" className="w-3.5 h-3.5" />
-              {childCount} nodo/i figlio collegato/i
-              {status === NODE_STATUS.LOCKED && ` · ${pendingChildren} ancora da completare`}
-            </p>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setChildrenOpen((v) => !v);
+              }}
+              onKeyDown={(e) => e.stopPropagation()}
+              title={childrenOpen ? 'Nascondi nodi figlio' : 'Mostra nodi figlio'}
+              className="text-sm text-slate-500 hover:text-secondary mt-1 flex items-center gap-1.5 transition-colors duration-200"
+            >
+              <Icon name="grid" className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                {childCount} nodo/i figlio collegato/i
+                {status === NODE_STATUS.LOCKED && ` · ${pendingChildren} ancora da completare`}
+              </span>
+              <Icon name="chevronDown" className={`w-3.5 h-3.5 shrink-0 transition-transform duration-300 ${childrenOpen ? 'rotate-180' : ''}`} />
+            </button>
           )}
         </div>
         <div className="text-right shrink-0 space-y-1.5">
@@ -472,19 +557,21 @@ const ParentModuleCard = memo(function ParentModuleCard({
         </div>
       </div>
 
-      <div className="relative">
-        <ChildTree
-          parentId={node.id}
-          sfide={siblingSfide}
-          depth={1}
-          materia={materia}
-          onSelect={onSelect}
-          bountyIds={bountyIds}
-          selectionMode={selectionMode}
-          selectedIds={selectedIds}
-          onToggleSelect={onToggleSelect}
-        />
-      </div>
+      {childCount > 0 && childrenOpen && (
+        <div className="relative">
+          <ChildTree
+            parentId={node.id}
+            sfide={siblingSfide}
+            depth={1}
+            materia={materia}
+            onSelect={onSelect}
+            bountyIds={bountyIds}
+            selectionMode={selectionMode}
+            selectedIds={selectedIds}
+            onToggleSelect={onToggleSelect}
+          />
+        </div>
+      )}
     </div>
   );
 });
