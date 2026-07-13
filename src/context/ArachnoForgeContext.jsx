@@ -666,6 +666,21 @@ function reducer(state, action) {
       return { ...state, profile, starLog, combatLog, dailyPatrols };
     }
 
+    case 'GAUNTLET_CLEARED': {
+      // V33.1 — Sinister Six Gauntlet: dispatchata UNA sola volta da
+      // BossFight.jsx, solo alla vittoria sul sesto e ultimo Villain di
+      // una run (mai su un semplice Boss Fight singolo). Puramente
+      // additiva: non tocca XP/HP/starLog, già gestiti round per round
+      // dal normale BOSS_FIGHT_RESULT — qui si limita a incrementare il
+      // contatore lifetime che alimenta il trofeo dedicato.
+      const profile = { ...state.profile, gauntletsCleared: (state.profile.gauntletsCleared || 0) + 1 };
+      return {
+        ...state,
+        profile,
+        combatLog: pushLog(state.combatLog, 'SINISTER SIX GAUNTLET COMPLETATA — tutti e 6 i Villain abbattuti in fila.', 'SUCCESS')
+      };
+    }
+
     case 'LAST_STAND_SACRIFICE': {
       const sacrifice = Math.round(computeTotalBankedXp(state.profile) * LAST_STAND_SACRIFICE_RATE);
       let profile = applyXpDelta(state.profile, -sacrifice);
@@ -1088,6 +1103,25 @@ export function ArachnoForgeProvider({ children }) {
     prevMaxCarnageRef.current = isActive;
   }, [state.profile.maxCarnageActive, pushToast, audio]);
 
+  // V33.1 — Suit Unlock Gating: prima d'ora lo sblocco della Symbiote
+  // Suit era segnalato SOLO da una riga nel Combat Log (collassato di
+  // default in Karen OS Settings dalla V28.1) — un traguardo lifetime
+  // one-way che rischiava concretamente di passare inosservato. Stesso
+  // pattern edge-trigger del Maximum Carnage qui sopra, ma
+  // deliberatamente SENZA un suono dedicato: il flip di questo flag
+  // avviene nello STESSO istante del primo trigger di Maximum Carnage
+  // (vedi applyCriticalAction), che già riproduce il proprio ruggito —
+  // un secondo effetto sonoro sovrapposto sarebbe rumore, non chiarezza.
+  const prevSymbioteUnlockRef = useRef(state.profile.symbioteSuitUnlocked);
+  useEffect(() => {
+    const was = prevSymbioteUnlockRef.current;
+    const is = state.profile.symbioteSuitUnlocked;
+    if (!was && is) {
+      pushToast('🕷️ SYMBIOTE SUIT SBLOCCATA — disponibile in Karen OS Settings.', 'success');
+    }
+    prevSymbioteUnlockRef.current = is;
+  }, [state.profile.symbioteSuitUnlocked, pushToast]);
+
   // V28.1 — Pillar 3 (Spider-Sense Focus Surge): edge-trigger sulle nuove
   // righe di Combat Log taggate 'SPIDERSENSE' (stesso pattern del Daily
   // Patrol/Max Carnage sopra) — tiene traccia SOLO delle voci aggiunte
@@ -1286,6 +1320,12 @@ export function ArachnoForgeProvider({ children }) {
         pushToast(payload.win ? 'SUPERCRIMINALE SCONFITTO — XP accreditati' : 'GAME OVER — nessun XP', payload.win ? 'success' : 'danger');
         if (payload.win) audio.playLevelUpChime();
       },
+      // V33.1 — Sinister Six Gauntlet: chiamata UNA sola volta da
+      // BossFight.jsx alla vittoria sul sesto Villain di una run pulita.
+      // Nessun payload: il reducer si limita a incrementare il contatore
+      // lifetime, tutta l'XP/HP/starLog della run è già gestita round per
+      // round dalle chiamate a bossFightResult già in corso.
+      completeGauntlet: () => dispatch({ type: 'GAUNTLET_CLEARED' }),
       lastStandSacrifice: () => {
         dispatch({ type: 'LAST_STAND_SACRIFICE' });
         pushToast('LAST STAND — sei sopravvissuto a 1 HP', 'danger');

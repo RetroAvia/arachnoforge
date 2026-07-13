@@ -193,6 +193,14 @@ export default function BossFight() {
       setPhase(win ? PHASES.WON : PHASES.LOST);
       setReportData(roundReport);
       setReportOpen(true);
+      // V33.1 — Run "pulita": tutti e 6 i Villain abbattuti in fila,
+      // senza mai perdere un round. Segnale distinto da un normale round
+      // vinto — alimenta il trofeo dedicato (che a sua volta innesca già
+      // da solo Toast + Trophy Fanfare tramite useAchievements, nessuna
+      // duplicazione di feedback da gestire qui).
+      if (win && gauntletRound === GAUNTLET_SIZE) {
+        actions.completeGauntlet();
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gauntletMode, gauntletRound, actions, materia, remainingSeconds, totalSeconds, durationMinutes, tick, endFight]);
@@ -442,7 +450,10 @@ export default function BossFight() {
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="text-base tracking-widest text-slate-400 font-mono truncate min-w-0">{materia ? materia.nome.toUpperCase() : 'SIMULAZIONE'}</span>
                   {gauntletMode && (
-                    <span className="shrink-0 text-[11px] font-mono px-2 py-0.5 rounded-full border border-primary/50 bg-primary/10 text-primary">
+                    <span
+                      key={gauntletRound}
+                      className="af-gauntlet-round-pop shrink-0 text-[11px] font-mono px-2 py-0.5 rounded-full border border-primary/50 bg-primary/10 text-primary"
+                    >
                       VILLAIN {gauntletRound}/{GAUNTLET_SIZE}
                     </span>
                   )}

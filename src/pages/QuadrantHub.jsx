@@ -205,7 +205,13 @@ const STATUS_META = {
 function ReviewButtons({ onReview, size = 'normal' }) {
   const pad = size === 'small' ? 'py-2 text-sm' : 'py-2.5 text-base';
   return (
-    <div className="grid grid-cols-3 gap-2">
+    // V34.0 — "God-Tier Pass": su schermi molto stretti (<640px) tre
+    // colonne con l'etichetta completa "Difficile (+1gg)" affiancavano il
+    // testo a ridosso del bordo — una sola colonna sotto il breakpoint
+    // standard Tailwind `sm` restituisce respiro al testo sui telefoni
+    // più piccoli, senza toccare il layout a 3 colonne da tablet in su
+    // (nessun breakpoint custom: `sm` è già definito di default).
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
       {Object.values(REVIEW_RATING).map((rating) => {
         const meta = REVIEW_RATING_META[rating];
         return (

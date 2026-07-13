@@ -326,6 +326,32 @@ export const TROPHY_DEFINITIONS = [
       return average != null && average >= 29 && gradedCount >= 5;
     },
     iconPath: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10Z M8 3c-2 3-2 15 0 18 M16 3c2 3 2 15 0 18'
+  },
+  // V33.1 — "Difensore Del Multiverso": il rango Lv.50+ (V25.0, Dynamic
+  // Titles Engine) era già il traguardo endgame più alto raggiungibile,
+  // ma non aveva un trofeo dedicato — il trofeo di livello più alto si
+  // fermava a Lv.15 ("Vendicatore Onorario"). Chiude quel vuoto.
+  {
+    id: 'difensore_multiverso_50',
+    nome: 'Difensore Del Multiverso',
+    tier: TIER.MULTIVERSE,
+    secret: true,
+    descrizione: 'Raggiungi il Livello 50 — il rango più alto del multiverso.',
+    condizione: (state) => (state.profile.level || 0) >= 50,
+    iconPath: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M12 7l1.8 3.6 4 .3-3 2.7 1 3.9L12 15.5 8.2 17.5l1-3.9-3-2.7 4-.3Z'
+  },
+  // V33.1 — "Sinister Six Gauntlet Pulita": il traguardo meccanicamente
+  // più difficile introdotto con la Gauntlet (V32.0) non aveva ancora un
+  // trofeo — sblocca automaticamente la Trophy Fanfare (tier MULTIVERSE)
+  // tramite useAchievements, nessun collegamento aggiuntivo da gestire.
+  {
+    id: 'sinister_six_gauntlet_clean',
+    nome: 'Gauntlet Impeccabile',
+    tier: TIER.MULTIVERSE,
+    secret: true,
+    descrizione: 'Completa un Sinister Six Gauntlet pulito: tutti e 6 i Villain abbattuti in fila, nella stessa run.',
+    condizione: (state) => (state.profile.gauntletsCleared || 0) >= 1,
+    iconPath: 'M12 3 4 7v6c0 5 3.6 9.4 8 10 4.4-.6 8-5 8-10V7l-8-4Z M9 12l2 2 4-4.5'
   }
 ];
 

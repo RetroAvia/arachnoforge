@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
 import { useAuthContext } from '../context/AuthContext.jsx';
 import { Icon } from '../components/Icons.jsx';
@@ -62,6 +62,22 @@ export default function CoreConfig() {
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const fileInputRef = useRef(null);
+
+  // V33.0 — "Aesthetic Level-Up": shake tattile (stesso af-screen-shake
+  // della Boss Fight) sulla card di una Spider-Suit ancora bloccata al
+  // click, invece del solo toast informativo — un "no" fisico, non solo
+  // testuale. Un solo id alla volta: click ripetuti sulla stessa card
+  // ri-innescano lo shake pulendo prima il timeout precedente.
+  const [shakingSuitId, setShakingSuitId] = useState(null);
+  const shakeTimeoutRef = useRef(null);
+  const triggerSuitShake = (suitId) => {
+    if (shakeTimeoutRef.current) clearTimeout(shakeTimeoutRef.current);
+    setShakingSuitId(suitId);
+    shakeTimeoutRef.current = setTimeout(() => setShakingSuitId(null), 400);
+  };
+  useEffect(() => () => {
+    if (shakeTimeoutRef.current) clearTimeout(shakeTimeoutRef.current);
+  }, []);
 
   // V28.1 — Pillar 2 (Admin Override): campo passphrase locale al form,
   // MAI persistito nello stato applicativo — validato al click, non ad
@@ -337,11 +353,14 @@ export default function CoreConfig() {
                 onClick={() => {
                   if (locked) {
                     pushToast?.(lockReason, 'info');
+                    triggerSuitShake(suit.id);
                     return;
                   }
                   actions.updateSettings({ suit: suit.id });
                 }}
                 className={`text-left p-4 rounded-2xl border transition-all duration-300 backdrop-blur-md ${
+                  shakingSuitId === suit.id ? 'af-locked-shake' : ''
+                } ${
                   active
                     ? 'border-secondary/60 bg-secondary/10 shadow-secondary-glow'
                     : locked
@@ -474,7 +493,7 @@ export default function CoreConfig() {
 
         <div className="relative pt-3 border-t border-white/5">
           <button type="button" onClick={exportExamDatesIcs} className={`w-full ${BTN_GHOST}`}>
-            <Icon name="flag" className="w-6 h-6" />
+            <Icon name="calendar" className="w-6 h-6" />
             Esporta Date Esami (.ics)
           </button>
           <p className="relative text-sm text-slate-500 leading-relaxed mt-2">

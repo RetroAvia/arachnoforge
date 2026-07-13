@@ -226,7 +226,7 @@ export default function MultiverseSimulator() {
       {/* Storico Media Ponderata */}
       <div className={CARD}>
         <div className="relative flex items-center gap-2 mb-4">
-          <Icon name="chartBar" className="w-5 h-5 text-secondary" />
+          <Icon name="trendUp" className="w-5 h-5 text-secondary" />
           <span className={H2}>Storico Media Ponderata</span>
           {gradeHistory.length > 0 && <span className={`${BADGE.blue} ml-auto`}>{gradeHistory.length}</span>}
         </div>
@@ -238,7 +238,7 @@ export default function MultiverseSimulator() {
             subtitle="Ogni volta che registri il Voto di un nuovo esame superato, un punto viene aggiunto qui — traccia l'andamento della tua Media nel multiverso."
           />
         ) : (
-          <div className="relative">
+          <div key={gradeHistory.length} className="relative af-chart-reveal">
             <GradeHistoryChart history={gradeHistory} />
             <p className="text-xs text-slate-500 mt-2">
               {gradeHistory.length === 1

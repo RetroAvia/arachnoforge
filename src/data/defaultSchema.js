@@ -57,7 +57,12 @@ export function createDefaultState() {
       // trigger di Maximum Carnage Mode (vedi applyCriticalAction) — un
       // flag one-way, mai revocato. La 2099 Suit non ha bisogno di un
       // flag dedicato: si sblocca direttamente a Lv.50+ (vedi CoreConfig).
-      symbioteSuitUnlocked: false
+      symbioteSuitUnlocked: false,
+      // V33.1 — Sinister Six Gauntlet: contatore lifetime delle run
+      // completate "pulite" (6/6 Villain abbattuti nella stessa run senza
+      // mai perdere un round) — alimenta il trofeo dedicato in
+      // data/trophies.js, stesso pattern di dailyPatrolsCompleted.
+      gauntletsCleared: 0
     },
     settings: {
       focusTime: 25,
@@ -205,7 +210,10 @@ export function hydrateState(rawState) {
     // che ha GIÀ la Symbiote Suit attiva in `settings.suit` viene
     // grandfathered direttamente in CoreConfig (mai un downgrade forzato),
     // quindi qui basta un fallback booleano sicuro.
-    symbioteSuitUnlocked: rawProfile.symbioteSuitUnlocked === true
+    symbioteSuitUnlocked: rawProfile.symbioteSuitUnlocked === true,
+    // V33.1 — Blindatura contatore Gauntlet: mai propagare un valore
+    // "sporco" (NaN, negativo, stringa) da un salvataggio corrotto.
+    gauntletsCleared: Number.isFinite(rawProfile.gauntletsCleared) && rawProfile.gauntletsCleared >= 0 ? rawProfile.gauntletsCleared : 0
   };
 
   return {

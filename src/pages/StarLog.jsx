@@ -427,6 +427,11 @@ export default function StarLog() {
       {/* V32.0 — Weekly Bugle: prima pagina degli ultimi 7 giorni, in stile
           "edizione del Daily Bugle" coerente col tema della pagina. */}
       <div className={`${CARD} space-y-4`}>
+        {/* V33.0 — bagliore di sfondo dedicato (accento/decay, "carta da
+            giornale dorata"): prima l'unica card "editoriale" della pagina
+            senza il trattamento premium che StatHero/le altre hero-card
+            hanno già altrove nell'app. */}
+        <div className="absolute -top-14 left-1/2 -translate-x-1/2 w-56 h-56 rounded-full bg-accent/10 blur-3xl pointer-events-none" />
         <div className="relative flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2">
             <Icon name="chartBar" className="w-5 h-5 text-primary" />

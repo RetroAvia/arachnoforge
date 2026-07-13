@@ -90,7 +90,11 @@ const PATHS = {
   lock: ['M6 11V8a6 6 0 0 1 12 0v3', 'M5 11h14v10H5z', 'M12 15v3'],
   mail: ['M4 5h16v14H4z', 'M4 6.5l8 6.5 8-6.5'],
   user: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z', 'M4 21c1.4-4.6 5-6.5 8-6.5s6.6 1.9 8 6.5'],
-  logout: ['M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4', 'M16 17l5-5-5-5', 'M21 12H9']
+  logout: ['M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4', 'M16 17l5-5-5-5', 'M21 12H9'],
+  // V33.0 — "Aesthetic Level-Up": due icone dedicate che mancavano, prima
+  // riusate da icone tematicamente vicine ma imprecise (flag/chartBar).
+  calendar: ['M8 2v4', 'M16 2v4', 'M3 10h18', 'M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z'],
+  trendUp: ['M3 17l6-6 4 4 8-8', 'M15 7h6v6']
 };
 
 function IconBase({ name, className = 'w-5 h-5', strokeWidth = 1.8 }) {

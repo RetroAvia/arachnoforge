@@ -2,8 +2,19 @@ import React from 'react';
 import Modal from './Modal.jsx';
 import { Icon } from './Icons.jsx';
 import { BTN_PRIMARY, BTN_SECONDARY, BTN_GHOST } from '../utils/designSystem.js';
+import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
 
+/**
+ * V34.0 — "God-Tier Pass": la conferma DISTRUTTIVA (danger=true) riproduce
+ * ora il Delete Whoosh dedicato invece del solo Web-Click generico già
+ * scatenato dal listener globale su ogni bottone — un singolo punto di
+ * innesto che copre automaticamente ogni eliminazione dell'app (Materie,
+ * Nodi, Daily Protocol, Ricompense Shop...) senza toccare le singole
+ * pagine chiamanti.
+ */
 export default function ConfirmDialog({ open, onClose, onConfirm, title, message, confirmLabel = 'Conferma', danger = true }) {
+  const { audio } = useArachnoForge();
+
   return (
     <Modal open={open} onClose={onClose} title={title} maxWidth="max-w-sm">
       <div className="flex items-start gap-3 mb-6">
@@ -19,6 +30,7 @@ export default function ConfirmDialog({ open, onClose, onConfirm, title, message
         <button
           type="button"
           onClick={() => {
+            if (danger) audio.playDeleteWhoosh();
             onConfirm();
             onClose();
           }}

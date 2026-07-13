@@ -57,6 +57,51 @@ html, body, #root {
   padding: 0;
 }
 
+/* ------------------------------------------------------------------ *
+ * V34.0 — "God-Tier Pass": Accessibilita' globale + coerenza tattile.
+ * ------------------------------------------------------------------ */
+
+/* Focus da tastiera SEMPRE visibile su ogni elemento interattivo (bottoni
+   HUD, card cliccabili, opzioni di Dropdown...), ma mai un anello a schermo
+   intero quando l'interazione avviene col mouse/touch — solo `:focus-visible`
+   (supportato da ogni browser moderno) mostra l'anello, coerente col resto
+   dei bagliori al neon dell'app invece del contorno blu di sistema. */
+:focus-visible {
+  outline: 2px solid rgb(var(--af-refuel-rgb) / 0.9);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+body[data-carnage='true'] :focus-visible {
+  outline-color: rgb(var(--af-attack-rgb) / 0.9);
+}
+
+/* Blocco scroll del body dietro una modale aperta (Modal.jsx aggiunge/
+   rimuove questa classe): senza, su mobile il contenuto sotto continuava a
+   scorrere "attraverso" l'overlay al touch — un bug reale su schermi
+   piccoli, invisibile su desktop dove raramente si scrolla col mouse
+   fermo su una modale aperta. */
+body.af-modal-open {
+  overflow: hidden;
+}
+
+/* Rispetto di "Riduci Animazioni" di sistema (prefers-reduced-motion):
+   l'app usa animazioni CSS diffusamente per il feedback sensoriale (shake,
+   flicker, pulsazioni, drone visivi) — chi ha disabilitato le animazioni a
+   livello di sistema (spesso per motivi vestibolari/di accessibilita') deve
+   vederle spente per davvero, non solo rallentate. Le transizioni "utili"
+   (hover, apertura menu) restano quasi istantanee anziche' sparire del
+   tutto, cosi' l'interfaccia resta comunque reattiva al tocco/click. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 body {
   background-color: #050508;
   background-image:
@@ -605,4 +650,45 @@ body[data-carnage='true'] {
 .af-edit-mode-in {
   transform-origin: top center;
   animation: af-edit-mode-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ------------------------------------------------------------------ *
+ * V33.0 — "Aesthetic Level-Up": rifinitura visiva delle feature V32.0
+ * (Storico Media Ponderata, Sinister Six Gauntlet, Suit Unlock Gating),
+ * che finora erano rimaste statiche mentre il resto dell'app celebra
+ * ogni momento rilevante con una micro-animazione dedicata.
+ * ------------------------------------------------------------------ */
+
+/* Multiverse Simulator: ingresso del grafico storico — leggero disegno
+   dal basso, mai un semplice pop-in piatto per un dato che rappresenta
+   un intero percorso accademico. Ri-triggerata (via key sulla lunghezza
+   dello storico) ad ogni nuovo esame votato, cosi' il grafico "respira"
+   quando cresce, non solo al primo mount della pagina. */
+@keyframes af-chart-reveal {
+  0% { opacity: 0; transform: translateY(10px) scale(0.985); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.af-chart-reveal {
+  animation: af-chart-reveal 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Sinister Six Gauntlet: piccolo "pop" sul badge VILLAIN X/6 ad ogni
+   cambio round — stessa grammatica di af-quest-pop (Daily Patrol), qui
+   applicata al segnaposto di progressione della Gauntlet. */
+@keyframes af-gauntlet-round-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.18); }
+  70% { transform: scale(0.96); }
+  100% { transform: scale(1); }
+}
+.af-gauntlet-round-pop {
+  animation: af-gauntlet-round-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Karen OS Settings: shake breve sulla card di una Spider-Suit ancora
+   bloccata quando l'utente ci clicca sopra — lo stesso af-screen-shake
+   della Boss Fight, riusato qui come "no" tattile al posto del solo
+   toast informativo. */
+.af-locked-shake {
+  animation: af-screen-shake 0.4s ease-in-out;
 }

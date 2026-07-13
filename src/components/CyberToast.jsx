@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import { Icon } from './Icons.jsx';
 
 const TYPE_META = {
@@ -11,16 +11,32 @@ const TYPE_META = {
 
 const AUTO_DISMISS_MS = 4500;
 
+/**
+ * V34.0 — "God-Tier Pass": auto-dismiss ora in PAUSA mentre il mouse è
+ * sopra la card (e riparte da capo al mouseleave/blur) — prima un toast
+ * lungo che l'utente si fermava a leggere spariva comunque sotto al
+ * cursore, un difetto reale specialmente per i messaggi di Karen più
+ * lunghi. Su touch (niente hover) il comportamento resta invariato.
+ */
 function ToastCard({ toast, onDismiss }) {
   const meta = TYPE_META[toast.type] || TYPE_META.info;
+  const timeoutRef = useRef(null);
+
+  const scheduleDismiss = useCallback((ms) => {
+    clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => onDismiss(toast.id), ms);
+  }, [onDismiss, toast.id]);
 
   useEffect(() => {
-    const id = setTimeout(() => onDismiss(toast.id), AUTO_DISMISS_MS);
-    return () => clearTimeout(id);
-  }, [toast.id, onDismiss]);
+    scheduleDismiss(AUTO_DISMISS_MS);
+    return () => clearTimeout(timeoutRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toast.id]);
 
   return (
     <div
+      onMouseEnter={() => clearTimeout(timeoutRef.current)}
+      onMouseLeave={() => scheduleDismiss(AUTO_DISMISS_MS)}
       className={`relative w-full sm:w-72 bg-surface/90 backdrop-blur-2xl rounded-2xl px-4 py-3.5 flex items-start gap-3 font-mono border ${meta.border} shadow-[0_8px_28px_rgba(0,0,0,0.5)] ${meta.glow} animate-[toastIn_0.35s_ease-out] overflow-hidden`}
     >
       <div className={`absolute inset-0 pointer-events-none ${meta.bg}`} />
@@ -41,7 +57,12 @@ function ToastCard({ toast, onDismiss }) {
 export default function CyberToastStack({ toasts, onDismiss }) {
   if (toasts.length === 0) return null;
   return (
-    <div className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-4 z-[80] flex flex-col gap-2.5 items-stretch sm:items-end pointer-events-none">
+    <div
+      className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-4 z-[80] flex flex-col gap-2.5 items-stretch sm:items-end pointer-events-none"
+      role="status"
+      aria-live="polite"
+      aria-atomic="false"
+    >
       <style>{`
         @keyframes toastIn {
           from { opacity: 0; transform: translateX(24px); }

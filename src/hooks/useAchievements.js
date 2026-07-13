@@ -51,6 +51,13 @@ export function useAchievements({ state, dispatch, pushToast, audio }) {
     state.profile.lastStandCount,
     state.profile.level,
     state.profile.dailyPatrolsCompleted,
+    // V33.1 — Sinister Six Gauntlet: senza questa dipendenza esplicita, il
+    // trofeo "Gauntlet Impeccabile" verrebbe rilevato solo per un effetto
+    // collaterale incidentale (GAUNTLET_CLEARED viaggia sempre insieme a
+    // un BOSS_FIGHT_RESULT che tocca già `state.starLog`, già tracciato
+    // qui sotto) — corretto per ora, ma fragile e non esplicito. Elencarlo
+    // qui rende la dipendenza reale, non un caso fortunato.
+    state.profile.gauntletsCleared,
     state.materie,
     state.starLog,
     dispatch,

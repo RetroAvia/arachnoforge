@@ -879,6 +879,65 @@ export function useAudioEngine({ enabled = true } = {}) {
     });
   }, [ensureRunning]);
 
+  /**
+   * V34.0 — "God-Tier Pass": Delete Whoosh — riservato alle conferme
+   * DISTRUTTIVE (ConfirmDialog con `danger=true`: elimina Materia, Nodo,
+   * Daily Protocol, Ricompensa dello Shop...). Deliberatamente diverso da
+   * ogni altro suono negativo dell'engine: il Penalty Buzzer è un ronzio
+   * di "errore/penalità" mentre l'Access Denied è "porta bloccata" — qui
+   * serve invece la sensazione fisica di "qualcosa che viene rimosso per
+   * sempre", un breve sweep discendente filtrato (mai un ronzio, mai
+   * musicale) seguito da un thud secco e cortissimo. Riproducendolo da un
+   * unico punto (ConfirmDialog) copre automaticamente OGNI eliminazione
+   * dell'app, senza dover instrumentare ciascuna pagina singolarmente.
+   */
+  const playDeleteWhoosh = useCallback(() => {
+    if (!enabledRef.current) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    ensureRunning(ctx);
+    const t0 = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    const filter = ctx.createBiquadFilter();
+    const gain = ctx.createGain();
+
+    filter.type = 'bandpass';
+    filter.Q.value = 4;
+    filter.frequency.setValueAtTime(2200, t0);
+    filter.frequency.exponentialRampToValueAtTime(180, t0 + 0.16);
+
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(900, t0);
+    osc.frequency.exponentialRampToValueAtTime(90, t0 + 0.16);
+
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.1, t0 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + 0.2);
+
+    // Thud secco di chiusura, subito dopo lo sweep — la "porta" che si
+    // richiude sul contenuto appena rimosso.
+    const thudOsc = ctx.createOscillator();
+    const thudGain = ctx.createGain();
+    const thudStart = t0 + 0.14;
+    thudOsc.type = 'sine';
+    thudOsc.frequency.setValueAtTime(120, thudStart);
+    thudOsc.frequency.exponentialRampToValueAtTime(45, thudStart + 0.09);
+    thudGain.gain.setValueAtTime(0.0001, thudStart);
+    thudGain.gain.exponentialRampToValueAtTime(0.22, thudStart + 0.01);
+    thudGain.gain.exponentialRampToValueAtTime(0.0001, thudStart + 0.11);
+    thudOsc.connect(thudGain);
+    thudGain.connect(ctx.destination);
+    thudOsc.start(thudStart);
+    thudOsc.stop(thudStart + 0.12);
+  }, [ensureRunning]);
+
   // Identità stabile fra i render: consumata come singola dipendenza
   // (`audio`) in effetti ed useMemo altrove (Context value, listener
   // globale del Web-Click) — senza questo useMemo cambierebbe riferimento
@@ -904,7 +963,8 @@ export function useAudioEngine({ enabled = true } = {}) {
       playWebSlingReveal,
       playChestOpen,
       playDataImport,
-      playSpiderSenseUnlock
+      playSpiderSenseUnlock,
+      playDeleteWhoosh
     }),
     [
       playWebClick,
@@ -926,7 +986,8 @@ export function useAudioEngine({ enabled = true } = {}) {
       playWebSlingReveal,
       playChestOpen,
       playDataImport,
-      playSpiderSenseUnlock
+      playSpiderSenseUnlock,
+      playDeleteWhoosh
     ]
   );
 }
