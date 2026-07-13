@@ -31,7 +31,7 @@ export const APP_BG =
 
 /** Card/Contenitore standard — vetro tecnologico profondo, bordo Secondario al 20%, ombra a doppio strato. */
 export const CARD =
-  'bg-surface/70 backdrop-blur-2xl border border-secondary/20 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-6 relative overflow-hidden';
+  'bg-surface/70 backdrop-blur-2xl border border-secondary/20 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 sm:p-6 relative overflow-hidden';
 
 /** Variante senza padding, per contenitori che gestiscono da soli lo spazio interno (header + body separati). */
 export const CARD_NOPAD =
@@ -39,7 +39,7 @@ export const CARD_NOPAD =
 
 /** Variante con bordo Primario (stati critici / attenzione / Enrage / Goblin Protocol). */
 export const CARD_ALERT =
-  'bg-surface/70 backdrop-blur-2xl border border-primary/35 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-6 relative overflow-hidden';
+  'bg-surface/70 backdrop-blur-2xl border border-primary/35 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 sm:p-6 relative overflow-hidden';
 
 /** Pulsante Primario — "Spider-Strike": gradiente Primario a due toni, glow acceso, lift on hover. */
 export const BTN_PRIMARY =

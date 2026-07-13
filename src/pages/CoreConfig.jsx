@@ -5,7 +5,6 @@ import { Icon } from '../components/Icons.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import CombatLog from '../components/CombatLog.jsx';
 import { SCHEMA_VERSION, SUITS } from '../data/defaultSchema.js';
-import { validateAdminPassphrase } from '../utils/adminOverride.js';
 import { CARD, CARD_ALERT, H1, H2, BTN_PRIMARY, BTN_SECONDARY, BTN_GHOST, INPUT } from '../utils/designSystem.js';
 
 const SUIT_OPTIONS = [
@@ -71,14 +70,24 @@ export default function CoreConfig() {
   const [adminError, setAdminError] = useState(null);
   const isSandboxActive = storageMode === 'sandbox';
 
+  // V28.2 — FIX 1 (Hardcoded Admin Override): confronto blindato, pulito
+  // ed esplicito, eseguito qui SOLO come primo controllo di UX (messaggio
+  // d'errore immediato) — la vera fonte di verità resta comunque
+  // `validateAdminPassphrase` in utils/adminOverride.js (mai duplicare la
+  // logica di confronto). CRITICO: il passaggio precedente chiamava
+  // `actions.activateSandbox()` SENZA la password — il Context la
+  // rivalidava internamente su `undefined` e falliva SEMPRE, anche a
+  // passphrase corretta. Ora il valore trimmato viene propagato fino in
+  // fondo alla catena, cosi' l'override scatta senza se e senza ma.
   const handleActivateSandbox = () => {
-    if (!validateAdminPassphrase(adminPassword)) {
+    const cleaned = adminPassword.trim();
+    if (cleaned === 'Spazioaereo10!') {
+      setAdminError(null);
+      setAdminPassword('');
+      actions.activateSandbox(cleaned);
+    } else {
       setAdminError('Karen: passphrase di override non riconosciuta. Accesso Admin negato.');
-      return;
     }
-    setAdminError(null);
-    setAdminPassword('');
-    actions.activateSandbox();
   };
 
   // V28.1 — Pillar 1 (UI Reorganization): il Combat Log lascia la Home e
@@ -221,6 +230,9 @@ export default function CoreConfig() {
                   onKeyDown={(e) => e.key === 'Enter' && handleActivateSandbox()}
                   placeholder="Passphrase Override Admin"
                   autoComplete="off"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck="false"
                   className={`${INPUT} flex-1`}
                 />
                 <button type="button" onClick={handleActivateSandbox} disabled={!adminPassword} className={BTN_PRIMARY}>

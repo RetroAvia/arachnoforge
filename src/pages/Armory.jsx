@@ -251,12 +251,12 @@ export default function Armory() {
             {state.shopRewards.map((r) => {
               const affordable = derived.totalBankedXp >= r.costoXp;
               return (
-                <div key={r.id} className={`${CARD} flex items-center justify-between`}>
-                  <div className="relative">
-                    <p className="text-base font-medium text-slate-100">{r.nome}</p>
+                <div key={r.id} className={`${CARD} flex items-center justify-between gap-3`}>
+                  <div className="relative min-w-0 flex-1">
+                    <p className="text-base font-medium text-slate-100 truncate">{r.nome}</p>
                     <p className="text-base font-mono text-accent mt-1">{r.costoXp} XP</p>
                   </div>
-                  <div className="relative flex items-center gap-2">
+                  <div className="relative flex items-center gap-2 shrink-0">
                     <button
                       type="button"
                       onClick={() => affordable && setRedeemTarget(r)}
@@ -296,15 +296,15 @@ export default function Armory() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {state.inventory.map((item) => (
-              <div key={item.id} className={`${CARD} flex items-center justify-between`}>
-                <div className="relative">
-                  <p className="text-base font-medium text-slate-100">{item.nome}</p>
+              <div key={item.id} className={`${CARD} flex items-center justify-between gap-3`}>
+                <div className="relative min-w-0 flex-1">
+                  <p className="text-base font-medium text-slate-100 truncate">{item.nome}</p>
                   <p className="text-base font-mono text-accent mt-1">x{item.quantity}</p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setConsumeTarget(item)}
-                  className={`relative ${BTN_SECONDARY} !px-3.5 !py-2 !text-xs`}
+                  className={`relative shrink-0 ${BTN_SECONDARY} !px-3.5 !py-2 !text-xs`}
                 >
                   Consuma
                 </button>

@@ -20,20 +20,20 @@ export default function Modal({ open, onClose, title, children, maxWidth = 'max-
       <div className={`relative w-full ${maxWidth} ${CARD_NOPAD} shadow-2xl af-scroll max-h-[85vh] overflow-y-auto`}>
         {/* Bagliore atmosferico d'ambiente dietro l'header, mai uno sfondo piatto. */}
         <div className="absolute -top-20 -right-20 w-64 h-64 rounded-full bg-secondary/10 blur-3xl pointer-events-none" />
-        <div className="relative flex items-center justify-between px-6 py-4 border-b border-secondary/20 sticky top-0 bg-surface/90 backdrop-blur-2xl">
-          <h3 className="font-bold tracking-wide text-base bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
+        <div className="relative flex items-center justify-between gap-3 px-4 sm:px-6 py-4 border-b border-secondary/20 sticky top-0 bg-surface/90 backdrop-blur-2xl">
+          <h3 className="font-bold tracking-wide text-base bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400 truncate min-w-0">
             {title}
           </h3>
           <button
             type="button"
             onClick={onClose}
-            className="text-slate-500 hover:text-primary transition-all duration-300 hover:rotate-90"
+            className="text-slate-500 hover:text-primary transition-all duration-300 hover:rotate-90 shrink-0"
             aria-label="Chiudi"
           >
             <Icon name="close" className="w-6 h-6" />
           </button>
         </div>
-        <div className="relative p-6">{children}</div>
+        <div className="relative p-4 sm:p-6">{children}</div>
       </div>
     </div>
   );

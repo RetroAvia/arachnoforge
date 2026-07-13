@@ -51,16 +51,16 @@ export default function DoomsdayClock({ nextExam, trajectory }) {
       {cd.expired ? (
         <p className="relative text-3xl font-bold text-primary font-mono">T-0 — ESAME IN CORSO</p>
       ) : (
-        <div className="relative grid grid-cols-4 gap-2.5 af-mono-nums">
+        <div className="relative grid grid-cols-4 gap-1.5 sm:gap-2.5 af-mono-nums">
           {[
             { v: cd.days, l: 'GG' },
             { v: cd.hours, l: 'HH' },
             { v: cd.minutes, l: 'MM' },
             { v: cd.seconds, l: 'SS' }
           ].map((u) => (
-            <div key={u.l} className="bg-surface/80 border border-secondary/20 rounded-xl py-3.5 text-center">
-              <p className={`text-3xl font-bold font-mono ${meta.color}`}>{String(u.v).padStart(2, '0')}</p>
-              <p className="text-[10px] text-slate-500 mt-1 tracking-widest">{u.l}</p>
+            <div key={u.l} className="bg-surface/80 border border-secondary/20 rounded-xl py-2.5 sm:py-3.5 text-center px-1">
+              <p className={`text-xl sm:text-3xl font-bold font-mono ${meta.color}`}>{String(u.v).padStart(2, '0')}</p>
+              <p className="text-[9px] sm:text-[10px] text-slate-500 mt-1 tracking-widest">{u.l}</p>
             </div>
           ))}
         </div>

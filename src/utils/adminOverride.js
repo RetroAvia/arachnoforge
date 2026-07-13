@@ -14,7 +14,19 @@
 const ADMIN_PASSPHRASE = 'Spazioaereo10!';
 
 export function validateAdminPassphrase(input) {
-  return typeof input === 'string' && input === ADMIN_PASSPHRASE;
+  // V28.2 — FIX 1: confronto blindato, esplicito, senza controlli
+  // restrittivi indesiderati. `.trim()` assorbe spazi accidentali
+  // (autocorrect/autofill mobile) prima del confronto ESATTO e
+  // case-sensitive con la passphrase — nessuna normalizzazione ulteriore
+  // (niente lowercase, niente rimozione di caratteri speciali) che possa
+  // alterare silenziosamente il match richiesto.
+  if (typeof input !== 'string') return false;
+  const cleaned = input.trim();
+  if (cleaned === ADMIN_PASSPHRASE) {
+    return true;
+  } else {
+    return false;
+  }
 }
 
 /** Prefissi delle chiavi LocalStorage — mai condivise fra Guest e Sandbox,

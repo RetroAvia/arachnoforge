@@ -461,8 +461,8 @@ export default function MissionControl() {
               </button>
             </div>
 
-            <div className="relative w-64 h-64 flex items-center justify-center">
-              <svg className="w-64 h-64 -rotate-90" viewBox="0 0 260 260">
+            <div className="relative w-52 h-52 sm:w-64 sm:h-64 flex items-center justify-center">
+              <svg className="w-52 h-52 sm:w-64 sm:h-64 -rotate-90" viewBox="0 0 260 260">
                 <defs>
                   <linearGradient id="timerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
                     <stop offset="0%" stopColor={timerGradientStops[0]} />
@@ -485,7 +485,7 @@ export default function MissionControl() {
                 />
               </svg>
               <div className="absolute flex flex-col items-center">
-                <p className="text-5xl font-mono font-bold af-mono-nums tabular-nums text-white">{formatClock(timer.remainingSeconds)}</p>
+                <p className="text-4xl sm:text-5xl font-mono font-bold af-mono-nums tabular-nums text-white">{formatClock(timer.remainingSeconds)}</p>
                 <p className="text-base text-slate-400 mt-2 tracking-widest">
                   {timer.status === TIMER_STATUS.FOCUS && (timer.isOverdriveActive ? 'OVERDRIVE' : 'FOCUS')}
                   {timer.status === TIMER_STATUS.BREAK && 'PAUSA'}

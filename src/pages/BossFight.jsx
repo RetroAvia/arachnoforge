@@ -327,9 +327,9 @@ export default function BossFight() {
             {flash && <div className="af-flash fixed inset-0 z-50 bg-primary pointer-events-none" />}
             <div className={isEnrage ? `${CARD_ALERT} space-y-6` : `${CARD} space-y-6`}>
               {isEnrage && <div className="absolute -inset-1 rounded-2xl bg-primary/10 blur-xl pointer-events-none" />}
-              <div className="relative flex items-center justify-between">
-                <span className="text-base tracking-widest text-slate-400 font-mono">{materia ? materia.nome.toUpperCase() : 'SIMULAZIONE'}</span>
-                <span className={`text-4xl font-mono font-bold af-mono-nums ${isEnrage ? 'text-primary af-enrage' : 'text-white'}`}>
+              <div className="relative flex items-center justify-between gap-3 flex-wrap">
+                <span className="text-base tracking-widest text-slate-400 font-mono truncate min-w-0">{materia ? materia.nome.toUpperCase() : 'SIMULAZIONE'}</span>
+                <span className={`text-3xl sm:text-4xl font-mono font-bold af-mono-nums shrink-0 ${isEnrage ? 'text-primary af-enrage' : 'text-white'}`}>
                   {formatClock(remainingSeconds)}
                 </span>
               </div>
@@ -357,7 +357,7 @@ export default function BossFight() {
                 </div>
               </div>
 
-              <div className="relative grid grid-cols-2 gap-3">
+              <div className="relative grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
                   type="button"
                   onClick={applyPenalty}
@@ -365,7 +365,7 @@ export default function BossFight() {
                   className="py-3 rounded-xl bg-white/[0.03] backdrop-blur-md border border-primary/30 text-primary font-semibold hover:bg-primary/10 hover:border-primary/60 transition-all duration-300 flex flex-col items-center gap-1 disabled:opacity-40 disabled:pointer-events-none"
                 >
                   <Icon name="skull" className="w-6 h-6" />
-                  PENALITÀ (-{effectiveHpPenalty} HP)
+                  <span className="text-center">PENALITÀ (-{effectiveHpPenalty} HP)</span>
                 </button>
                 <button
                   type="button"
@@ -377,15 +377,15 @@ export default function BossFight() {
                 </button>
               </div>
 
-              <div className="relative grid grid-cols-2 gap-3">
+              <div className="relative grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
                   type="button"
                   onClick={activateTacticalPause}
                   disabled={frozen || hp < TACTICAL_PAUSE_COST || lastStandActive}
                   className={BTN_SECONDARY}
                 >
-                  <Icon name="moon" className="w-5 h-5" />
-                  Pausa Tattica (-{TACTICAL_PAUSE_COST} HP)
+                  <Icon name="moon" className="w-5 h-5 shrink-0" />
+                  <span className="truncate">Pausa Tattica (-{TACTICAL_PAUSE_COST} HP)</span>
                 </button>
                 <button
                   type="button"
@@ -393,8 +393,8 @@ export default function BossFight() {
                   disabled={illuminazioniUsate >= ILLUMINATION_MAX_USES || frozen || lastStandActive}
                   className={BTN_AMBER}
                 >
-                  <Icon name="bolt" className="w-5 h-5" />
-                  Illuminazione ({ILLUMINATION_MAX_USES - illuminazioniUsate} rim.)
+                  <Icon name="bolt" className="w-5 h-5 shrink-0" />
+                  <span className="truncate">Illuminazione ({ILLUMINATION_MAX_USES - illuminazioniUsate} rim.)</span>
                 </button>
               </div>
 
@@ -469,18 +469,18 @@ export default function BossFight() {
               <span className={`text-6xl font-mono font-bold ${reportData.efficiency.color}`}>{reportData.efficiency.grade}</span>
             </div>
             <p className="text-center text-base text-slate-500 -mt-2">GRADO DI EFFICIENZA</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-3 text-center">
-                <p className="text-xl font-mono text-accent">+{reportData.xpGain}</p>
-                <p className="text-xs text-slate-500">XP Guadagnati</p>
+            <div className="grid grid-cols-2 gap-2 sm:gap-3">
+              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-2.5 sm:p-3 text-center">
+                <p className="text-lg sm:text-xl font-mono text-accent">+{reportData.xpGain}</p>
+                <p className="text-[10px] sm:text-xs text-slate-500">XP Guadagnati</p>
               </div>
-              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-3 text-center">
-                <p className="text-xl font-mono text-white">{reportData.hpRemaining}/100</p>
-                <p className="text-xs text-slate-500">HP Rimanenti</p>
+              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-2.5 sm:p-3 text-center">
+                <p className="text-lg sm:text-xl font-mono text-white">{reportData.hpRemaining}/100</p>
+                <p className="text-[10px] sm:text-xs text-slate-500">HP Rimanenti</p>
               </div>
-              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-3 text-center col-span-2">
-                <p className="text-xl font-mono text-secondary">{formatClock(reportData.timeRemainingSeconds)}</p>
-                <p className="text-xs text-slate-500">Tempo Avanzato</p>
+              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-2.5 sm:p-3 text-center col-span-2">
+                <p className="text-lg sm:text-xl font-mono text-secondary">{formatClock(reportData.timeRemainingSeconds)}</p>
+                <p className="text-[10px] sm:text-xs text-slate-500">Tempo Avanzato</p>
               </div>
             </div>
             <button
