@@ -1,6 +1,7 @@
 import { PERSISTED_STATUS } from '../utils/skillTree.js';
 import { DIFFICULTY } from '../utils/xpEngine.js';
 import { computeInitialReviewDate } from '../utils/spiderSense.js';
+import { HOURS_PER_NODE_DAY } from '../utils/materiaMeta.js';
 
 /**
  * Schema di default ArachnoForge — versione dati 7.0.0 "The Quantum Router"
@@ -133,7 +134,18 @@ function migrateSfida(raw, index, arr) {
     id: raw.id,
     nome: raw.nome,
     obiettivo: raw.obiettivo || '',
-    giorni: raw.giorni || 1,
+    // V34.2 — "Ore Previste": migrazione silenziosa dal vecchio campo
+    // `giorni` (numero intero di giorni) al nuovo `oreStimate` (ore,
+    // granularità decimale). Se il nodo ha già `oreStimate` (già
+    // migrato/creato dopo l'update), lo usa direttamente; altrimenti
+    // converte il vecchio `giorni` moltiplicandolo per HOURS_PER_NODE_DAY
+    // — cosi' un nodo salvato come "3 giorni" prima dell'update proietta
+    // ESATTAMENTE lo stesso carico di lavoro (13.5 ore) invece di
+    // ridursi silenziosamente a "3 ore" con la sola rietichettatura.
+    // Fallback neutro di 2 ore se nessuno dei due campi è presente/valido.
+    oreStimate: Number.isFinite(raw.oreStimate) && raw.oreStimate > 0
+      ? raw.oreStimate
+      : (Number.isFinite(raw.giorni) && raw.giorni > 0 ? raw.giorni * HOURS_PER_NODE_DAY : 2),
     parentId: parentId || null,
     difficulty: raw.difficulty || DIFFICULTY.MEDIUM,
     status,

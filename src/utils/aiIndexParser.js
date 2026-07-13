@@ -19,6 +19,12 @@
  * Oppure un oggetto wrapper: { "nodes": [...] } / { "capitoli": [...] }.
  * Ogni nodo Figlio può a sua volta avere propri sottoargomenti (nessun
  * limite di profondità — stesso motore ricorsivo del Web-Matrix).
+ *
+ * V34.2 — "Ore Previste": il campo di stima è passato da "giorni" (intero)
+ * a "ore" (decimale, unità nativa del nodo — vedi skillTree.js/createSfida
+ * e materiaMeta.js). Questo parser è puramente transiente (interpreta un
+ * JSON incollato al momento, non dati persistiti), quindi qui non serve
+ * alcuna migrazione: si riconoscono direttamente le chiavi "ore".
  */
 import { PERSISTED_STATUS } from './skillTree.js';
 import { DIFFICULTY } from './xpEngine.js';
@@ -32,11 +38,11 @@ export const MAX_AI_INDEX_NODES = 250;
 const NAME_KEYS = ['nome', 'capitolo', 'titolo', 'title', 'name'];
 const OBJ_KEYS = ['obiettivo', 'descrizione', 'description', 'summary', 'note'];
 const DIFF_KEYS = ['difficolta', 'difficoltà', 'difficulty', 'livello'];
-const DAYS_KEYS = ['giorni', 'giorniStimati', 'giorni_stimati', 'days', 'durata'];
+const HOURS_KEYS = ['ore', 'oreStimate', 'ore_stimate', 'hours', 'durataOre'];
 const CHILDREN_KEYS = ['sottoargomenti', 'figli', 'children', 'subitems', 'argomenti', 'nodi', 'sottocapitoli'];
 const ROOT_KEYS = ['nodes', 'capitoli', 'indice', 'index', 'argomenti', 'materie', 'chapters'];
 
-const DEFAULT_DAYS_BY_DIFFICULTY = { EASY: 2, MEDIUM: 3, HARD: 5 };
+const DEFAULT_HOURS_BY_DIFFICULTY = { EASY: 2, MEDIUM: 4, HARD: 8 };
 
 /** Esempio pronto per il pulsante "Carica Esempio" della modale. */
 export const AI_INDEX_EXAMPLE = JSON.stringify(
@@ -45,7 +51,7 @@ export const AI_INDEX_EXAMPLE = JSON.stringify(
       nome: 'Meccanica Razionale',
       sottoargomenti: [
         'Cinematica del punto materiale',
-        { nome: 'Dinamica del corpo rigido', difficolta: 'HARD', giorni: 6 },
+        { nome: 'Dinamica del corpo rigido', difficolta: 'HARD', ore: 8 },
         { nome: 'Equazioni di Lagrange', difficolta: 'HARD' }
       ]
     },
@@ -97,7 +103,7 @@ function normalizeNode(raw) {
   if (typeof raw === 'string') {
     const nome = raw.trim();
     if (!nome) return null;
-    return { nome, obiettivo: '', difficulty: normalizeDifficulty(undefined, nome), giorni: null, children: [] };
+    return { nome, obiettivo: '', difficulty: normalizeDifficulty(undefined, nome), oreStimate: null, children: [] };
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
 
@@ -111,14 +117,14 @@ function normalizeNode(raw) {
   const difficultyRaw = pickField(raw, DIFF_KEYS);
   const difficulty = normalizeDifficulty(difficultyRaw, `${nome} ${obiettivo}`);
 
-  const daysRaw = pickField(raw, DAYS_KEYS);
-  const daysNum = Number(daysRaw);
-  const giorni = Number.isFinite(daysNum) && daysNum > 0 ? Math.round(daysNum) : null;
+  const hoursRaw = pickField(raw, HOURS_KEYS);
+  const hoursNum = Number(hoursRaw);
+  const oreStimate = Number.isFinite(hoursNum) && hoursNum > 0 ? Math.round(hoursNum * 2) / 2 : null; // arrotonda a step di 0.5h
 
   const childrenRaw = pickField(raw, CHILDREN_KEYS);
   const children = Array.isArray(childrenRaw) ? childrenRaw.map(normalizeNode).filter(Boolean) : [];
 
-  return { nome, obiettivo, difficulty, giorni, children };
+  return { nome, obiettivo, difficulty, oreStimate, children };
 }
 
 function countNodes(tree) {
@@ -185,12 +191,12 @@ export function flattenAiIndexTree(tree) {
   const sfide = [];
   function visit(node, parentId) {
     const id = `sfida_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const giorni = node.giorni || DEFAULT_DAYS_BY_DIFFICULTY[node.difficulty] || DEFAULT_DAYS_BY_DIFFICULTY.MEDIUM;
+    const oreStimate = node.oreStimate || DEFAULT_HOURS_BY_DIFFICULTY[node.difficulty] || DEFAULT_HOURS_BY_DIFFICULTY.MEDIUM;
     sfide.push({
       id,
       nome: node.nome,
       obiettivo: node.obiettivo || '',
-      giorni,
+      oreStimate,
       parentId: parentId || null,
       difficulty: node.difficulty,
       status: PERSISTED_STATUS.PENDING,

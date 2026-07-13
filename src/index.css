@@ -53,6 +53,15 @@
 
 html, body, #root {
   height: 100%;
+  /* V34.3 — Dynamic Viewport Height: sui browser mobili "100%"/100vh non
+     tengono conto in modo coerente dell'ingombro reale della barra degli
+     indirizzi, che cambia comportamento fra orientamento verticale e
+     orizzontale — sintomo tipico "funziona in orizzontale, tagliato o
+     traballante in verticale". Dichiarazione successiva, mai un fallback
+     rotto: i browser che non riconoscono l'unità "dvh" ignorano questa
+     riga e mantengono "height: 100%" sopra, quelli che la riconoscono la
+     applicano al posto della precedente. */
+  height: 100dvh;
   margin: 0;
   padding: 0;
 }

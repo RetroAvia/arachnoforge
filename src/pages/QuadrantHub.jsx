@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, memo } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, memo } from 'react';
 import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
 import { Icon } from '../components/Icons.jsx';
 import Modal from '../components/Modal.jsx';
@@ -261,7 +261,15 @@ const EMPTY_SET = new Set();
  * risulta comunque LOCKED è perché ha a sua volta dei sotto-argomenti
  * ("Boss" annidato): mostriamo quanti ne mancano, mai più "Richiede: Padre".
  */
-const ChildNodeRow = memo(function ChildNodeRow({ node, materia, onSelect, bountyIds = EMPTY_SET }) {
+const ChildNodeRow = memo(function ChildNodeRow({
+  node,
+  materia,
+  onSelect,
+  bountyIds = EMPTY_SET,
+  selectionMode = false,
+  selectedIds = EMPTY_SET,
+  onToggleSelect
+}) {
   if (!node) return null;
   const siblingSfide = Array.isArray(materia?.sfide) ? materia.sfide : [];
   const status = deriveNodeStatus(node, siblingSfide);
@@ -270,6 +278,8 @@ const ChildNodeRow = memo(function ChildNodeRow({ node, materia, onSelect, bount
   const ownChildren = directChildrenOf(node, siblingSfide);
   const pendingOwnChildren = ownChildren.filter((c) => c.status !== 'COMPLETED').length;
   const isBounty = bountyIds.has(node.id);
+  const isSelected = selectedIds.has(node.id);
+  const handleActivate = () => (selectionMode ? onToggleSelect(node.id) : onSelect(node));
 
   return (
     <div className="relative">
@@ -279,10 +289,25 @@ const ChildNodeRow = memo(function ChildNodeRow({ node, materia, onSelect, bount
       <div
         role="button"
         tabIndex={0}
-        onClick={() => onSelect(node)}
-        onKeyDown={(e) => e.key === 'Enter' && onSelect(node)}
-        className={`group flex items-center gap-3 p-3 sm:p-4 rounded-2xl border ${meta.border} bg-surface/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:bg-surface/85 cursor-pointer`}
+        onClick={handleActivate}
+        onKeyDown={(e) => e.key === 'Enter' && handleActivate()}
+        className={`group flex items-center gap-3 p-3 sm:p-4 rounded-2xl border backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 cursor-pointer ${
+          isSelected ? 'border-primary/60 bg-primary/10' : `${meta.border} bg-surface/60 hover:bg-surface/85`
+        }`}
       >
+        {/* V34.2 — "Selezione Multipla Nodi": checkbox visiva pura — il
+            toggle vero e proprio passa dal click sull'intera riga
+            (handleActivate), mai un secondo handler separato che
+            rischierebbe un doppio toggle per lo stesso click. */}
+        {selectionMode && (
+          <span
+            className={`shrink-0 w-5 h-5 rounded-md border flex items-center justify-center transition-all duration-200 ${
+              isSelected ? 'bg-primary border-primary text-white' : 'border-slate-500/40 bg-surface/80'
+            }`}
+          >
+            {isSelected && <Icon name="check" className="w-3.5 h-3.5" />}
+          </span>
+        )}
         <StatusIcon meta={meta} size="sm" />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -322,7 +347,17 @@ const ChildNodeRow = memo(function ChildNodeRow({ node, materia, onSelect, bount
 });
 
 /** Ricorsione dei Nodi Figli — tronco verticale reattivo al costume, mai un semplice rientro senza segno grafico. */
-const ChildTree = memo(function ChildTree({ parentId, sfide, depth, materia, onSelect, bountyIds = EMPTY_SET }) {
+const ChildTree = memo(function ChildTree({
+  parentId,
+  sfide,
+  depth,
+  materia,
+  onSelect,
+  bountyIds = EMPTY_SET,
+  selectionMode = false,
+  selectedIds = EMPTY_SET,
+  onToggleSelect
+}) {
   if (!Array.isArray(sfide) || sfide.length === 0) return null;
   const children = sfide.filter((s) => s && (s.parentId || null) === parentId);
   if (children.length === 0) return null;
@@ -330,8 +365,26 @@ const ChildTree = memo(function ChildTree({ parentId, sfide, depth, materia, onS
     <div className="ml-6 md:ml-7 pl-5 md:pl-6 border-l-2 border-secondary/25 space-y-3 relative">
       {children.map((child) => (
         <div key={child.id} className="space-y-3">
-          <ChildNodeRow node={child} materia={materia} onSelect={onSelect} bountyIds={bountyIds} />
-          <ChildTree parentId={child.id} sfide={sfide} depth={depth + 1} materia={materia} onSelect={onSelect} bountyIds={bountyIds} />
+          <ChildNodeRow
+            node={child}
+            materia={materia}
+            onSelect={onSelect}
+            bountyIds={bountyIds}
+            selectionMode={selectionMode}
+            selectedIds={selectedIds}
+            onToggleSelect={onToggleSelect}
+          />
+          <ChildTree
+            parentId={child.id}
+            sfide={sfide}
+            depth={depth + 1}
+            materia={materia}
+            onSelect={onSelect}
+            bountyIds={bountyIds}
+            selectionMode={selectionMode}
+            selectedIds={selectedIds}
+            onToggleSelect={onToggleSelect}
+          />
         </div>
       ))}
     </div>
@@ -348,7 +401,15 @@ const ChildTree = memo(function ChildTree({ parentId, sfide, depth, materia, onS
  * segnaliamo esplicitamente quando è ancora LOCKED (sotto-argomenti da
  * completare prima di poterlo chiudere).
  */
-const ParentModuleCard = memo(function ParentModuleCard({ node, materia, onSelect, bountyIds = EMPTY_SET }) {
+const ParentModuleCard = memo(function ParentModuleCard({
+  node,
+  materia,
+  onSelect,
+  bountyIds = EMPTY_SET,
+  selectionMode = false,
+  selectedIds = EMPTY_SET,
+  onToggleSelect
+}) {
   const siblingSfide = Array.isArray(materia?.sfide) ? materia.sfide : [];
   const status = deriveNodeStatus(node, siblingSfide);
   const meta = STATUS_META[status] || STATUS_META.LOCKED;
@@ -358,16 +419,27 @@ const ParentModuleCard = memo(function ParentModuleCard({ node, materia, onSelec
   const childCount = children.length;
   const pendingChildren = children.filter((c) => c.status !== 'COMPLETED').length;
   const isBounty = bountyIds.has(node.id);
+  const isSelected = selectedIds.has(node.id);
+  const handleActivate = () => (selectionMode ? onToggleSelect(node.id) : onSelect(node));
 
   return (
-    <div className={`${CARD} space-y-4 border-l-4 ${meta.border}`}>
+    <div className={`${CARD} space-y-4 border-l-4 ${isSelected ? 'border-primary ring-1 ring-primary/50' : meta.border}`}>
       <div
         role="button"
         tabIndex={0}
-        onClick={() => onSelect(node)}
-        onKeyDown={(e) => e.key === 'Enter' && onSelect(node)}
+        onClick={handleActivate}
+        onKeyDown={(e) => e.key === 'Enter' && handleActivate()}
         className="relative flex items-center gap-4 cursor-pointer"
       >
+        {selectionMode && (
+          <span
+            className={`shrink-0 w-6 h-6 rounded-md border flex items-center justify-center transition-all duration-200 ${
+              isSelected ? 'bg-primary border-primary text-white' : 'border-slate-500/40 bg-surface/80'
+            }`}
+          >
+            {isSelected && <Icon name="check" className="w-4 h-4" />}
+          </span>
+        )}
         <StatusIcon meta={meta} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -401,7 +473,17 @@ const ParentModuleCard = memo(function ParentModuleCard({ node, materia, onSelec
       </div>
 
       <div className="relative">
-        <ChildTree parentId={node.id} sfide={siblingSfide} depth={1} materia={materia} onSelect={onSelect} bountyIds={bountyIds} />
+        <ChildTree
+          parentId={node.id}
+          sfide={siblingSfide}
+          depth={1}
+          materia={materia}
+          onSelect={onSelect}
+          bountyIds={bountyIds}
+          selectionMode={selectionMode}
+          selectedIds={selectedIds}
+          onToggleSelect={onToggleSelect}
+        />
       </div>
     </div>
   );
@@ -423,6 +505,23 @@ export default function QuadrantHub() {
   const [deleteNodeTarget, setDeleteNodeTarget] = useState(null);
   const [spiderSenseDrawerOpen, setSpiderSenseDrawerOpen] = useState(false);
 
+  // V34.2 — "Selezione Multipla Nodi": stato dedicato, isolato dal resto
+  // dell'UI del Web-Matrix. `selectedNodeIds` è un Set (mai un array —
+  // lookup O(1) per riga, essenziale su Skill Tree con decine di nodi
+  // renderizzati). Uscire dalla modalità selezione azzera sempre il set,
+  // cosi' rientrarci in seguito parte sempre pulito.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedNodeIds, setSelectedNodeIds] = useState(() => new Set());
+  const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
+
+  // Cambiare Materia mentre la selezione multipla è attiva lascerebbe id
+  // selezionati "orfani" (appartenenti a un altro Skill Tree, invisibili
+  // nella colonna corrente) — uscita automatica e pulita ad ogni cambio.
+  useEffect(() => {
+    setSelectionMode(false);
+    setSelectedNodeIds(new Set());
+  }, [selectedMateriaId]);
+
   // V31.2 — Pillar 1 (Ultimate Node Customization): stato dedicato
   // dell'editor olografico dentro la modale di dettaglio nodo. I campi
   // `edit*` sono uno STAGING locale — mai scritti nel Context finché
@@ -433,7 +532,7 @@ export default function QuadrantHub() {
   const [nodeSaveState, setNodeSaveState] = useState('idle'); // idle | saving | success | error
   const [editNome, setEditNome] = useState('');
   const [editObiettivo, setEditObiettivo] = useState('');
-  const [editGiorni, setEditGiorni] = useState(1);
+  const [editOreStimate, setEditOreStimate] = useState(2);
   const [editDifficulty, setEditDifficulty] = useState(DIFFICULTY.MEDIUM);
   const [editParentId, setEditParentId] = useState('');
   // V31.2.1 — guardia "modifiche non salvate": mostra un ConfirmDialog
@@ -469,7 +568,7 @@ export default function QuadrantHub() {
 
   const [sfidaNome, setSfidaNome] = useState('');
   const [sfidaObiettivo, setSfidaObiettivo] = useState('');
-  const [sfidaGiorni, setSfidaGiorni] = useState(3);
+  const [sfidaOreStimate, setSfidaOreStimate] = useState(4);
   const [sfidaParentId, setSfidaParentId] = useState('');
   const [sfidaDifficulty, setSfidaDifficulty] = useState(DIFFICULTY.MEDIUM);
 
@@ -672,7 +771,7 @@ export default function QuadrantHub() {
   const openAddSfida = () => {
     setSfidaNome('');
     setSfidaObiettivo('');
-    setSfidaGiorni(3);
+    setSfidaOreStimate(4);
     setSfidaParentId('');
     setSfidaDifficulty(DIFFICULTY.MEDIUM);
     setSfidaModalOpen(true);
@@ -683,7 +782,7 @@ export default function QuadrantHub() {
     actions.addSfida(selectedMateria.id, {
       nome: sfidaNome.trim(),
       obiettivo: sfidaObiettivo.trim(),
-      giorni: Math.max(1, Number(sfidaGiorni) || 1),
+      oreStimate: Math.max(0.5, Number(sfidaOreStimate) || 2),
       parentId: sfidaParentId || null,
       difficulty: sfidaDifficulty
     });
@@ -697,7 +796,7 @@ export default function QuadrantHub() {
   const openNodeEditMode = useCallback((node) => {
     setEditNome(node.nome);
     setEditObiettivo(node.obiettivo || '');
-    setEditGiorni(node.giorni);
+    setEditOreStimate(node.oreStimate);
     setEditDifficulty(node.difficulty);
     setEditParentId(node.parentId || '');
     setNodeSaveState('idle');
@@ -720,7 +819,7 @@ export default function QuadrantHub() {
     const patch = {
       nome: editNome.trim(),
       obiettivo: editObiettivo.trim(),
-      giorni: Math.max(1, Number(editGiorni) || 1),
+      oreStimate: Math.max(0.5, Number(editOreStimate) || 2),
       difficulty: editDifficulty,
       parentId: editParentId || null
     };
@@ -737,7 +836,7 @@ export default function QuadrantHub() {
       setNodeSaveState('error');
       pushToast('Karen: sincronizzazione Cloud fallita. Riprova a salvare.', 'danger');
     }
-  }, [selectedMateria, editNome, editObiettivo, editGiorni, editDifficulty, editParentId, nodeSaveState, actions, pushToast]);
+  }, [selectedMateria, editNome, editObiettivo, editOreStimate, editDifficulty, editParentId, nodeSaveState, actions, pushToast]);
 
   const handleReview = useCallback((node, rating) => {
     const materia = materie.find((m) => Array.isArray(m?.sfide) && m.sfide.some((s) => s.id === node.id));
@@ -756,6 +855,31 @@ export default function QuadrantHub() {
   const handleBossLockedAttempt = useCallback(() => {
     pushToast('Completa prima tutti i sotto-argomenti', 'danger');
   }, [pushToast]);
+
+  // V34.2 — "Selezione Multipla Nodi": toggle di un singolo id nel Set —
+  // immutabile (nuovo Set ad ogni chiamata), coerente col resto dell'app.
+  const toggleNodeSelection = useCallback((sfidaId) => {
+    setSelectedNodeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(sfidaId)) next.delete(sfidaId);
+      else next.add(sfidaId);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectionMode = useCallback(() => {
+    setSelectionMode((prev) => {
+      if (prev) setSelectedNodeIds(new Set()); // uscita: selezione sempre azzerata.
+      return !prev;
+    });
+  }, []);
+
+  const confirmBulkDeleteNodes = useCallback(() => {
+    if (!selectedMateria || selectedNodeIds.size === 0) return;
+    actions.bulkDeleteSfide(selectedMateria.id, Array.from(selectedNodeIds));
+    setSelectedNodeIds(new Set());
+    setBulkDeleteConfirmOpen(false);
+  }, [selectedMateria, selectedNodeIds, actions]);
 
   return (
     <div className="space-y-6">
@@ -970,9 +1094,10 @@ export default function QuadrantHub() {
                         </span>
                       )}
                       {estimate && !estimate.done && estimate.dateKey && (
-                        <span className="text-sm text-secondary flex items-center gap-1.5" title={`${estimate.totalDaysNeeded} giorni totali stimati sui ${estimate.remaining} nodi ancora incompleti`}>
+                        <span className="text-sm text-secondary flex items-center gap-1.5" title={`${estimate.totalHoursNeeded} ore totali stimate sui ${estimate.remaining} nodi ancora incompleti (~${estimate.totalDaysNeeded}gg a ritmo sostenibile)`}>
                           <Icon name="bolt" className="w-4 h-4" />
                           Fine prevista: <span className="font-mono">{formatDateOnlyHuman(estimate.dateKey)}</span>
+                          <span className="text-slate-500">· {estimate.totalHoursNeeded}h residue</span>
                         </span>
                       )}
                       {estimate && estimate.done && (
@@ -1020,6 +1145,19 @@ export default function QuadrantHub() {
                       <Icon name="plus" className="w-5 h-5" />
                       Nodo
                     </button>
+                    {/* V34.2 — "Selezione Multipla Nodi": disattivato senza
+                        nodi da selezionare, mai un pulsante che entra in
+                        una modalità vuota e inutile. */}
+                    <button
+                      type="button"
+                      onClick={toggleSelectionMode}
+                      disabled={rootNodes.length === 0}
+                      title={rootNodes.length === 0 ? 'Nessun nodo da selezionare' : ''}
+                      className={selectionMode ? BTN_SECONDARY : BTN_GHOST}
+                    >
+                      <Icon name={selectionMode ? 'close' : 'check'} className="w-5 h-5" />
+                      {selectionMode ? 'Esci Selezione' : 'Seleziona Nodi'}
+                    </button>
                   </div>
                 </div>
                 {/* AI Index Matrix — su mobile il pulsante ghost non entra
@@ -1037,6 +1175,33 @@ export default function QuadrantHub() {
                 </button>
               </div>
 
+              {/* V34.2 — "Selezione Multipla Nodi": barra azioni di gruppo,
+                  sempre visibile mentre la modalità è attiva (0 o più nodi
+                  selezionati) — mai nascosta finché l'utente non ne
+                  seleziona almeno uno, cosi' resta chiaro come uscirne. */}
+              {selectionMode && (
+                <div className="relative flex items-center justify-between flex-wrap gap-3 bg-primary/10 border border-primary/40 rounded-2xl px-4 py-3.5 af-holo-alert-in">
+                  <span className="text-sm font-semibold text-primary flex items-center gap-2">
+                    <Icon name="check" className="w-4 h-4" />
+                    {selectedNodeIds.size} nodo/i selezionato/i
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={toggleSelectionMode} className={BTN_GHOST}>
+                      Annulla
+                    </button>
+                    <button
+                      type="button"
+                      disabled={selectedNodeIds.size === 0}
+                      onClick={() => setBulkDeleteConfirmOpen(true)}
+                      className={BTN_PRIMARY}
+                    >
+                      <Icon name="trash" className="w-5 h-5" />
+                      Elimina Selezionati
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Livelli 2 + 3 — Nodi Padre e relativi Nodi Figli */}
               {rootNodes.length === 0 ? (
                 <div className={CARD}>
@@ -1049,7 +1214,16 @@ export default function QuadrantHub() {
               ) : (
                 <div className="space-y-5">
                   {rootNodes.map((node) => (
-                    <ParentModuleCard key={node.id} node={node} materia={selectedMateria} onSelect={openNodeDetail} bountyIds={bountySfidaIds} />
+                    <ParentModuleCard
+                      key={node.id}
+                      node={node}
+                      materia={selectedMateria}
+                      onSelect={openNodeDetail}
+                      bountyIds={bountySfidaIds}
+                      selectionMode={selectionMode}
+                      selectedIds={selectedNodeIds}
+                      onToggleSelect={toggleNodeSelection}
+                    />
                   ))}
                 </div>
               )}
@@ -1311,12 +1485,13 @@ export default function QuadrantHub() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-sm text-slate-400 block mb-1.5">Giorni stimati</label>
+              <label className="text-sm text-slate-400 block mb-1.5">Ore previste</label>
               <input
                 type="number"
-                min={1}
-                value={sfidaGiorni}
-                onChange={(e) => setSfidaGiorni(e.target.value)}
+                min={0.5}
+                step={0.5}
+                value={sfidaOreStimate}
+                onChange={(e) => setSfidaOreStimate(e.target.value)}
                 className={INPUT}
               />
             </div>
@@ -1446,12 +1621,13 @@ export default function QuadrantHub() {
 
                   <div className="relative grid grid-cols-2 gap-3">
                     <div>
-                      <label className="text-sm text-slate-400 block mb-1.5">Giorni stimati</label>
+                      <label className="text-sm text-slate-400 block mb-1.5">Ore previste</label>
                       <input
                         type="number"
-                        min={1}
-                        value={editGiorni}
-                        onChange={(e) => setEditGiorni(e.target.value)}
+                        min={0.5}
+                        step={0.5}
+                        value={editOreStimate}
+                        onChange={(e) => setEditOreStimate(e.target.value)}
                         className={INPUT}
                         disabled={isSaving}
                       />
@@ -1528,7 +1704,7 @@ export default function QuadrantHub() {
                 <>
                   {nodeDetail.obiettivo && <p className="text-base text-slate-300">{nodeDetail.obiettivo}</p>}
                   <p className="text-sm text-slate-500">
-                    Durata stimata: {nodeDetail.giorni} giorni · {nodeDetail.focusMinutes} min di Focus accumulati
+                    Ore previste: {nodeDetail.oreStimate}h · {nodeDetail.focusMinutes} min di Focus accumulati
                     {currentParent && <> · Nodo Padre: <span className="text-slate-300">{currentParent.nome}</span></>}
                   </p>
                   {(status === NODE_STATUS.COMPLETED || status === NODE_STATUS.NEEDS_REVIEW) && nodeDetail.nextReviewDate && (
@@ -1618,6 +1794,18 @@ export default function QuadrantHub() {
         title="Elimina Nodo"
         message={`Eliminare il nodo "${deleteNodeTarget?.nome}"? Eventuali nodi figli verranno promossi a Nodo Padre, non cancellati.`}
         confirmLabel="Elimina"
+      />
+
+      {/* V34.2 — "Selezione Multipla Nodi": conferma unica per l'intero
+          lotto selezionato, stessa semantica di orfanizzazione (mai
+          cancellazione a cascata) del singolo "Elimina Nodo" sopra. */}
+      <ConfirmDialog
+        open={bulkDeleteConfirmOpen}
+        onClose={() => setBulkDeleteConfirmOpen(false)}
+        onConfirm={confirmBulkDeleteNodes}
+        title="Elimina Nodi Selezionati"
+        message={`Eliminare ${selectedNodeIds.size} nodo/i selezionato/i? Eventuali nodi figli non selezionati verranno promossi a Nodo Padre, non cancellati.`}
+        confirmLabel="Elimina Tutti"
       />
 
       {/* V31.2.1 — guardia "modifiche non salvate" sull'Editor di

@@ -240,6 +240,32 @@ function reducer(state, action) {
       };
     }
 
+    // V34.2 — "Selezione Multipla Nodi": stessa identica semantica di
+    // DELETE_SFIDA (nessun figlio cancellato a cascata, solo orfanizzato —
+    // parentId azzerato), applicata in un colpo solo a un intero set di
+    // sfidaId. Usare un Set (non un ciclo di filter/orphan ripetuti uno
+    // alla volta) garantisce che orfanizzare un nodo il cui PADRE è anche
+    // lui nel set di eliminazione produca comunque il risultato corretto
+    // in un solo passaggio, qualunque sia l'ordine degli id selezionati.
+    case 'BULK_DELETE_SFIDE': {
+      const { materiaId, sfidaIds } = action.payload;
+      const materia = findMateria(state, materiaId);
+      if (!materia || !Array.isArray(sfidaIds) || sfidaIds.length === 0) return state;
+      const deleteSet = new Set(sfidaIds);
+      const remaining = materia.sfide.filter((s) => !deleteSet.has(s.id));
+      const orphaned = remaining.map((s) => (deleteSet.has(s.parentId) ? { ...s, parentId: null } : s));
+      const deletedCount = materia.sfide.length - remaining.length;
+      if (deletedCount === 0) return state;
+      return {
+        ...updateMateriaSfide(state, materiaId, () => orphaned),
+        combatLog: pushLog(
+          state.combatLog,
+          `${deletedCount} nodo/i rimossi in blocco da ${materia.nome}. Eventuali nodi figli promossi a radice.`,
+          'HUB'
+        )
+      };
+    }
+
     case 'COMPLETE_SFIDA': {
       const { materiaId, sfidaId } = action.payload;
       const materia = findMateria(state, materiaId);
@@ -1282,6 +1308,11 @@ export function ArachnoForgeProvider({ children }) {
         }
       },
       deleteSfida: (materiaId, sfidaId) => dispatch({ type: 'DELETE_SFIDA', payload: { materiaId, sfidaId } }),
+      // V34.2 — "Selezione Multipla Nodi": eliminazione in blocco dal
+      // pannello di selezione del Web-Matrix (QuadrantHub.jsx). `sfidaIds`
+      // è un array semplice (mai un Set: i reducer restano serializzabili,
+      // coerente col resto dell'app che finisce su Supabase come JSONB).
+      bulkDeleteSfide: (materiaId, sfidaIds) => dispatch({ type: 'BULK_DELETE_SFIDE', payload: { materiaId, sfidaIds } }),
       completeSfida: (materiaId, sfidaId) => {
         // Level Up Chime per i Nodi Padre ("Boss" dello Skill Tree, cioè
         // nodi che hanno almeno un sotto-argomento agganciato): un arpeggio

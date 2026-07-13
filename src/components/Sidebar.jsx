@@ -79,7 +79,7 @@ export default function Sidebar({ currentPage, navigate }) {
 
       <aside
         className={`
-          fixed md:sticky top-0 left-0 h-screen w-[270px] shrink-0 z-50
+          fixed md:sticky top-0 left-0 h-[100dvh] w-[270px] shrink-0 z-50
           bg-surface/85 backdrop-blur-2xl border-r border-secondary/15 flex flex-col relative
           transition-transform duration-300
           ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0

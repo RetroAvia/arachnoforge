@@ -86,7 +86,7 @@ export default function AiIndexMatrixModal({ open, onClose, materiaId, materiaNo
 {`[
   { "nome": "Capitolo 1", "sottoargomenti": [
     "Sottoargomento A",
-    { "nome": "Sottoargomento B", "difficolta": "HARD", "giorni": 4 }
+    { "nome": "Sottoargomento B", "difficolta": "HARD", "ore": 8 }
   ]},
   { "nome": "Capitolo 2", "sottoargomenti": ["..."] }
 ]`}

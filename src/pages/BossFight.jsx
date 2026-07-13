@@ -338,7 +338,7 @@ export default function BossFight() {
   }, [isEnrage, audio]);
 
   return (
-    <div className="space-y-6 min-h-[calc(100vh-4rem)] flex flex-col">
+    <div className="space-y-6 min-h-[calc(100dvh-4rem)] flex flex-col">
       <div>
         <h1 className={H1}>Sinister Six Simulator</h1>
         <p className="text-base text-slate-400 mt-1.5">Karen: modalità isolata per la simulazione di prove d'esame a tempo.</p>

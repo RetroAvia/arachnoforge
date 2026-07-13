@@ -9,17 +9,23 @@ import { getMissingPrerequisites } from '../data/vanvitelliCourseMap.js';
  *
  * DYNAMIC FALLBACK LOGIC (invariata da V23.0):
  *   - SE la Materia ha Nodi (sfide.length > 0): il Monte Ore Residuo si
- *     costruisce dal BASSO, nodo per nodo — `giorni` di ciascun nodo
- *     ANCORA incompleto convertito in ore (HOURS_PER_NODE_DAY), meno le
- *     ore di Focus già tracciate su quello specifico nodo.
+ *     costruisce dal BASSO, nodo per nodo — `oreStimate` di ciascun nodo
+ *     ANCORA incompleto (unità nativa in ore, vedi V34.2), meno le ore di
+ *     Focus già tracciate su quello specifico nodo.
  *   - SE la Materia ha 0 Nodi creati: fallback puro sul monte-ore
  *     accademico standard (CFU * 10).
  *
- * V29.0 — Pillar 1 (Realistic Hour Balancing): `HOURS_PER_NODE_DAY` passa
- * da 2 a 4.5 — un "giorno stimato" di un nodo ora pesa un monte ore
- * REALMENTE sostenibile per uno studente (4-5 ore di studio effettivo al
- * giorno), non più una frazione irrisoria. Un nodo da 3 giorni pesa quindi
- * ~13.5 ore reali di carico, non le 6 ore riduttive di prima.
+ * V29.0 — Pillar 1 (Realistic Hour Balancing): `HOURS_PER_NODE_DAY`
+ * (importato da utils/materiaMeta.js, unica fonte di verità) converte le
+ * ore totali stimate di una Materia in giorni di calendario SOLO per
+ * proiettare "Fine Prevista" — un monte ore REALMENTE sostenibile per uno
+ * studente (4.5 ore di studio effettivo al giorno), non una frazione
+ * irrisoria.
+ *
+ * V34.2 — "Ore Previste": ogni nodo dichiara direttamente le proprie ore
+ * stimate (`oreStimate`, decimale) invece dei vecchi "giorni previsti"
+ * (intero, poi moltiplicato per HOURS_PER_NODE_DAY) — stessa unità finale
+ * (ore), granularità più fine, una moltiplicazione in meno da propagare.
  *
  * V29.0 — Pillar 1 (Planner Restriction): il Quantum Router non elenca più
  * "tutto insieme" come consiglio attivo. `selectDailyFocus` isola al
@@ -38,7 +44,6 @@ import { getMissingPrerequisites } from '../data/vanvitelliCourseMap.js';
  * possibilità di aprire la scheda e preparare i nodi in anticipo.
  */
 export const HOURS_PER_CFU = 10;
-export const HOURS_PER_NODE_DAY = 4.5; // monte ore giornaliero sostenibile per nodo (V29.0 — era 2).
 export const EVENT_HORIZON_THRESHOLD_HOURS = 8;
 
 export const MAX_DAILY_FOCUS_MATERIE = 2; // limite rigido: mai più di 2 materie spinte nello stesso giorno.
@@ -82,12 +87,12 @@ export const QUOTA_STATUS_META = {
   }
 };
 
-/** Ramo Nodi: Ore Residue = Σ (giorni_nodo * HOURS_PER_NODE_DAY - ore già tracciate su quel nodo), solo sui nodi NON completati. */
+/** Ramo Nodi: Ore Residue = Σ (oreStimate_nodo - ore già tracciate su quel nodo), solo sui nodi NON completati. */
 function computeNodeBasedLoad(materia) {
   const sfide = Array.isArray(materia.sfide) ? materia.sfide : [];
   const incomplete = sfide.filter((s) => s.status !== 'COMPLETED');
   const hoursRemaining = incomplete.reduce((sum, s) => {
-    const budgetHours = Math.max(1, Number(s.giorni) || 1) * HOURS_PER_NODE_DAY;
+    const budgetHours = Math.max(0.5, Number(s.oreStimate) || 0);
     const trackedHours = (Number(s.focusMinutes) || 0) / 60;
     return sum + Math.max(0, budgetHours - trackedHours);
   }, 0);

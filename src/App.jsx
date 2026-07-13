@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, Suspense, lazy } from 'react';
 import { ArachnoForgeProvider, useArachnoForge } from './context/ArachnoForgeContext.jsx';
 import { useAuthContext } from './context/AuthContext.jsx';
 import { useArachnoForgeRouter, ROUTES } from './hooks/useArachnoForgeRouter.js';
@@ -9,13 +9,22 @@ import NexusGate from './components/NexusGate.jsx';
 import BootScreen from './components/BootScreen.jsx';
 import MaxCarnageBanner from './components/MaxCarnageBanner.jsx';
 import { APP_BG } from './utils/designSystem.js';
-import MissionControl from './pages/MissionControl.jsx';
-import QuadrantHub from './pages/QuadrantHub.jsx';
-import BossFight from './pages/BossFight.jsx';
-import StarLog from './pages/StarLog.jsx';
-import Armory from './pages/Armory.jsx';
-import CoreConfig from './pages/CoreConfig.jsx';
-import MultiverseSimulator from './pages/MultiverseSimulator.jsx';
+
+// V34.3 — Code-splitting per rotta (risolve il warning Vite/Vercel "Some
+// chunks are larger than 500 kB after minification"): ognuna delle 7
+// pagine viene scaricata SOLO al primo accesso a quella rotta, invece di
+// finire tutte nell'unico bundle iniziale — bundle di primo caricamento
+// molto più leggero, decisivo su rete mobile. `PageErrorBoundary` +
+// `Suspense` (vedi Shell più sotto) restano gli unici due punti che
+// reagiscono rispettivamente a un errore di rendering o al breve
+// caricamento del chunk.
+const MissionControl = lazy(() => import('./pages/MissionControl.jsx'));
+const QuadrantHub = lazy(() => import('./pages/QuadrantHub.jsx'));
+const BossFight = lazy(() => import('./pages/BossFight.jsx'));
+const StarLog = lazy(() => import('./pages/StarLog.jsx'));
+const Armory = lazy(() => import('./pages/Armory.jsx'));
+const CoreConfig = lazy(() => import('./pages/CoreConfig.jsx'));
+const MultiverseSimulator = lazy(() => import('./pages/MultiverseSimulator.jsx'));
 
 function PageSwitch({ currentPage }) {
   switch (currentPage) {
@@ -35,6 +44,18 @@ function PageSwitch({ currentPage }) {
     default:
       return <MissionControl />;
   }
+}
+
+/** Fallback leggero durante il caricamento del chunk di una pagina — mai il
+ * BootScreen a schermo intero (quello resta riservato al boot di sessione/
+ * Cloud Sync): qui basta un piccolo respiro visivo coerente con l'HUD, la
+ * Sidebar e il resto della Shell restano sempre visibili e interattivi. */
+function PageLoadingFallback() {
+  return (
+    <div className="flex items-center justify-center py-24">
+      <span className="w-10 h-10 rounded-full border-[3px] border-secondary/25 border-t-secondary animate-spin" />
+    </div>
+  );
 }
 
 function Shell() {
@@ -72,14 +93,20 @@ function Shell() {
     // V26.0 — "The Nexus Gate": ingresso in fade-in + blur-out (af-shell-fade-in,
     // vedi index.css) ogni volta che la Shell viene montata per la prima
     // volta dopo un login riuscito — la "porta che si apre sull'hub".
-    <div className={`flex min-h-screen relative af-shell-fade-in ${APP_BG}`}>
+    // V34.3 — "100dvh" al posto di "100vh"/h-screen: sui browser mobili la
+    // viewport unit classica include (o esclude, a seconda del motore)
+    // l'ingombro reale della barra degli indirizzi in modo incoerente fra
+    // orientamento verticale/orizzontale — sintomo tipico "funziona in
+    // orizzontale, tagliato/traballante in verticale". La Dynamic Viewport
+    // Height si ricalcola invece SEMPRE sullo spazio realmente visibile.
+    <div className={`flex min-h-[100dvh] relative af-shell-fade-in ${APP_BG}`}>
       <div className="af-grain" />
       {/* V27.0 — Pillar 3: vignette simbionte a schermo intero, sopra ogni
           pagina ma sotto toast/modali — Feedback Sensoriale Completo. */}
       {derived.isMaxCarnageActive && <div className="af-carnage-overlay" />}
       <Sidebar currentPage={currentPage} navigate={navigate} />
       <main
-        className={`flex-1 min-w-0 h-screen overflow-y-auto af-viewport px-4 py-6 md:px-8 md:py-8 transition-all duration-500 relative ${
+        className={`flex-1 min-w-0 h-[100dvh] overflow-y-auto af-viewport px-4 py-6 md:px-8 md:py-8 transition-all duration-500 relative ${
           derived.fatigued ? 'saturate-[0.4] brightness-90 ring-1 ring-inset ring-af-attack/30' : ''
         }`}
       >
@@ -87,7 +114,9 @@ function Shell() {
         <div className="max-w-[1400px] mx-auto pt-10 md:pt-0">
           <MaxCarnageBanner />
           <PageErrorBoundary key={currentPage} onRecover={() => navigate(ROUTES.MISSION_CONTROL)}>
-            <PageSwitch currentPage={currentPage} />
+            <Suspense fallback={<PageLoadingFallback />}>
+              <PageSwitch currentPage={currentPage} />
+            </Suspense>
           </PageErrorBoundary>
         </div>
       </main>

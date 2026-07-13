@@ -72,12 +72,17 @@ export function isDescendant(sfide, nodeId, candidateParentId) {
   return false;
 }
 
-export function createSfida({ nome, obiettivo, giorni, parentId = null, difficulty = DIFFICULTY.MEDIUM }) {
+export function createSfida({ nome, obiettivo, oreStimate, parentId = null, difficulty = DIFFICULTY.MEDIUM }) {
+  const parsedOre = Number(oreStimate);
   return {
     id: `sfida_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     nome,
     obiettivo: obiettivo || '',
-    giorni: giorni || 1,
+    // V34.2 — "Ore Previste": il nodo stima direttamente le ore di studio
+    // necessarie (non più i "giorni previsti") — unità più precisa sia per
+    // la proiezione di Karen (Fine Prevista, Quota Odierna) sia per
+    // l'utente stesso, che ragiona naturalmente in ore di sessione.
+    oreStimate: Number.isFinite(parsedOre) && parsedOre > 0 ? parsedOre : 2,
     parentId: parentId || null,
     difficulty,
     status: PERSISTED_STATUS.PENDING,
