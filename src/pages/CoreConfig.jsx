@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
+import { useAuthContext } from '../context/AuthContext.jsx';
 import { Icon } from '../components/Icons.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import { SCHEMA_VERSION, SUITS } from '../data/defaultSchema.js';
@@ -50,12 +51,14 @@ function TechSwitch({ checked, onChange, ariaLabel }) {
 
 export default function CoreConfig() {
   const { state, actions } = useArachnoForge();
+  const { user } = useAuthContext();
   const [focusTime, setFocusTime] = useState(state.settings.focusTime);
   const [shortBreakTime, setShortBreakTime] = useState(state.settings.shortBreakTime);
   const [longBreakTime, setLongBreakTime] = useState(state.settings.longBreakTime);
   const [username, setUsername] = useState(state.profile.username);
   const [importMessage, setImportMessage] = useState(null);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const fileInputRef = useRef(null);
 
   const commitSettings = () => {
@@ -128,6 +131,27 @@ export default function CoreConfig() {
             className={INPUT}
           />
         </div>
+      </section>
+
+      {/* V26.0 — Pillar 2 (Authentication Logic): sessione Nexus + Logout. */}
+      <section className={`${CARD} space-y-4`}>
+        <h2 className={`${H2} flex items-center gap-2`}>
+          <Icon name="cloud" className="w-5 h-5 text-secondary" />
+          SESSIONE NEXUS
+        </h2>
+        <div className="relative flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <p className="text-base text-slate-400">Identità autenticata</p>
+            <p className="text-base font-mono text-slate-200 mt-0.5">{user?.email || '—'}</p>
+          </div>
+          <button type="button" onClick={() => setLogoutConfirmOpen(true)} className={BTN_SECONDARY}>
+            <Icon name="logout" className="w-5 h-5" />
+            Disconnetti dal Nexus
+          </button>
+        </div>
+        <p className="relative text-xs text-slate-500 leading-relaxed">
+          Il tuo profilo resta salvato sul Cloud (Supabase) — puoi accedere di nuovo da qualsiasi dispositivo con le stesse credenziali.
+        </p>
       </section>
 
       <section className={`${CARD} space-y-4`}>
@@ -263,7 +287,7 @@ export default function CoreConfig() {
           </p>
         )}
         <p className="relative text-base text-slate-500 leading-relaxed">
-          L'import valida i campi chiave dello schema prima di sovrascrivere il LocalStorage. In caso di file corrotto, il profilo attuale resta invariato.
+          L'import valida i campi chiave dello schema prima di sovrascrivere il profilo — una volta importato, il nuovo stato viene sincronizzato automaticamente sul Cloud. In caso di file corrotto, il profilo attuale resta invariato.
         </p>
       </section>
 
@@ -285,6 +309,19 @@ export default function CoreConfig() {
         title="Reset Totale"
         message="Questa azione cancella definitivamente XP, materie, skill tree, log e ricompense. Non può essere annullata. Procedere?"
         confirmLabel="Cancella Tutto"
+      />
+
+      <ConfirmDialog
+        open={logoutConfirmOpen}
+        onClose={() => setLogoutConfirmOpen(false)}
+        onConfirm={() => {
+          setLogoutConfirmOpen(false);
+          actions.signOut();
+        }}
+        title="Disconnetti dal Nexus"
+        message="Il profilo è già salvato sul Cloud: potrai accedere di nuovo in qualsiasi momento con le stesse credenziali. Confermi il logout?"
+        confirmLabel="Disconnetti"
+        danger={false}
       />
     </div>
   );

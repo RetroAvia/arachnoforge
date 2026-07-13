@@ -20,8 +20,16 @@ const TRAJECTORY_BADGE = {
   RED: BADGE.red
 };
 
+/** V26.0 — Pillar 4 (Cloud Sync UI): micro-HUD di stato, 3 varianti — mai un semplice testo nudo. */
+const SYNC_META = {
+  loading: { icon: 'cloud', label: 'Sincronizzazione...', className: 'text-accent border-accent/30 bg-accent/10', spin: true },
+  syncing: { icon: 'cloud', label: 'Sincronizzazione...', className: 'text-accent border-accent/30 bg-accent/10', spin: true },
+  synced: { icon: 'cloudCheck', label: 'Connesso al Nexus', className: 'text-emerald-400 border-emerald-400/30 bg-emerald-900/20', spin: false, blink: false },
+  error: { icon: 'cloudOff', label: 'Nexus disconnesso', className: 'text-primary border-primary/40 bg-primary/10', spin: false, blink: true }
+};
+
 export default function Sidebar({ currentPage, navigate }) {
-  const { state, derived, sensoryZero } = useArachnoForge();
+  const { state, derived, sensoryZero, syncStatus } = useArachnoForge();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   if (sensoryZero) return null;
@@ -29,6 +37,7 @@ export default function Sidebar({ currentPage, navigate }) {
   const { profile } = state;
   const xpPct = derived.xpPct ?? 0;
   const rankMeta = derived.rankMeta || { textClass: 'text-secondary', glowClass: '' };
+  const syncMeta = SYNC_META[syncStatus] || SYNC_META.synced;
 
   const handleNavigate = (route) => {
     navigate(route);
@@ -75,7 +84,12 @@ export default function Sidebar({ currentPage, navigate }) {
               <p className="font-extrabold tracking-widest text-base leading-none bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
                 ARACHNOFORGE
               </p>
-              <p className="text-[10px] text-slate-500 tracking-wider mt-1">KAREN OS // WEB-PATH ENGINE v25.0</p>
+              <p className="text-[10px] text-slate-500 tracking-wider mt-1">KAREN OS // WEB-PATH ENGINE v26.0</p>
+              {/* Cloud Sync Status — micro-HUD (Pillar 4). */}
+              <div className={`mt-1.5 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[9px] font-mono tracking-wide w-fit ${syncMeta.className} ${syncMeta.blink ? 'af-sync-error' : ''}`}>
+                <Icon name={syncMeta.icon} className={`w-3 h-3 ${syncMeta.spin ? 'af-cloud-syncing' : ''}`} />
+                {syncMeta.label}
+              </div>
             </div>
           </div>
           <button

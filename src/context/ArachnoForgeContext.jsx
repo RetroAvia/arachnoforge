@@ -8,8 +8,11 @@ import React, {
   useState,
   useRef
 } from 'react';
-import { loadState, saveState, validateImportedProfile, clearState } from '../utils/storage.js';
+import { validateImportedProfile } from '../utils/storage.js';
 import { hydrateState, createDefaultState } from '../data/defaultSchema.js';
+import { supabase, USER_DATA_TABLE } from '../utils/supabaseClient.js';
+import { useAuthContext } from './AuthContext.jsx';
+import BootScreen from '../components/BootScreen.jsx';
 import {
   computeFocusXp,
   computeFocusStaminaCost,
@@ -597,8 +600,12 @@ function reducer(state, action) {
       };
 
     case 'RESET_PROFILE': {
+      // V26.0 — Cloud State Sync: il reset non tocca più direttamente il
+      // Cloud (niente localStorage da "clearState()" qui): lo stato fresh
+      // rientra semplicemente nel normale ciclo di autosave debounced,
+      // che sovrascriverà `app_state` su Supabase come qualunque altra
+      // modifica — un solo punto di scrittura, mai due percorsi paralleli.
       const fresh = createDefaultState();
-      clearState();
       return {
         ...fresh,
         combatLog: pushLog(fresh.combatLog, 'Reset totale eseguito: profilo riportato ai valori di default.', 'SYSTEM')
@@ -611,10 +618,26 @@ function reducer(state, action) {
 }
 
 export function ArachnoForgeProvider({ children }) {
-  const [state, dispatch] = useReducer(reducer, undefined, () => loadState());
+  // V26.0 — "The Nexus Gate" (Pillar 3: Cloud State Sync). ArachnoForgeProvider
+  // viene montato SOLO quando esiste una sessione valida (vedi App.jsx),
+  // quindi `user` qui è garantito non-nullo. Lo stato in memoria parte
+  // sempre dallo schema di default (sincrono, come richiesto da useReducer):
+  // il caricamento reale arriva subito dopo, in modo asincrono, dal boot
+  // effect qui sotto, che sostituisce lo stato con HYDRATE non appena la
+  // query Supabase risolve.
+  const { user, signOut: authSignOut } = useAuthContext();
+  const [state, dispatch] = useReducer(reducer, undefined, createDefaultState);
   const [sensoryZero, setSensoryZero] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [nowTick, setNowTick] = useState(0);
+
+  // Cloud Sync status — micro-HUD (Pillar 4): 'loading' (boot iniziale,
+  // blocca il render dei children), 'syncing' (upsert in corso),
+  // 'synced' (tutto scritto), 'error' (fetch o upsert falliti).
+  const [syncStatus, setSyncStatus] = useState('loading');
+  const cloudReadyRef = useRef(false);
+  const skipNextSaveRef = useRef(true);
+  const saveTimeoutRef = useRef(null);
 
   const pushToast = useCallback((message, type = 'info') => {
     const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -689,10 +712,89 @@ export function ArachnoForgeProvider({ children }) {
     pushToast
   });
 
-  // Persistenza sincrona su LocalStorage ad ogni variazione di stato.
+  // V26.0 — Cloud State Sync (Pillar 3): boot fetch. Un'unica query alla
+  // riga `user_data` dell'utente autenticato — se esiste già uno
+  // `app_state`, sostituisce l'intero stato in memoria (K.A.R.E.N. Boot
+  // Sequence: gli effetti già presenti più sotto — reset Stamina alle
+  // 03:00, rigenerazione Daily Patrols — si auto-correggono da soli non
+  // appena HYDRATE porta uno stato con timestamp "vecchi" rispetto ad
+  // ORA, senza bisogno di logica di boot duplicata qui). Se la riga non
+  // esiste ancora (nuovo utente), lo stato di default viene sia caricato
+  // in memoria sia scritto immediatamente su Supabase con un INSERT, cosi'
+  // che il prossimo autosave possa contare su una riga già presente
+  // (upsert successivi diventano puri UPDATE).
   useEffect(() => {
-    saveState(state);
-  }, [state]);
+    let cancelled = false;
+    setSyncStatus('loading');
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from(USER_DATA_TABLE)
+          .select('app_state')
+          .eq('user_id', user.id)
+          .maybeSingle();
+        if (cancelled) return;
+        if (error) throw error;
+
+        if (data && data.app_state) {
+          dispatch({ type: 'HYDRATE', payload: hydrateState(data.app_state) });
+        } else {
+          const fresh = createDefaultState();
+          const metaUsername = user.user_metadata && typeof user.user_metadata.username === 'string' ? user.user_metadata.username.trim() : '';
+          if (metaUsername) fresh.profile.username = metaUsername;
+          dispatch({ type: 'HYDRATE', payload: fresh });
+          const { error: insertError } = await supabase.from(USER_DATA_TABLE).insert({ user_id: user.id, app_state: fresh });
+          if (insertError) throw insertError;
+        }
+
+        if (cancelled) return;
+        cloudReadyRef.current = true;
+        skipNextSaveRef.current = true; // l'HYDRATE che sta per innescare l'effetto di save qui sotto non è una modifica reale dell'utente
+        setSyncStatus('synced');
+      } catch (err) {
+        console.error('[ArachnoForge] Cloud boot fallito — impossibile leggere/creare user_data.', err);
+        if (!cancelled) setSyncStatus('error');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user.id]);
+
+  // V26.0 — Cloud State Sync (Pillar 4): Debounced Auto-Save. Ogni
+  // variazione di stato riavvia un timer di 2.5s; solo l'ULTIMA variazione
+  // di una raffica sopravvive abbastanza da scatenare l'upsert reale —
+  // esattamente come il pattern già in uso per il salvataggio dei
+  // Blueprint in Armory.jsx, applicato qui all'intero stato dell'app.
+  // `cloudReadyRef` blocca qualunque scrittura finché il boot fetch non è
+  // completato (mai un upsert che sovrascrive dati cloud con lo stato
+  // ancora "vuoto" di default in attesa dell'HYDRATE).
+  useEffect(() => {
+    if (!cloudReadyRef.current) return undefined;
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false;
+      return undefined;
+    }
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    setSyncStatus('syncing');
+    saveTimeoutRef.current = setTimeout(async () => {
+      try {
+        const { error } = await supabase
+          .from(USER_DATA_TABLE)
+          .upsert({ user_id: user.id, app_state: state }, { onConflict: 'user_id' });
+        if (error) throw error;
+        setSyncStatus('synced');
+      } catch (err) {
+        console.error('[ArachnoForge] Cloud autosave fallito.', err);
+        setSyncStatus('error');
+      }
+    }, 2500);
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, user.id]);
 
   // Snapshot sempre aggiornato dello stato, letto (mai come dipendenza) da
   // funzioni dentro `actions` che hanno bisogno del valore CORRENTE senza
@@ -863,9 +965,14 @@ export function ArachnoForgeProvider({ children }) {
         dispatch({ type: 'IMPORT_PROFILE', payload: hydrated });
         return { valid: true };
       },
-      resetProfile: () => dispatch({ type: 'RESET_PROFILE' })
+      resetProfile: () => dispatch({ type: 'RESET_PROFILE' }),
+      // V26.0 — Pillar 2: Logout dal Nexus Gate. Non serve pulire lo stato
+      // qui: smontando ArachnoForgeProvider (App.jsx reagisce a
+      // session === null) l'intero albero di stato in memoria sparisce da
+      // solo, e i dati restano al sicuro su Supabase per il prossimo login.
+      signOut: () => authSignOut()
     }),
-    [pushToast, audio.playSuccessChime, audio.playLevelUpChime, audio.playSkillUnlock]
+    [pushToast, audio.playSuccessChime, audio.playLevelUpChime, audio.playSkillUnlock, authSignOut]
   );
 
   const derived = useMemo(() => {
@@ -950,10 +1057,21 @@ export function ArachnoForgeProvider({ children }) {
       dismissToast,
       TIMER_STATUS,
       FOCUS_QUALITY,
-      FOCUS_QUALITY_META
+      FOCUS_QUALITY_META,
+      // V26.0 — Pillar 4: stato del Cloud Sync, letto dal micro-HUD in Sidebar.
+      syncStatus
     }),
-    [state, actions, timer, audio, sensoryZero, derived, toasts, pushToast, dismissToast]
+    [state, actions, timer, audio, sensoryZero, derived, toasts, pushToast, dismissToast, syncStatus]
   );
+
+  // K.A.R.E.N. Boot Sequence: finché il fetch iniziale da Supabase non è
+  // completato, nessuna pagina dell'app viene montata — evita sia il
+  // flash dello stato di default (Livello 1, 0 XP) prima dell'HYDRATE
+  // reale, sia qualunque azione utente che potrebbe scattare un autosave
+  // prematuro con dati non ancora sincronizzati.
+  if (syncStatus === 'loading') {
+    return <BootScreen message="Sincronizzazione Web-Matrix in corso..." />;
+  }
 
   return <ArachnoForgeContext.Provider value={value}>{children}</ArachnoForgeContext.Provider>;
 }

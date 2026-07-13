@@ -1,9 +1,12 @@
 import React, { useEffect } from 'react';
 import { ArachnoForgeProvider, useArachnoForge } from './context/ArachnoForgeContext.jsx';
+import { useAuthContext } from './context/AuthContext.jsx';
 import { useArachnoForgeRouter, ROUTES } from './hooks/useArachnoForgeRouter.js';
 import Sidebar from './components/Sidebar.jsx';
 import CyberToastStack from './components/CyberToast.jsx';
 import PageErrorBoundary from './components/PageErrorBoundary.jsx';
+import NexusGate from './components/NexusGate.jsx';
+import BootScreen from './components/BootScreen.jsx';
 import { APP_BG } from './utils/designSystem.js';
 import MissionControl from './pages/MissionControl.jsx';
 import QuadrantHub from './pages/QuadrantHub.jsx';
@@ -50,7 +53,10 @@ function Shell() {
   const showInterference = derived.fatigued && !state.settings.calmMode;
 
   return (
-    <div className={`flex min-h-screen relative ${APP_BG}`}>
+    // V26.0 — "The Nexus Gate": ingresso in fade-in + blur-out (af-shell-fade-in,
+    // vedi index.css) ogni volta che la Shell viene montata per la prima
+    // volta dopo un login riuscito — la "porta che si apre sull'hub".
+    <div className={`flex min-h-screen relative af-shell-fade-in ${APP_BG}`}>
       <div className="af-grain" />
       <Sidebar currentPage={currentPage} navigate={navigate} />
       <main
@@ -70,9 +76,30 @@ function Shell() {
   );
 }
 
+/**
+ * V26.0 — "The Nexus Gate" (Pillar 2: Authentication Logic). App è ora il
+ * "portiere" dell'intera esperienza:
+ *   - sessione in bootstrap (`loading`)         -> BootScreen
+ *   - nessuna sessione attiva (`session === null`) -> SOLO il NexusGate
+ *   - sessione valida                            -> ArachnoForgeProvider + Shell
+ * `key={session.user.id}` forza un ArachnoForgeProvider completamente
+ * nuovo ad ogni cambio di utente (logout + login con account diverso):
+ * nessuno stato/ref del provider precedente può mai sopravvivere e
+ * "trapelare" nella sessione successiva.
+ */
 export default function App() {
+  const { session, loading } = useAuthContext();
+
+  if (loading) {
+    return <BootScreen message="Verifica sessione Nexus in corso..." />;
+  }
+
+  if (!session) {
+    return <NexusGate />;
+  }
+
   return (
-    <ArachnoForgeProvider>
+    <ArachnoForgeProvider key={session.user.id}>
       <Shell />
     </ArachnoForgeProvider>
   );

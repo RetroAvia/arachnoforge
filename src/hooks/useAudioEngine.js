@@ -417,6 +417,161 @@ export function useAudioEngine({ enabled = true } = {}) {
     });
   }, [ensureRunning]);
 
+  /**
+   * V26.0 — Pillar 1 (The Nexus Gate): Access Denied — ronzio grave a
+   * doppio impulso dissonante (due toni leggermente stonati fra loro),
+   * riservato agli errori di autenticazione ("Credenziali errate",
+   * "Recluta già registrata"...). Deliberatamente più "digitale/freddo"
+   * del Penalty Buzzer della Boss Fight (che è analogico/sawtooth): qui
+   * la distorsione è quasi assente, il messaggio è "porta bloccata", non
+   * "hai sbagliato una mossa".
+   */
+  const playAccessDenied = useCallback(() => {
+    if (!enabledRef.current) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    ensureRunning(ctx);
+    const t0 = ctx.currentTime;
+
+    const master = ctx.createGain();
+    master.gain.value = 0.16;
+    master.connect(ctx.destination);
+
+    [0, 0.16].forEach((offset) => {
+      const start = t0 + offset;
+      const oscA = ctx.createOscillator();
+      const oscB = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(500, start);
+      filter.frequency.exponentialRampToValueAtTime(160, start + 0.18);
+
+      oscA.type = 'square';
+      oscA.frequency.setValueAtTime(146, start);
+      oscB.type = 'square';
+      oscB.frequency.setValueAtTime(138, start); // detune -> battimento "errore"
+
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.5, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.2);
+
+      oscA.connect(filter);
+      oscB.connect(filter);
+      filter.connect(gain);
+      gain.connect(master);
+      oscA.start(start);
+      oscB.start(start);
+      oscA.stop(start + 0.22);
+      oscB.stop(start + 0.22);
+    });
+  }, [ensureRunning]);
+
+  /**
+   * V26.0 — Pillar 1 (The Nexus Gate): Access Granted — chime epico e
+   * "cinematografico" per l'accesso riuscito al Nexus (login/signup).
+   * Più ricco del Success Chime standard: uno "sweep" ascendente di
+   * filtro low-pass sotto un arpeggio di 4 note, risolto in un accordo
+   * finale sostenuto a 3 voci (mai un singolo bip) — la sensazione di
+   * "porte blindate che si aprono su un intero hub".
+   */
+  const playAccessGranted = useCallback(() => {
+    if (!enabledRef.current) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    ensureRunning(ctx);
+    const t0 = ctx.currentTime;
+
+    // Sweep di filtro sotto un pad continuo: la "porta che si apre".
+    const sweepOsc = ctx.createOscillator();
+    const sweepFilter = ctx.createBiquadFilter();
+    const sweepGain = ctx.createGain();
+    sweepOsc.type = 'sawtooth';
+    sweepOsc.frequency.value = 130.81; // C3
+    sweepFilter.type = 'lowpass';
+    sweepFilter.Q.value = 4;
+    sweepFilter.frequency.setValueAtTime(200, t0);
+    sweepFilter.frequency.exponentialRampToValueAtTime(3200, t0 + 0.5);
+    sweepGain.gain.setValueAtTime(0.0001, t0);
+    sweepGain.gain.exponentialRampToValueAtTime(0.05, t0 + 0.3);
+    sweepGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.9);
+    sweepOsc.connect(sweepFilter);
+    sweepFilter.connect(sweepGain);
+    sweepGain.connect(ctx.destination);
+    sweepOsc.start(t0);
+    sweepOsc.stop(t0 + 0.95);
+
+    // Arpeggio ascendente (4 note) seguito da un accordo finale a 3 voci.
+    const notes = [523.25, 659.25, 783.99, 1046.5]; // C5 - E5 - G5 - C6
+    const master = ctx.createGain();
+    master.gain.value = 0.15;
+    master.connect(ctx.destination);
+
+    notes.forEach((freq, i) => {
+      const start = t0 + 0.1 + i * 0.085;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(1, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.32);
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(start);
+      osc.stop(start + 0.34);
+    });
+
+    const chordStart = t0 + 0.1 + notes.length * 0.085 + 0.05;
+    [1046.5, 1318.5, 1568.0].forEach((freq) => { // C6 - E6 - G6
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, chordStart);
+      gain.gain.exponentialRampToValueAtTime(0.9, chordStart + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, chordStart + 0.9);
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(chordStart);
+      osc.stop(chordStart + 0.95);
+    });
+  }, [ensureRunning]);
+
+  /**
+   * V26.0 — Pillar 1 (The Nexus Gate): Typing Tic — "tic" meccanico
+   * impercettibile ad ogni carattere digitato nei campi email/password del
+   * terminale d'accesso. Pensato per essere spammabile senza fastidio:
+   * durata sub-40ms, gain bassissimo, pitch leggermente randomizzato ad
+   * ogni chiamata (simula i tasti fisici di una tastiera meccanica, mai
+   * lo stesso identico "tock" due volte di fila).
+   */
+  const playTypingTic = useCallback(() => {
+    if (!enabledRef.current) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    ensureRunning(ctx);
+    const t0 = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const baseFreq = 1600 + Math.random() * 900;
+
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(baseFreq, t0);
+    osc.frequency.exponentialRampToValueAtTime(baseFreq * 0.6, t0 + 0.018);
+
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.035, t0 + 0.003);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.03);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + 0.035);
+  }, [ensureRunning]);
+
   // Identità stabile fra i render: consumata come singola dipendenza
   // (`audio`) in effetti ed useMemo altrove (Context value, listener
   // globale del Web-Click) — senza questo useMemo cambierebbe riferimento
@@ -432,7 +587,10 @@ export function useAudioEngine({ enabled = true } = {}) {
       playLevelUpChime,
       playQuestComplete,
       playTrophyFanfare,
-      playSkillUnlock
+      playSkillUnlock,
+      playAccessDenied,
+      playAccessGranted,
+      playTypingTic
     }),
     [
       playWebClick,
@@ -444,7 +602,10 @@ export function useAudioEngine({ enabled = true } = {}) {
       playLevelUpChime,
       playQuestComplete,
       playTrophyFanfare,
-      playSkillUnlock
+      playSkillUnlock,
+      playAccessDenied,
+      playAccessGranted,
+      playTypingTic
     ]
   );
 }
