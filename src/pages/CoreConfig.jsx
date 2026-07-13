@@ -3,7 +3,9 @@ import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
 import { useAuthContext } from '../context/AuthContext.jsx';
 import { Icon } from '../components/Icons.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import CombatLog from '../components/CombatLog.jsx';
 import { SCHEMA_VERSION, SUITS } from '../data/defaultSchema.js';
+import { validateAdminPassphrase } from '../utils/adminOverride.js';
 import { CARD, CARD_ALERT, H1, H2, BTN_PRIMARY, BTN_SECONDARY, BTN_GHOST, INPUT } from '../utils/designSystem.js';
 
 const SUIT_OPTIONS = [
@@ -50,8 +52,8 @@ function TechSwitch({ checked, onChange, ariaLabel }) {
 }
 
 export default function CoreConfig() {
-  const { state, actions } = useArachnoForge();
-  const { user } = useAuthContext();
+  const { state, actions, storageMode } = useArachnoForge();
+  const { user, isGuest } = useAuthContext();
   const [focusTime, setFocusTime] = useState(state.settings.focusTime);
   const [shortBreakTime, setShortBreakTime] = useState(state.settings.shortBreakTime);
   const [longBreakTime, setLongBreakTime] = useState(state.settings.longBreakTime);
@@ -60,6 +62,30 @@ export default function CoreConfig() {
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const fileInputRef = useRef(null);
+
+  // V28.1 — Pillar 2 (Admin Override): campo passphrase locale al form,
+  // MAI persistito nello stato applicativo — validato al click, non ad
+  // ogni keystroke (nessun feedback prematuro "password sbagliata" mentre
+  // l'utente sta ancora digitando).
+  const [adminPassword, setAdminPassword] = useState('');
+  const [adminError, setAdminError] = useState(null);
+  const isSandboxActive = storageMode === 'sandbox';
+
+  const handleActivateSandbox = () => {
+    if (!validateAdminPassphrase(adminPassword)) {
+      setAdminError('Karen: passphrase di override non riconosciuta. Accesso Admin negato.');
+      return;
+    }
+    setAdminError(null);
+    setAdminPassword('');
+    actions.activateSandbox();
+  };
+
+  // V28.1 — Pillar 1 (UI Reorganization): il Combat Log lascia la Home e
+  // trova posto qui, in una sezione dedicata e collassata di default —
+  // "pulita" significa anche non forzare log tecnici sott'occhio finché
+  // non li si cerca esplicitamente.
+  const [logsOpen, setLogsOpen] = useState(false);
 
   const commitSettings = () => {
     actions.updateSettings({
@@ -133,26 +159,96 @@ export default function CoreConfig() {
         </div>
       </section>
 
-      {/* V26.0 — Pillar 2 (Authentication Logic): sessione Nexus + Logout. */}
+      {/* V26.0 — Pillar 2 (Authentication Logic): sessione Nexus + Logout.
+          V28.1: consapevole anche della Modalità Ospite (dati locali, mai
+          sul Cloud) e della Sandbox Admin attiva. */}
       <section className={`${CARD} space-y-4`}>
         <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="cloud" className="w-5 h-5 text-secondary" />
+          <Icon name={isGuest ? 'user' : 'cloud'} className="w-5 h-5 text-secondary" />
           SESSIONE NEXUS
         </h2>
         <div className="relative flex items-center justify-between flex-wrap gap-3">
           <div>
-            <p className="text-base text-slate-400">Identità autenticata</p>
-            <p className="text-base font-mono text-slate-200 mt-0.5">{user?.email || '—'}</p>
+            <p className="text-base text-slate-400">{isGuest ? 'Modalità Ospite (dati locali)' : 'Identità autenticata'}</p>
+            <p className="text-base font-mono text-slate-200 mt-0.5">{isGuest ? 'ospite@arachnoforge.local' : (user?.email || '—')}</p>
+            {isSandboxActive && (
+              <span className="inline-flex items-center gap-1.5 mt-2 rounded-full border border-fuchsia-400/50 bg-fuchsia-500/10 text-fuchsia-300 px-2.5 py-0.5 text-[11px] font-mono">
+                <Icon name="chip" className="w-3.5 h-3.5" />
+                SANDBOX ADMIN ATTIVA
+              </span>
+            )}
           </div>
           <button type="button" onClick={() => setLogoutConfirmOpen(true)} className={BTN_SECONDARY}>
             <Icon name="logout" className="w-5 h-5" />
-            Disconnetti dal Nexus
+            {isGuest ? 'Esci dalla Modalità Ospite' : 'Disconnetti dal Nexus'}
           </button>
         </div>
         <p className="relative text-xs text-slate-500 leading-relaxed">
-          Il tuo profilo resta salvato sul Cloud (Supabase) — puoi accedere di nuovo da qualsiasi dispositivo con le stesse credenziali.
+          {isGuest
+            ? 'I tuoi dati restano esclusivamente su questo browser — nessuna sincronizzazione Cloud. Esci e crea un account dal Nexus Gate per portarli con te su altri dispositivi.'
+            : isSandboxActive
+            ? 'Sandbox Admin attiva: le modifiche restano isolate in locale e NON toccano il tuo profilo Cloud reale — vedi la sezione Override di Sistema qui sotto per disattivarla.'
+            : 'Il tuo profilo resta salvato sul Cloud (Supabase) — puoi accedere di nuovo da qualsiasi dispositivo con le stesse credenziali.'}
         </p>
       </section>
+
+      {/* V28.1 — Pillar 2: Override di Sistema / Modalità Admin (Sandbox).
+          Invisibile in Modalità Ospite (che è già interamente locale — una
+          sandbox dentro una sandbox non avrebbe senso). Passphrase validata
+          SOLO al click (mai ad ogni keystroke), un solo punto di verifica
+          in `utils/adminOverride.js` — nessuna logica di confronto duplicata. */}
+      {!isGuest && (
+        <section className={isSandboxActive ? `${CARD_ALERT} space-y-4` : `${CARD} space-y-4`}>
+          <h2 className={`${H2} flex items-center gap-2`}>
+            <Icon name="chip" className="w-5 h-5 text-primary" />
+            OVERRIDE DI SISTEMA — MODALITÀ ADMIN (SANDBOX)
+          </h2>
+          <p className="relative text-sm text-slate-400 leading-relaxed">
+            Attiva un profilo di test completamente isolato (storage locale dedicato, mai il Cloud): sperimenta liberamente
+            senza alcun rischio per il tuo profilo reale. Disattivabile in qualsiasi momento.
+          </p>
+
+          {!isSandboxActive ? (
+            <div className="relative space-y-3">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                <input
+                  type="password"
+                  value={adminPassword}
+                  onChange={(e) => {
+                    setAdminPassword(e.target.value);
+                    if (adminError) setAdminError(null);
+                  }}
+                  onKeyDown={(e) => e.key === 'Enter' && handleActivateSandbox()}
+                  placeholder="Passphrase Override Admin"
+                  autoComplete="off"
+                  className={`${INPUT} flex-1`}
+                />
+                <button type="button" onClick={handleActivateSandbox} disabled={!adminPassword} className={BTN_PRIMARY}>
+                  <Icon name="lock" className="w-5 h-5" />
+                  Attiva Sandbox
+                </button>
+              </div>
+              {adminError && (
+                <p className="relative text-xs text-primary flex items-center gap-1.5">
+                  <Icon name="alertTriangle" className="w-4 h-4 shrink-0" />
+                  {adminError}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="relative flex items-center justify-between flex-wrap gap-3">
+              <p className="text-sm text-fuchsia-300 flex items-center gap-2">
+                <Icon name="chip" className="w-4 h-4" />
+                Protocollo Admin Attivato — Sandbox in uso.
+              </p>
+              <button type="button" onClick={actions.deactivateSandbox} className={BTN_GHOST}>
+                <Icon name="logout" className="w-5 h-5" />
+                Torna al Profilo Standard
+              </button>
+            </div>
+          )}
+        </section>
+      )}
 
       <section className={`${CARD} space-y-4`}>
         <h2 className={`${H2} flex items-center gap-2`}>
@@ -287,8 +383,36 @@ export default function CoreConfig() {
           </p>
         )}
         <p className="relative text-base text-slate-500 leading-relaxed">
-          L'import valida i campi chiave dello schema prima di sovrascrivere il profilo — una volta importato, il nuovo stato viene sincronizzato automaticamente sul Cloud. In caso di file corrotto, il profilo attuale resta invariato.
+          L'import valida i campi chiave dello schema prima di sovrascrivere il profilo — una volta importato, il nuovo stato viene salvato automaticamente
+          {storageMode === 'cloud' ? ' sul Cloud' : storageMode === 'sandbox' ? ' nella Sandbox locale (mai sul Cloud reale)' : ' in locale su questo browser'}.
+          In caso di file corrotto, il profilo attuale resta invariato.
         </p>
+      </section>
+
+      {/* V28.1 — Pillar 1 (UI Reorganization): il Combat Log lascia la Home
+          (Mission Control) e trova qui una sezione dedicata, pulita e
+          collassata di default — i log tecnici restano a disposizione ma
+          non affollano più la schermata principale. */}
+      <section className={`${CARD} space-y-0`}>
+        <button
+          type="button"
+          onClick={() => setLogsOpen((v) => !v)}
+          className="relative w-full flex items-center justify-between gap-3"
+        >
+          <h2 className={`${H2} flex items-center gap-2`}>
+            <Icon name="terminal" className="w-5 h-5 text-secondary" />
+            LOG DI SISTEMA
+          </h2>
+          <span className="flex items-center gap-2 shrink-0">
+            <span className="text-[11px] font-mono text-slate-500">{state.combatLog.length}/50</span>
+            <Icon name="chevronDown" className={`w-4 h-4 text-slate-500 transition-transform duration-300 ${logsOpen ? 'rotate-180' : ''}`} />
+          </span>
+        </button>
+        {logsOpen && (
+          <div className="relative mt-4 h-72 af-holo-alert-in">
+            <CombatLog entries={state.combatLog} />
+          </div>
+        )}
       </section>
 
       <section className={`${CARD_ALERT} space-y-3`}>
@@ -318,9 +442,13 @@ export default function CoreConfig() {
           setLogoutConfirmOpen(false);
           actions.signOut();
         }}
-        title="Disconnetti dal Nexus"
-        message="Il profilo è già salvato sul Cloud: potrai accedere di nuovo in qualsiasi momento con le stesse credenziali. Confermi il logout?"
-        confirmLabel="Disconnetti"
+        title={isGuest ? 'Esci dalla Modalità Ospite' : 'Disconnetti dal Nexus'}
+        message={
+          isGuest
+            ? 'I dati locali di questa sessione Ospite restano su questo browser, ma non saranno più accessibili da qui una volta uscito. Confermi?'
+            : 'Il profilo è già salvato sul Cloud: potrai accedere di nuovo in qualsiasi momento con le stesse credenziali. Confermi il logout?'
+        }
+        confirmLabel={isGuest ? 'Esci' : 'Disconnetti'}
         danger={false}
       />
     </div>

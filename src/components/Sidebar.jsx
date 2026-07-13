@@ -20,16 +20,29 @@ const TRAJECTORY_BADGE = {
   RED: BADGE.red
 };
 
-/** V26.0 — Pillar 4 (Cloud Sync UI): micro-HUD di stato, 3 varianti — mai un semplice testo nudo. */
-const SYNC_META = {
+/** V26.0 — Pillar 4 (Cloud Sync UI): micro-HUD di stato, 3 varianti — mai un semplice testo nudo.
+ * V28.1 — Pillar 2: la variante "synced" ora si adatta al `storageMode`
+ * (Cloud reale / Guest locale / Sandbox Admin locale) — mai un "Connesso
+ * al Nexus" fuorviante quando i dati non stanno affatto raggiungendo il
+ * Cloud. `loading`/`syncing`/`error` restano invarianti sul backend. */
+const SYNC_META_BASE = {
   loading: { icon: 'cloud', label: 'Sincronizzazione...', className: 'text-accent border-accent/30 bg-accent/10', spin: true },
   syncing: { icon: 'cloud', label: 'Sincronizzazione...', className: 'text-accent border-accent/30 bg-accent/10', spin: true },
-  synced: { icon: 'cloudCheck', label: 'Connesso al Nexus', className: 'text-emerald-400 border-emerald-400/30 bg-emerald-900/20', spin: false, blink: false },
   error: { icon: 'cloudOff', label: 'Nexus disconnesso', className: 'text-primary border-primary/40 bg-primary/10', spin: false, blink: true }
 };
+const SYNCED_META_BY_MODE = {
+  cloud: { icon: 'cloudCheck', label: 'Connesso al Nexus', className: 'text-emerald-400 border-emerald-400/30 bg-emerald-900/20' },
+  guest: { icon: 'user', label: 'Modalità Ospite (Locale)', className: 'text-slate-300 border-white/20 bg-white/[0.04]' },
+  sandbox: { icon: 'chip', label: 'Sandbox Admin (Locale)', className: 'text-fuchsia-300 border-fuchsia-400/40 bg-fuchsia-500/10' }
+};
+
+function getSyncMeta(syncStatus, storageMode) {
+  if (syncStatus === 'synced') return { ...SYNCED_META_BY_MODE[storageMode] || SYNCED_META_BY_MODE.cloud, spin: false, blink: false };
+  return SYNC_META_BASE[syncStatus] || SYNC_META_BASE.loading;
+}
 
 export default function Sidebar({ currentPage, navigate }) {
-  const { state, derived, sensoryZero, syncStatus } = useArachnoForge();
+  const { state, derived, sensoryZero, syncStatus, storageMode } = useArachnoForge();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   if (sensoryZero) return null;
@@ -37,7 +50,7 @@ export default function Sidebar({ currentPage, navigate }) {
   const { profile } = state;
   const xpPct = derived.xpPct ?? 0;
   const rankMeta = derived.rankMeta || { textClass: 'text-secondary', glowClass: '' };
-  const syncMeta = SYNC_META[syncStatus] || SYNC_META.synced;
+  const syncMeta = getSyncMeta(syncStatus, storageMode);
 
   const handleNavigate = (route) => {
     navigate(route);
@@ -90,6 +103,14 @@ export default function Sidebar({ currentPage, navigate }) {
                 <Icon name={syncMeta.icon} className={`w-3 h-3 ${syncMeta.spin ? 'af-cloud-syncing' : ''}`} />
                 {syncMeta.label}
               </div>
+              {/* V27.0 — Pillar 3: chip Maximum Carnage, sempre visibile
+                  (anche nel drawer mobile) mentre la finestra è attiva. */}
+              {derived.isMaxCarnageActive && (
+                <div className="af-carnage-pulse mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-primary/60 bg-primary/15 text-primary px-2 py-0.5 text-[9px] font-mono tracking-wide w-fit">
+                  <Icon name="skull" className="w-3 h-3" />
+                  CARNAGE ATTIVO
+                </div>
+              )}
             </div>
           </div>
           <button

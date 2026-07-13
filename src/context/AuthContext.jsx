@@ -19,8 +19,28 @@ import { supabase } from '../utils/supabaseClient.js';
  */
 const AuthContext = createContext(null);
 
+/**
+ * V28.1 — Pillar 2: identità sintetica per la Modalità Ospite — mai una
+ * vera sessione Supabase. L'id fisso `guest-local` è deliberato (non un
+ * uuid generato ad ogni sessione): un solo "slot" Ospite per browser,
+ * cosi' che i dati Guest restino ritrovabili fra un ingresso e l'altro
+ * nello stesso dispositivo (stessa chiave LocalStorage, vedi
+ * utils/adminOverride.js), senza però mai toccare il Cloud.
+ */
+const GUEST_USER = {
+  id: 'guest-local',
+  email: null,
+  user_metadata: { username: 'Ospite' },
+  isGuest: true
+};
+
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(undefined);
+  // V28.1 — Pillar 2: Modalità Ospite — puramente locale, indipendente dal
+  // ciclo di vita della sessione Supabase. Se una sessione reale diventa
+  // attiva, ha sempre priorità (vedi `value` più sotto): non possono mai
+  // coesistere Guest + login reale nello stesso momento.
+  const [guestActive, setGuestActive] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -60,21 +80,33 @@ export function AuthProvider({ children }) {
     return { data, error };
   }, []);
 
+  // V28.1 — Pillar 2: signOut gestisce ENTRAMBI i percorsi con un solo
+  // punto d'ingresso (Sidebar/CoreConfig non devono mai sapere se stanno
+  // chiudendo una sessione Guest o reale) — Guest si limita a spegnere il
+  // flag locale, nessuna chiamata di rete necessaria/possibile.
   const signOut = useCallback(async () => {
+    if (guestActive) {
+      setGuestActive(false);
+      return;
+    }
     await supabase.auth.signOut();
-  }, []);
+  }, [guestActive]);
 
-  const value = useMemo(
-    () => ({
+  const enterGuest = useCallback(() => setGuestActive(true), []);
+
+  const value = useMemo(() => {
+    const isGuest = !session && guestActive;
+    return {
       session,
-      user: session ? session.user : null,
+      user: session ? session.user : isGuest ? GUEST_USER : null,
       loading: session === undefined,
+      isGuest,
       signUp,
       signIn,
-      signOut
-    }),
-    [session, signUp, signIn, signOut]
-  );
+      signOut,
+      enterGuest
+    };
+  }, [session, guestActive, signUp, signIn, signOut, enterGuest]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

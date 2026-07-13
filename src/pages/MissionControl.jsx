@@ -2,13 +2,13 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
 import { Icon } from '../components/Icons.jsx';
 import StaminaBar from '../components/StaminaBar.jsx';
-import CombatLog from '../components/CombatLog.jsx';
 import DoomsdayClock from '../components/DoomsdayClock.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import Modal from '../components/Modal.jsx';
 import Dropdown from '../components/Dropdown.jsx';
 import DebriefModal from '../components/DebriefModal.jsx';
 import EmptyState from '../components/EmptyState.jsx';
+import WebSlingChest from '../components/WebSlingChest.jsx';
 import { formatClock, formatHoursMinutes } from '../utils/dateUtils.js';
 import { getBriefingForToday } from '../data/briefings.js';
 import { deriveNodeStatus, NODE_STATUS } from '../utils/skillTree.js';
@@ -18,7 +18,7 @@ import { QUOTA_STATUS_META } from '../hooks/useKarenAutoRouter.js';
 import { CARD, CARD_ALERT, BTN_PRIMARY, BTN_SECONDARY, BTN_AMBER, BTN_GHOST, INPUT, H1, BADGE } from '../utils/designSystem.js';
 
 export default function MissionControl() {
-  const { state, actions, timer, derived, sensoryZero, setSensoryZero, TIMER_STATUS } = useArachnoForge();
+  const { state, actions, timer, derived, sensoryZero, setSensoryZero, TIMER_STATUS, spiderSenseSurgeAt } = useArachnoForge();
   const [selectedMateriaId, setSelectedMateriaId] = useState('');
   const [selectedSfidaId, setSelectedSfidaId] = useState('');
   const [confirmInterruptOpen, setConfirmInterruptOpen] = useState(false);
@@ -81,6 +81,18 @@ export default function MissionControl() {
     }
     prevStatusRef.current = timer.status;
   }, [timer.status, TIMER_STATUS.FOCUS, TIMER_STATUS.IDLE]);
+
+  // V28.1 — Pillar 3 (Spider-Sense Focus Surge): l'animazione di sblocco è
+  // "one-shot" — si accende per ~1.1s ad ogni nuovo `spiderSenseSurgeAt`
+  // (timestamp aggiornato dal Context solo al completamento pulito di una
+  // sessione su una Materia) e si spegne da sola, mai un loop permanente.
+  const [spiderSenseUnlockActive, setSpiderSenseUnlockActive] = useState(false);
+  useEffect(() => {
+    if (!spiderSenseSurgeAt) return undefined;
+    setSpiderSenseUnlockActive(true);
+    const id = setTimeout(() => setSpiderSenseUnlockActive(false), 1100);
+    return () => clearTimeout(id);
+  }, [spiderSenseSurgeAt]);
 
   const progressPct = timer.totalSeconds > 0 ? ((timer.totalSeconds - timer.remainingSeconds) / timer.totalSeconds) * 100 : 0;
 
@@ -218,6 +230,12 @@ export default function MissionControl() {
   const circumference = 2 * Math.PI * 120;
   const dashOffset = circumference - (progressPct / 100) * circumference;
 
+  // V28.1 — Pillar 3 (Spider-Sense Focus Surge): la pulsazione di tensione
+  // HUD è attiva SOLO durante una sessione di Focus reale (non in pausa)
+  // agganciata a una Materia — mai su Focus generico (nessuna Materia
+  // selezionata, quindi nessuna Difficoltà su cui basare il bonus).
+  const spiderSenseTensionActive = timer.status === TIMER_STATUS.FOCUS && !!activeMateria;
+
   if (sensoryZero) {
     return (
       <div className="fixed inset-0 z-[100] bg-[radial-gradient(ellipse_at_center,rgb(var(--af-surface-rgb))_0%,#000000_100%)] flex flex-col items-center justify-center">
@@ -232,7 +250,7 @@ export default function MissionControl() {
         <p className="text-base tracking-[0.3em] text-slate-500 mb-6">
           {timer.status === TIMER_STATUS.FOCUS ? 'FOCUS ATTIVO' : timer.status === TIMER_STATUS.BREAK ? 'PAUSA' : 'ISOLAMENTO SENSORIALE'}
         </p>
-        <p className={`text-[7rem] leading-none font-mono font-bold af-mono-nums ${ringColor}`}>
+        <p className={`text-[3.75rem] sm:text-[5.5rem] md:text-[7rem] leading-none font-mono font-bold af-mono-nums ${ringColor}`}>
           {formatClock(timer.remainingSeconds)}
         </p>
         {timer.status === TIMER_STATUS.FOCUS && (
@@ -406,13 +424,33 @@ export default function MissionControl() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <div className="xl:col-span-2 space-y-6">
-          {/* Tactical Timer */}
-          <div className={`${CARD} flex flex-col items-center`}>
+      {/* V28.1 — Pillar 1: griglia principale ristrutturata — split 60/40
+          (invece del precedente 66/33 a xl:) che scatta già da `lg:`, cosi'
+          la Home resta ariosa e simmetrica su più fascie di schermo, con
+          Tactical Timer e Quantum Router come veri fuochi visivi della
+          pagina (il Combat Log, ora in Karen OS Settings, non affolla più
+          la colonna secondaria). */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 lg:gap-8">
+        <div className="lg:col-span-3 space-y-6">
+          {/* Tactical Timer — V28.1 (Pillar 3): pulsazione olografica di
+              tensione HUD durante una sessione su una Materia, anello di
+              sblocco al completamento pulito (Spider-Sense Focus Surge). */}
+          <div
+            className={`${CARD} flex flex-col items-center ${spiderSenseTensionActive ? 'af-spidersense-pulse' : ''} ${
+              spiderSenseUnlockActive ? 'af-spidersense-unlock' : ''
+            }`}
+          >
             <div className="absolute -top-24 left-1/2 -translate-x-1/2 w-72 h-72 rounded-full bg-primary/10 blur-3xl pointer-events-none" />
             <div className="relative flex items-center justify-between w-full mb-4">
-              <span className="text-base tracking-widest text-slate-400">TACTICAL TIMER</span>
+              <span className="text-base tracking-widest text-slate-400 flex items-center gap-2">
+                TACTICAL TIMER
+                {spiderSenseTensionActive && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-secondary/50 bg-secondary/10 text-secondary px-2 py-0.5 text-[10px] font-mono tracking-wide">
+                    <Icon name="radar" className="w-3 h-3" />
+                    SPIDER-SENSE
+                  </span>
+                )}
+              </span>
               <button
                 type="button"
                 onClick={() => setSensoryZero(true)}
@@ -548,11 +586,15 @@ export default function MissionControl() {
           <DoomsdayClock nextExam={derived.nextExam} trajectory={derived.trajectory} />
         </div>
 
-        <div className="space-y-6">
+        <div className="lg:col-span-2 space-y-6">
           <div className={derived.fatigued ? CARD_ALERT : CARD}>
             {derived.fatigued && !state.settings.calmMode && <div className="af-interference rounded-2xl" />}
             <StaminaBar stamina={state.profile.stamina} />
           </div>
+
+          {/* V27.0 — Pillar 4: Daily Web-Sling, widget compatto e non
+              invadente nella colonna secondaria della Home. */}
+          <WebSlingChest />
 
           <div className={CARD}>
             <div className="relative flex items-center justify-between mb-3">
@@ -596,10 +638,6 @@ export default function MissionControl() {
                 );
               })}
             </div>
-          </div>
-
-          <div className="h-64">
-            <CombatLog entries={state.combatLog} />
           </div>
         </div>
       </div>

@@ -43,6 +43,12 @@ export function useAudioEngine({ enabled = true } = {}) {
     }
   }, []);
 
+  // V27.0 — Pillar 3 (Maximum Carnage Mode): riferimento agli oscillatori
+  // del "drone" simbionte in corso, cosi' che stopMaxCarnageDrone() possa
+  // spegnerlo esplicitamente (scadenza naturale a 2h o disattivazione
+  // manuale) senza dover ricreare l'intero AudioContext.
+  const carnageDroneRef = useRef(null);
+
   /** Web-Click — blip breve e ovattato per i pulsanti primari, in tutta l'app. */
   const playWebClick = useCallback(() => {
     if (!enabledRef.current) return;
@@ -572,6 +578,307 @@ export function useAudioEngine({ enabled = true } = {}) {
     osc.stop(t0 + 0.035);
   }, [ensureRunning]);
 
+  /**
+   * V27.0 — Pillar 3 (Maximum Carnage Mode): Activation Roar — thunk grave
+   * distorto (waveshaper aggressivo, come il Penalty Buzzer ma molto più
+   * ampio e minaccioso) seguito da un power-chord dissonante/simbionte in
+   * sawtooth: il "prendere il sopravvento" del simbionte, mai un semplice
+   * chime positivo (questa è furia, non una ricompensa gentile).
+   */
+  const playMaxCarnageActivate = useCallback(() => {
+    if (!enabledRef.current) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    ensureRunning(ctx);
+    const t0 = ctx.currentTime;
+
+    const roarOsc = ctx.createOscillator();
+    const shaper = ctx.createWaveShaper();
+    const roarFilter = ctx.createBiquadFilter();
+    const roarGain = ctx.createGain();
+    const curve = new Float32Array(256);
+    for (let i = 0; i < 256; i += 1) {
+      const x = (i / 255) * 2 - 1;
+      curve[i] = Math.tanh(x * 9);
+    }
+    shaper.curve = curve;
+    roarFilter.type = 'lowpass';
+    roarFilter.frequency.setValueAtTime(1200, t0);
+    roarFilter.frequency.exponentialRampToValueAtTime(90, t0 + 0.7);
+    roarOsc.type = 'sawtooth';
+    roarOsc.frequency.setValueAtTime(70, t0);
+    roarOsc.frequency.exponentialRampToValueAtTime(38, t0 + 0.7);
+    roarGain.gain.setValueAtTime(0.0001, t0);
+    roarGain.gain.exponentialRampToValueAtTime(0.28, t0 + 0.04);
+    roarGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.85);
+    roarOsc.connect(shaper);
+    shaper.connect(roarFilter);
+    roarFilter.connect(roarGain);
+    roarGain.connect(ctx.destination);
+    roarOsc.start(t0);
+    roarOsc.stop(t0 + 0.9);
+
+    // Power-chord dissonante (tritono, mai un accordo "gradevole"): tre
+    // sawtooth ravvicinate che sfumano dentro alla coda del ruggito.
+    const chordStart = t0 + 0.35;
+    const master = ctx.createGain();
+    master.gain.value = 0.11;
+    master.connect(ctx.destination);
+    [110, 155.56, 220].forEach((freq) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, chordStart);
+      gain.gain.exponentialRampToValueAtTime(1, chordStart + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.0001, chordStart + 0.9);
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(chordStart);
+      osc.stop(chordStart + 0.95);
+    });
+  }, [ensureRunning]);
+
+  /**
+   * V27.0 — Pillar 3: Symbiote Drone — layer audio AMBIENTALE continuo,
+   * avviato all'attivazione di Maximum Carnage e fermato esplicitamente
+   * (scadenza a 2h o disattivazione). Due sawtooth gravi leggermente
+   * detunate (battimento organico) filtrate in lowpass con un LFO lento
+   * sulla frequenza di taglio — "respiro" simbionte a volume bassissimo,
+   * pensato per restare sotto la soglia di fastidio anche per ore.
+   */
+  const startMaxCarnageDrone = useCallback(() => {
+    if (!enabledRef.current) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    ensureRunning(ctx);
+    if (carnageDroneRef.current) return; // già in corso: mai due drone sovrapposti
+    const t0 = ctx.currentTime;
+
+    const oscA = ctx.createOscillator();
+    const oscB = ctx.createOscillator();
+    const filter = ctx.createBiquadFilter();
+    const lfo = ctx.createOscillator();
+    const lfoGain = ctx.createGain();
+    const master = ctx.createGain();
+
+    oscA.type = 'sawtooth';
+    oscA.frequency.value = 55; // A1
+    oscB.type = 'sawtooth';
+    oscB.frequency.value = 55.7; // detune -> battimento organico
+
+    filter.type = 'lowpass';
+    filter.frequency.value = 220;
+    filter.Q.value = 2;
+
+    lfo.type = 'sine';
+    lfo.frequency.value = 0.12; // respiro lentissimo
+    lfoGain.gain.value = 90;
+    lfo.connect(lfoGain);
+    lfoGain.connect(filter.frequency);
+
+    master.gain.setValueAtTime(0.0001, t0);
+    master.gain.exponentialRampToValueAtTime(0.045, t0 + 1.2);
+
+    oscA.connect(filter);
+    oscB.connect(filter);
+    filter.connect(master);
+    master.connect(ctx.destination);
+
+    oscA.start(t0);
+    oscB.start(t0);
+    lfo.start(t0);
+
+    carnageDroneRef.current = { oscA, oscB, lfo, master };
+  }, [ensureRunning]);
+
+  const stopMaxCarnageDrone = useCallback(() => {
+    const active = carnageDroneRef.current;
+    if (!active) return;
+    const ctx = getAudioContext();
+    if (!ctx) {
+      carnageDroneRef.current = null;
+      return;
+    }
+    const t0 = ctx.currentTime;
+    active.master.gain.cancelScheduledValues(t0);
+    active.master.gain.setValueAtTime(active.master.gain.value, t0);
+    active.master.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.8);
+    active.oscA.stop(t0 + 0.85);
+    active.oscB.stop(t0 + 0.85);
+    active.lfo.stop(t0 + 0.85);
+    carnageDroneRef.current = null;
+  }, []);
+
+  /**
+   * V27.0 — Pillar 4 (Daily Web-Sling): Web Reveal — sibilo ascendente
+   * "lancio di ragnatela" (rumore filtrato + sweep), riprodotto quando il
+   * forziere olografico viene rivelato, prima dell'apertura vera e propria.
+   */
+  const playWebSlingReveal = useCallback(() => {
+    if (!enabledRef.current) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    ensureRunning(ctx);
+    const t0 = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    const filter = ctx.createBiquadFilter();
+    const gain = ctx.createGain();
+    filter.type = 'bandpass';
+    filter.Q.value = 6;
+    filter.frequency.setValueAtTime(500, t0);
+    filter.frequency.exponentialRampToValueAtTime(3800, t0 + 0.32);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(200, t0);
+    osc.frequency.exponentialRampToValueAtTime(1400, t0 + 0.32);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.12, t0 + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.36);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + 0.4);
+  }, [ensureRunning]);
+
+  /**
+   * V27.0 — Pillar 4: Chest Open — coperchio che scatta (thunk percussivo)
+   * seguito da un arpeggio dorato ascendente a 5 note: la ricompensa che
+   * "esplode" fuori dal forziere. Deliberatamente più festoso/luccicante
+   * della Trophy Fanfare (che è epica/definitiva): qui è pura gioia rapida.
+   */
+  const playChestOpen = useCallback(() => {
+    if (!enabledRef.current) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    ensureRunning(ctx);
+    const t0 = ctx.currentTime;
+
+    const lidOsc = ctx.createOscillator();
+    const lidGain = ctx.createGain();
+    lidOsc.type = 'square';
+    lidOsc.frequency.setValueAtTime(180, t0);
+    lidOsc.frequency.exponentialRampToValueAtTime(70, t0 + 0.08);
+    lidGain.gain.setValueAtTime(0.0001, t0);
+    lidGain.gain.exponentialRampToValueAtTime(0.3, t0 + 0.012);
+    lidGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.12);
+    lidOsc.connect(lidGain);
+    lidGain.connect(ctx.destination);
+    lidOsc.start(t0);
+    lidOsc.stop(t0 + 0.13);
+
+    const notes = [659.25, 830.61, 987.77, 1244.5, 1567.98]; // E5-Ab5-B5-Eb6-Gb6, arpeggio luccicante
+    const master = ctx.createGain();
+    master.gain.value = 0.14;
+    master.connect(ctx.destination);
+    notes.forEach((freq, i) => {
+      const start = t0 + 0.1 + i * 0.06;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(1, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.3);
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(start);
+      osc.stop(start + 0.32);
+    });
+  }, [ensureRunning]);
+
+  /**
+   * V28.1 — Pillar 3 (Spider-Sense Focus Surge): Tingling Unlock — un
+   * rapido "formicolio" (oscillatore con vibrato via LFO ad alta frequenza,
+   * la sensazione fisica del senso di ragno) che si risolve in un ping
+   * cristallino ascendente: la ricompensa per una sessione di Focus
+   * completata pulita su una Materia. Deliberatamente diverso sia dal
+   * Success Chime (arpeggio morbido) sia dallo Skill Unlock (thunk +
+   * arpeggio tech): qui l'identità è "percezione/allerta che si scioglie
+   * in sollievo", coerente col tema Spider-Sense.
+   */
+  const playSpiderSenseUnlock = useCallback(() => {
+    if (!enabledRef.current) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    ensureRunning(ctx);
+    const t0 = ctx.currentTime;
+
+    // Formicolio — oscillatore vibrato rapido (LFO ~28Hz sulla frequenza),
+    // gain basso e breve: il "tingle" prima dello sblocco.
+    const tingleOsc = ctx.createOscillator();
+    const tingleGain = ctx.createGain();
+    const lfo = ctx.createOscillator();
+    const lfoGain = ctx.createGain();
+    tingleOsc.type = 'sine';
+    tingleOsc.frequency.setValueAtTime(1100, t0);
+    lfo.type = 'sine';
+    lfo.frequency.value = 28;
+    lfoGain.gain.value = 70;
+    lfo.connect(lfoGain);
+    lfoGain.connect(tingleOsc.frequency);
+    tingleGain.gain.setValueAtTime(0.0001, t0);
+    tingleGain.gain.exponentialRampToValueAtTime(0.07, t0 + 0.03);
+    tingleGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.32);
+    tingleOsc.connect(tingleGain);
+    tingleGain.connect(ctx.destination);
+    lfo.start(t0);
+    tingleOsc.start(t0);
+    lfo.stop(t0 + 0.34);
+    tingleOsc.stop(t0 + 0.34);
+
+    // Risoluzione — ping cristallino a due note ascendenti.
+    const master = ctx.createGain();
+    master.gain.value = 0.15;
+    master.connect(ctx.destination);
+    [1318.5, 1760.0].forEach((freq, i) => { // E6 - A6
+      const start = t0 + 0.3 + i * 0.1;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(1, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.4);
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(start);
+      osc.stop(start + 0.42);
+    });
+  }, [ensureRunning]);
+
+  /**
+   * V27.0 — Pillar 2 (AI Index Matrix): Data Import — due blip digitali
+   * rapidi in salita, per confermare che il parser ha validato/importato
+   * la struttura incollata. Deliberatamente "informatico/pulito", mai
+   * musicale come i chime di progressione: è un ACK tecnico, non un premio.
+   */
+  const playDataImport = useCallback(() => {
+    if (!enabledRef.current) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    ensureRunning(ctx);
+    const t0 = ctx.currentTime;
+    const master = ctx.createGain();
+    master.gain.value = 0.12;
+    master.connect(ctx.destination);
+    [880, 1318.5].forEach((freq, i) => {
+      const start = t0 + i * 0.09;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.5, start + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.1);
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(start);
+      osc.stop(start + 0.12);
+    });
+  }, [ensureRunning]);
+
   // Identità stabile fra i render: consumata come singola dipendenza
   // (`audio`) in effetti ed useMemo altrove (Context value, listener
   // globale del Web-Click) — senza questo useMemo cambierebbe riferimento
@@ -590,7 +897,14 @@ export function useAudioEngine({ enabled = true } = {}) {
       playSkillUnlock,
       playAccessDenied,
       playAccessGranted,
-      playTypingTic
+      playTypingTic,
+      playMaxCarnageActivate,
+      startMaxCarnageDrone,
+      stopMaxCarnageDrone,
+      playWebSlingReveal,
+      playChestOpen,
+      playDataImport,
+      playSpiderSenseUnlock
     }),
     [
       playWebClick,
@@ -605,7 +919,14 @@ export function useAudioEngine({ enabled = true } = {}) {
       playSkillUnlock,
       playAccessDenied,
       playAccessGranted,
-      playTypingTic
+      playTypingTic,
+      playMaxCarnageActivate,
+      startMaxCarnageDrone,
+      stopMaxCarnageDrone,
+      playWebSlingReveal,
+      playChestOpen,
+      playDataImport,
+      playSpiderSenseUnlock
     ]
   );
 }

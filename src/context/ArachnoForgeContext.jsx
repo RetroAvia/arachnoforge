@@ -27,7 +27,9 @@ import {
   DIFFICULTY,
   FOCUS_QUALITY,
   FOCUS_QUALITY_META,
-  DEFAULT_FOCUS_QUALITY
+  DEFAULT_FOCUS_QUALITY,
+  MAX_CARNAGE_MULTIPLIER,
+  computeSpiderSenseSurgeXp
 } from '../utils/xpEngine.js';
 import { NODE_STATUS, PERSISTED_STATUS, deriveNodeStatus, orphanChildren, createSfida, markFirstCompletion } from '../utils/skillTree.js';
 import { getSkillDef, canUnlockSkill, computeSkillEffects } from '../data/techTree.js';
@@ -44,6 +46,10 @@ import { useKarenAutoRouter } from '../hooks/useKarenAutoRouter.js';
 import { computePrimaryTarget } from '../utils/karenSuggestor.js';
 import { generateDailyQuests, applyQuestEvent, QUEST_EVENTS } from '../utils/dailyPatrol.js';
 import { useAchievements } from '../hooks/useAchievements.js';
+import { isMaxCarnageActive, bumpCriticalActionStreak, deactivateMaxCarnage } from '../utils/maxCarnage.js';
+import { canClaimWebSling, rollWebSlingReward } from '../utils/webSling.js';
+import { createSfideTreeFromAiIndex } from '../utils/aiIndexParser.js';
+import { validateAdminPassphrase, sandboxStorageKey, guestStorageKey, loadLocalState, saveLocalState } from '../utils/adminOverride.js';
 
 const ArachnoForgeContext = createContext(null);
 
@@ -66,6 +72,26 @@ function updateMateriaSfide(state, materiaId, updater) {
     ...state,
     materie: state.materie.map((m) => (m.id === materiaId ? { ...m, sfide: updater(m.sfide) } : m))
   };
+}
+
+/**
+ * V27.0 — Pillar 3 (Maximum Carnage Mode): punto unico da cui le tre
+ * "azioni critiche" (Nodo Hard completato, Focus in Overdrive, vittoria
+ * Boss Fight) alimentano lo streak verso lo sblocco. Isolato in un
+ * helper condiviso per evitare di duplicare tre volte la stessa logica
+ * di attivazione/log nei rispettivi case del reducer.
+ */
+function applyCriticalAction(profile, combatLog, isCriticalAction) {
+  if (!isCriticalAction) return { profile, combatLog };
+  const { justActivated, ...patch } = bumpCriticalActionStreak(profile, 1);
+  const nextProfile = { ...profile, ...patch };
+  if (!justActivated) return { profile: nextProfile, combatLog };
+  const nextLog = pushLog(
+    combatLog,
+    'MAXIMUM CARNAGE MODE ATTIVATA — Il simbionte prende il sopravvento per le prossime 2 ore. XP raddoppiati, Stamina illimitata.',
+    'CARNAGE'
+  );
+  return { profile: nextProfile, combatLog: nextLog };
 }
 
 function updateStreakOnActivity(profile) {
@@ -196,6 +222,7 @@ function reducer(state, action) {
       const isFatigued = state.profile.stamina < FATIGUE_STAMINA_THRESHOLD;
       const isHard = target.difficulty === DIFFICULTY.HARD;
       const skillEffects = computeSkillEffects(state.profile.unlockedSkills);
+      const isMaxCarnage = isMaxCarnageActive(state.profile);
 
       const xpGain = computeFocusXp({
         focusMinutes: state.settings.focusTime,
@@ -205,7 +232,8 @@ function reducer(state, action) {
         difficulty: target.difficulty,
         streak: state.profile.streak,
         xpBonusPct: skillEffects.xpBonusPct,
-        streakThresholdBonus: skillEffects.streakThresholdBonus
+        streakThresholdBonus: skillEffects.streakThresholdBonus,
+        isMaxCarnage
       });
 
       const completedSfide = materia.sfide.map((s) => (s.id === sfidaId ? markFirstCompletion(s) : s));
@@ -216,9 +244,15 @@ function reducer(state, action) {
 
       let combatLog = pushLog(
         state.combatLog,
-        `Nodo "${target.nome}" completato in ${materia.nome}. +${xpGain} XP. Prossimo Spider-Sense tra 7 giorni.`,
+        `Nodo "${target.nome}" completato in ${materia.nome}. +${xpGain} XP${isMaxCarnage ? ' [MAXIMUM CARNAGE x2]' : ''}. Prossimo Spider-Sense tra 7 giorni.`,
         'SUCCESS'
       );
+
+      // Maximum Carnage Mode (V27.0, Pillar 3): un Nodo Hard completato è
+      // un'"azione critica" — alimenta lo streak verso il prossimo sblocco.
+      const carnageUpdate = applyCriticalAction(profile, combatLog, isHard);
+      profile = carnageUpdate.profile;
+      combatLog = carnageUpdate.combatLog;
 
       // Daily Patrol Engine: "Node Hunter" e "Boss Hunter" si aggiornano
       // da soli. Un nodo è un "Boss" se ha almeno un figlio diretto agganciato.
@@ -303,6 +337,7 @@ function reducer(state, action) {
       // sbloccata E la sessione è realmente notturna (00:00-04:00) — mai
       // un bonus fantasma fuori dalla finestra oraria dichiarata.
       const nightBonus = skillEffects.nightBonusEnabled && sessionHour >= 0 && sessionHour < 4;
+      const isMaxCarnage = isMaxCarnageActive(state.profile);
 
       const xpGain = computeFocusXp({
         focusMinutes,
@@ -315,9 +350,10 @@ function reducer(state, action) {
         xpBonusPct: skillEffects.xpBonusPct,
         nightBonus,
         overdriveMultiplier: skillEffects.overdriveMultiplier,
-        streakThresholdBonus: skillEffects.streakThresholdBonus
+        streakThresholdBonus: skillEffects.streakThresholdBonus,
+        isMaxCarnage
       });
-      const staminaCost = computeFocusStaminaCost(focusMinutes, difficulty, skillEffects.staminaCostMultiplier);
+      const staminaCost = computeFocusStaminaCost(focusMinutes, difficulty, skillEffects.staminaCostMultiplier, isMaxCarnage);
 
       let profile = applyXpDeltaWithTokens(state.profile, xpGain);
       profile = {
@@ -370,9 +406,39 @@ function reducer(state, action) {
 
       let combatLog = pushLog(
         nextState.combatLog,
-        `Sessione Focus completata${wasOverdrive ? ' [OVERDRIVE]' : ''}${targetNode ? ` su "${targetNode.nome}"` : ''} — Debriefing: ${qualityMeta.label} (${qualityMeta.badge}). +${xpGain} XP, -${staminaCost} Stamina (${focusMinutes} min).`,
+        `Sessione Focus completata${wasOverdrive ? ' [OVERDRIVE]' : ''}${isMaxCarnage ? ' [MAXIMUM CARNAGE x2]' : ''}${targetNode ? ` su "${targetNode.nome}"` : ''} — Debriefing: ${qualityMeta.label} (${qualityMeta.badge}). +${xpGain} XP, -${staminaCost} Stamina (${focusMinutes} min).`,
         wasOverdrive ? 'OVERDRIVE' : 'FOCUS'
       );
+
+      // Maximum Carnage Mode (V27.0, Pillar 3): una sessione conclusa in
+      // Overdrive è un'"azione critica" — alimenta lo streak verso il
+      // prossimo sblocco della modalità.
+      {
+        const carnageUpdate = applyCriticalAction(profile, combatLog, wasOverdrive);
+        profile = carnageUpdate.profile;
+        combatLog = carnageUpdate.combatLog;
+        nextState = { ...nextState, profile };
+      }
+
+      // V28.1 — Pillar 3 (Spider-Sense Focus Surge): premia una sessione di
+      // Focus completata PULITA su una Materia universitaria. "Pulita" è
+      // garantito per costruzione — un'interruzione (Blood Pact) azzera
+      // `pendingFocus` PRIMA che questa azione possa mai essere
+      // dispatchata (vedi interruptFocus in useFocusTimer.js), quindi il
+      // solo fatto di essere qui dentro implica zero interruzioni sull'intera
+      // catena Focus/Overdrive. Bonus proporzionale alla Difficoltà
+      // Percepita della Materia (1-5, Web-Path Planner) — mai al singolo
+      // nodo, coerente con "difficoltà della materia" richiesta.
+      if (materia) {
+        const spiderSenseBonus = computeSpiderSenseSurgeXp(materia.perceivedDifficulty);
+        profile = applyXpDeltaWithTokens(profile, spiderSenseBonus);
+        combatLog = pushLog(
+          combatLog,
+          `Spider-Sense Surge — sessione pulita su "${materia.nome}" senza interruzioni. Bonus +${spiderSenseBonus} XP (difficoltà ${Number.isFinite(materia.perceivedDifficulty) ? materia.perceivedDifficulty : 3}/5).`,
+          'SPIDERSENSE'
+        );
+        nextState = { ...nextState, profile };
+      }
 
       // Daily Patrol Engine: Focus Strike, Primary Target, Early Bird,
       // Night Owl, Flow Seeker e Overdrive Master si aggiornano TUTTI da
@@ -503,9 +569,11 @@ function reducer(state, action) {
     case 'BOSS_FIGHT_RESULT': {
       const { win, hpRemaining, materiaNome, timeRemainingSeconds, totalSeconds } = action.payload;
       const skillEffects = computeSkillEffects(state.profile.unlockedSkills);
-      const xpGain = win
+      const isMaxCarnage = isMaxCarnageActive(state.profile);
+      let xpGain = win
         ? Math.round(500 * (0.5 + hpRemaining / 200) * computeStreakMultiplier(state.profile.streak, skillEffects.streakThresholdBonus))
         : 0;
+      if (win && isMaxCarnage) xpGain = Math.round(xpGain * MAX_CARNAGE_MULTIPLIER);
       let profile = state.profile;
       if (win) profile = applyXpDeltaWithTokens(profile, xpGain);
       const starLog = [
@@ -524,7 +592,7 @@ function reducer(state, action) {
       let combatLog = pushLog(
         state.combatLog,
         win
-          ? `Supercriminale sconfitto (${hpRemaining} HP residui). +${xpGain} XP.`
+          ? `Supercriminale sconfitto (${hpRemaining} HP residui). +${xpGain} XP${isMaxCarnage ? ' [MAXIMUM CARNAGE x2]' : ''}.`
           : 'Il Supercriminale ha avuto la meglio. Nessun XP guadagnato.',
         win ? 'SUCCESS' : 'DANGER'
       );
@@ -536,6 +604,13 @@ function reducer(state, action) {
         profile = questUpdate.profile;
         combatLog = questUpdate.combatLog;
         dailyPatrols = questUpdate.dailyPatrols;
+
+        // Maximum Carnage Mode (V27.0, Pillar 3): una vittoria in Boss
+        // Fight è un'"azione critica" — alimenta lo streak verso il
+        // prossimo sblocco della modalità.
+        const carnageUpdate = applyCriticalAction(profile, combatLog, true);
+        profile = carnageUpdate.profile;
+        combatLog = carnageUpdate.combatLog;
       }
 
       return { ...state, profile, starLog, combatLog, dailyPatrols };
@@ -590,6 +665,65 @@ function reducer(state, action) {
       // (deterministiche sulla dateKey — vedi generateDailyQuests).
       return { ...state, dailyPatrols: action.payload };
 
+    // V27.0 — Pillar 3: scadenza naturale (o disattivazione esplicita)
+    // della finestra Maximum Carnage — dispatchata dall'effetto dedicato
+    // nel Provider non appena `isMaxCarnageActive` torna false.
+    case 'DEACTIVATE_MAX_CARNAGE':
+      return {
+        ...state,
+        profile: { ...state.profile, ...deactivateMaxCarnage() },
+        combatLog: pushLog(state.combatLog, 'Maximum Carnage Mode esaurita. Il simbionte si ritira, in attesa della prossima furia.', 'CARNAGE')
+      };
+
+    // V27.0 — Pillar 4: "Il Forziere di Parker" — il roll pesato avviene
+    // FUORI dal reducer (vedi actions.claimWebSling), cosi' che il reducer
+    // resti puro/deterministico: qui si applica solo il risultato già
+    // deciso. Doppio-claim blindato sulla dateKey persistita.
+    case 'WEB_SLING_CLAIM': {
+      if (!canClaimWebSling(state.profile)) return state;
+      const { tier } = action.payload;
+      let profile = tier.xp > 0 ? applyXpDeltaWithTokens(state.profile, tier.xp) : state.profile;
+      profile = {
+        ...profile,
+        webSlingLastClaimDateKey: getDateKey(),
+        stamina: tier.restoreStamina ? 100 : profile.stamina,
+        techTokens: (Number.isFinite(profile.techTokens) ? profile.techTokens : 0) + (tier.techTokens || 0)
+      };
+      const rewardParts = [`+${tier.xp} XP`];
+      if (tier.restoreStamina) rewardParts.push('Stamina rigenerata al 100%');
+      if (tier.techTokens > 0) rewardParts.push(`+${tier.techTokens} Tech Token`);
+      return {
+        ...state,
+        profile,
+        combatLog: pushLog(
+          state.combatLog,
+          `Daily Web-Sling — Forziere aperto: ${tier.label} (${tier.rarity}). ${rewardParts.join(', ')}.`,
+          'REFUEL'
+        )
+      };
+    }
+
+    // V27.0 — Pillar 2: "AI Index Matrix" — importazione bulk di un
+    // sotto-albero (Nodo Padre + Nodi Figli) già validato/normalizzato da
+    // createSfideTreeFromAiIndex (vedi aiIndexParser.js). Il reducer si
+    // limita ad appendere i nodi già pronti alla Materia target: nessuna
+    // logica di parsing/validazione vive qui (mai un reducer impuro o
+    // fallibile su input esterno malformato).
+    case 'BULK_IMPORT_SFIDE': {
+      const { materiaId, sfide } = action.payload;
+      const materia = findMateria(state, materiaId);
+      if (!materia || !Array.isArray(sfide) || sfide.length === 0) return state;
+      const parentCount = sfide.filter((s) => !s.parentId).length;
+      return {
+        ...updateMateriaSfide(state, materiaId, (existing) => [...existing, ...sfide]),
+        combatLog: pushLog(
+          state.combatLog,
+          `AI Index Matrix — importati ${sfide.length} nodi (${parentCount} Nodo/i Padre) in ${materia.nome}.`,
+          'HUB'
+        )
+      };
+    }
+
     case 'LOG_EVENT':
       return { ...state, combatLog: pushLog(state.combatLog, action.payload.message, action.payload.tag) };
 
@@ -625,11 +759,26 @@ export function ArachnoForgeProvider({ children }) {
   // il caricamento reale arriva subito dopo, in modo asincrono, dal boot
   // effect qui sotto, che sostituisce lo stato con HYDRATE non appena la
   // query Supabase risolve.
-  const { user, signOut: authSignOut } = useAuthContext();
+  const { user, signOut: authSignOut, isGuest } = useAuthContext();
   const [state, dispatch] = useReducer(reducer, undefined, createDefaultState);
   const [sensoryZero, setSensoryZero] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [nowTick, setNowTick] = useState(0);
+
+  // V28.1 — Pillar 2 (Secure Admin Override): terzo backend di
+  // persistenza, attivabile SOLO per utenti reali (mai in Modalità
+  // Ospite, che è già interamente locale). `storageMode` è la singola
+  // fonte di verità letta da boot fetch + autosave qui sotto — mai due
+  // rami di codice che decidono la destinazione di lettura/scrittura in
+  // modo indipendente e potenzialmente disallineato.
+  const [sandboxActive, setSandboxActive] = useState(false);
+  const storageMode = isGuest ? 'guest' : sandboxActive ? 'sandbox' : 'cloud';
+  // Snapshot dello stato Cloud reale, congelato nell'istante esatto in cui
+  // si entra in Sandbox — permette un ritorno ISTANTANEO al profilo
+  // standard (nessun secondo round-trip di rete) e, se la Sandbox non ha
+  // ancora un proprio salvataggio locale, serve anche da punto di partenza
+  // realistico ("una copia da cui sperimentare", mai uno stato vuoto).
+  const cloudSnapshotRef = useRef(null);
 
   // Cloud Sync status — micro-HUD (Pillar 4): 'loading' (boot iniziale,
   // blocca il render dei children), 'syncing' (upsert in corso),
@@ -726,25 +875,47 @@ export function ArachnoForgeProvider({ children }) {
   useEffect(() => {
     let cancelled = false;
     setSyncStatus('loading');
+    cloudReadyRef.current = false;
     (async () => {
       try {
-        const { data, error } = await supabase
-          .from(USER_DATA_TABLE)
-          .select('app_state')
-          .eq('user_id', user.id)
-          .maybeSingle();
-        if (cancelled) return;
-        if (error) throw error;
+        if (storageMode === 'cloud') {
+          const { data, error } = await supabase
+            .from(USER_DATA_TABLE)
+            .select('app_state')
+            .eq('user_id', user.id)
+            .maybeSingle();
+          if (cancelled) return;
+          if (error) throw error;
 
-        if (data && data.app_state) {
-          dispatch({ type: 'HYDRATE', payload: hydrateState(data.app_state) });
+          if (data && data.app_state) {
+            dispatch({ type: 'HYDRATE', payload: hydrateState(data.app_state) });
+          } else {
+            const fresh = createDefaultState();
+            const metaUsername = user.user_metadata && typeof user.user_metadata.username === 'string' ? user.user_metadata.username.trim() : '';
+            if (metaUsername) fresh.profile.username = metaUsername;
+            dispatch({ type: 'HYDRATE', payload: fresh });
+            const { error: insertError } = await supabase.from(USER_DATA_TABLE).insert({ user_id: user.id, app_state: fresh });
+            if (insertError) throw insertError;
+          }
         } else {
-          const fresh = createDefaultState();
-          const metaUsername = user.user_metadata && typeof user.user_metadata.username === 'string' ? user.user_metadata.username.trim() : '';
-          if (metaUsername) fresh.profile.username = metaUsername;
-          dispatch({ type: 'HYDRATE', payload: fresh });
-          const { error: insertError } = await supabase.from(USER_DATA_TABLE).insert({ user_id: user.id, app_state: fresh });
-          if (insertError) throw insertError;
+          // V28.1 — Pillar 2: backend locale (Guest o Sandbox Admin) — mai
+          // una query di rete. La Sandbox, al primo ingresso (nessun
+          // salvataggio locale ancora presente), riparte da una COPIA
+          // dello stato Cloud reale appena congelato (`cloudSnapshotRef`),
+          // cosi' l'admin sperimenta su dati realistici invece che su un
+          // profilo vuoto — mai lo stato Cloud reale viene toccato da qui.
+          const key = storageMode === 'guest' ? guestStorageKey() : sandboxStorageKey(user.id);
+          const saved = loadLocalState(key);
+          if (saved) {
+            dispatch({ type: 'HYDRATE', payload: hydrateState(saved) });
+          } else if (storageMode === 'sandbox' && cloudSnapshotRef.current) {
+            dispatch({ type: 'HYDRATE', payload: hydrateState(cloudSnapshotRef.current) });
+          } else {
+            const fresh = createDefaultState();
+            const metaUsername = user.user_metadata && typeof user.user_metadata.username === 'string' ? user.user_metadata.username.trim() : '';
+            if (metaUsername) fresh.profile.username = metaUsername;
+            dispatch({ type: 'HYDRATE', payload: fresh });
+          }
         }
 
         if (cancelled) return;
@@ -752,7 +923,7 @@ export function ArachnoForgeProvider({ children }) {
         skipNextSaveRef.current = true; // l'HYDRATE che sta per innescare l'effetto di save qui sotto non è una modifica reale dell'utente
         setSyncStatus('synced');
       } catch (err) {
-        console.error('[ArachnoForge] Cloud boot fallito — impossibile leggere/creare user_data.', err);
+        console.error('[ArachnoForge] Boot dello stato fallito — impossibile leggere/creare i dati del profilo.', err);
         if (!cancelled) setSyncStatus('error');
       }
     })();
@@ -760,7 +931,7 @@ export function ArachnoForgeProvider({ children }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user.id]);
+  }, [user.id, storageMode]);
 
   // V26.0 — Cloud State Sync (Pillar 4): Debounced Auto-Save. Ogni
   // variazione di stato riavvia un timer di 2.5s; solo l'ULTIMA variazione
@@ -780,13 +951,20 @@ export function ArachnoForgeProvider({ children }) {
     setSyncStatus('syncing');
     saveTimeoutRef.current = setTimeout(async () => {
       try {
-        const { error } = await supabase
-          .from(USER_DATA_TABLE)
-          .upsert({ user_id: user.id, app_state: state }, { onConflict: 'user_id' });
-        if (error) throw error;
+        if (storageMode === 'cloud') {
+          const { error } = await supabase
+            .from(USER_DATA_TABLE)
+            .upsert({ user_id: user.id, app_state: state }, { onConflict: 'user_id' });
+          if (error) throw error;
+        } else {
+          // V28.1 — Pillar 2: Guest/Sandbox scrivono SOLO in locale — mai
+          // una riga Supabase creata/toccata per queste due modalità.
+          const key = storageMode === 'guest' ? guestStorageKey() : sandboxStorageKey(user.id);
+          saveLocalState(key, state);
+        }
         setSyncStatus('synced');
       } catch (err) {
-        console.error('[ArachnoForge] Cloud autosave fallito.', err);
+        console.error('[ArachnoForge] Autosave fallito.', err);
         setSyncStatus('error');
       }
     }, 2500);
@@ -794,7 +972,7 @@ export function ArachnoForgeProvider({ children }) {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, user.id]);
+  }, [state, user.id, storageMode]);
 
   // Snapshot sempre aggiornato dello stato, letto (mai come dipendenza) da
   // funzioni dentro `actions` che hanno bisogno del valore CORRENTE senza
@@ -817,6 +995,64 @@ export function ArachnoForgeProvider({ children }) {
     const id = setInterval(check, 60000);
     return () => clearInterval(id);
   }, [state.profile.lastStaminaResetDate]);
+
+  // V27.0 — Pillar 3 (Maximum Carnage Mode): scadenza naturale della
+  // finestra da 2 ore. Poll ogni 15s (più fine del reset a 03:00: qui il
+  // "momento esatto" in cui la furia si esaurisce merita un feedback
+  // rapido, non un ritardo fino a un minuto) — appena il timestamp di
+  // scadenza è superato, dispatcha la disattivazione una sola volta.
+  useEffect(() => {
+    if (!state.profile.maxCarnageActive) return undefined;
+    const check = () => {
+      if (!isMaxCarnageActive(state.profile)) {
+        dispatch({ type: 'DEACTIVATE_MAX_CARNAGE' });
+      }
+    };
+    check();
+    const id = setInterval(check, 15000);
+    return () => clearInterval(id);
+  }, [state.profile.maxCarnageActive, state.profile.maxCarnageExpiresAt]);
+
+  // V27.0 — Pillar 3: Feedback Sensoriale Completo — transizione edge-
+  // triggered (come i Trofei / Daily Patrol) su `maxCarnageActive`: al
+  // fronte di salita si scatena il ruggito + si avvia il drone ambientale
+  // continuo; al fronte di discesa (scadenza o disattivazione) il drone
+  // si ferma esplicitamente. Mai un secondo avvio sovrapposto: il ref
+  // interno di useAudioEngine (`carnageDroneRef`) è già blindato.
+  const prevMaxCarnageRef = useRef(state.profile.maxCarnageActive);
+  useEffect(() => {
+    const wasActive = prevMaxCarnageRef.current;
+    const isActive = state.profile.maxCarnageActive;
+    if (!wasActive && isActive) {
+      pushToast('MAXIMUM CARNAGE MODE — Il simbionte prende il sopravvento. XP x2, Stamina illimitata per 2 ore.', 'danger');
+      audio.playMaxCarnageActivate();
+      audio.startMaxCarnageDrone();
+    } else if (wasActive && !isActive) {
+      pushToast('Maximum Carnage Mode esaurita. Il simbionte si ritira.', 'info');
+      audio.stopMaxCarnageDrone();
+    }
+    prevMaxCarnageRef.current = isActive;
+  }, [state.profile.maxCarnageActive, pushToast, audio]);
+
+  // V28.1 — Pillar 3 (Spider-Sense Focus Surge): edge-trigger sulle nuove
+  // righe di Combat Log taggate 'SPIDERSENSE' (stesso pattern del Daily
+  // Patrol/Max Carnage sopra) — tiene traccia SOLO delle voci aggiunte
+  // dall'ultimo render, mai un doppio trigger se il log viene ritagliato
+  // dal cap a 50 voci. `spiderSenseSurgeAt` è un timestamp "one-shot" letto
+  // da Mission Control per l'animazione di sblocco sul Tactical Timer.
+  const prevCombatLogLenRef = useRef(state.combatLog.length);
+  const [spiderSenseSurgeAt, setSpiderSenseSurgeAt] = useState(0);
+  useEffect(() => {
+    const prevLen = prevCombatLogLenRef.current;
+    const newEntries = prevLen <= state.combatLog.length ? state.combatLog.slice(prevLen) : state.combatLog;
+    const surgeEntry = newEntries.find((e) => e.tag === 'SPIDERSENSE');
+    if (surgeEntry) {
+      pushToast(surgeEntry.message, 'success');
+      audio.playSpiderSenseUnlock();
+      setSpiderSenseSurgeAt(Date.now());
+    }
+    prevCombatLogLenRef.current = state.combatLog.length;
+  }, [state.combatLog, pushToast, audio]);
 
   // Heartbeat temporale: lo Spider-Sense Engine dipende dal giorno solare
   // corrente (nextReviewDate <= oggi), non solo dallo stato applicativo.
@@ -966,13 +1202,72 @@ export function ArachnoForgeProvider({ children }) {
         return { valid: true };
       },
       resetProfile: () => dispatch({ type: 'RESET_PROFILE' }),
-      // V26.0 — Pillar 2: Logout dal Nexus Gate. Non serve pulire lo stato
-      // qui: smontando ArachnoForgeProvider (App.jsx reagisce a
-      // session === null) l'intero albero di stato in memoria sparisce da
-      // solo, e i dati restano al sicuro su Supabase per il prossimo login.
-      signOut: () => authSignOut()
+      // V27.0 — Pillar 4 (Daily Web-Sling): il roll pesato avviene QUI
+      // (fuori dal reducer, che resta puro) — un solo claim al giorno,
+      // guardia esplicita anche a livello di action creator così una UI
+      // disattenta (o un doppio tap rapidissimo) non può mai innescare due
+      // roll per lo stesso giorno. Ritorna il tier estratto così il
+      // componente chiamante (WebSlingChest) può orchestrare l'animazione
+      // di apertura sul risultato reale, mai un placeholder ottimistico.
+      claimWebSling: () => {
+        if (!canClaimWebSling(stateRef.current.profile)) return null;
+        const tier = rollWebSlingReward();
+        dispatch({ type: 'WEB_SLING_CLAIM', payload: { tier } });
+        audio.playChestOpen();
+        return tier;
+      },
+      // V27.0 — Pillar 2 (AI Index Matrix): importazione bulk di un
+      // sotto-albero già validato/normalizzato da createSfideTreeFromAiIndex
+      // (parsing/validazione vivono interamente in aiIndexParser.js, mai
+      // nel reducer). Ritorna l'esito così la modale può mostrare l'errore
+      // o chiudersi con un toast di successo.
+      bulkImportSkillTree: (materiaId, parsedNodes) => {
+        const result = createSfideTreeFromAiIndex(parsedNodes);
+        if (!result.valid) return result;
+        dispatch({ type: 'BULK_IMPORT_SFIDE', payload: { materiaId, sfide: result.sfide } });
+        pushToast(`AI Index Matrix — ${result.sfide.length} nodi importati.`, 'success');
+        audio.playDataImport();
+        return { valid: true, count: result.sfide.length };
+      },
+      // V28.1 — Pillar 2: Secure Admin Override. La validazione della
+      // passphrase vive interamente in `utils/adminOverride.js` (unico
+      // punto di verità) — qui ci si limita a reagire all'esito. Il
+      // congelamento dello snapshot Cloud avviene PRIMA di attivare il
+      // flag: l'effetto di boot (sopra) lo troverà già pronto al render
+      // successivo, per un eventuale primo ingresso in Sandbox "a copia".
+      activateSandbox: (password) => {
+        if (!validateAdminPassphrase(password)) {
+          pushToast('Karen: passphrase di override non riconosciuta. Accesso Admin negato.', 'danger');
+          audio.playAccessDenied();
+          return { valid: false };
+        }
+        cloudSnapshotRef.current = stateRef.current;
+        setSandboxActive(true);
+        pushToast('Protocollo Admin Attivato — Sandbox in uso.', 'info');
+        audio.playAccessGranted();
+        return { valid: true };
+      },
+      // Ritorno al profilo standard: SOLO un flip di flag — lo snapshot
+      // Cloud congelato all'ingresso resta la fonte per il prossimo
+      // HYDRATE (effetto di boot), mai un nuovo fetch di rete necessario.
+      deactivateSandbox: () => {
+        setSandboxActive(false);
+        pushToast('Sandbox disattivata — profilo Cloud ripristinato.', 'info');
+        audio.playWebClick();
+      },
+      // V26.0 — Pillar 2: Logout dal Nexus Gate (o uscita dalla Modalità
+      // Ospite — stesso ingresso unico, vedi AuthContext.signOut). Non
+      // serve pulire lo stato qui: smontando ArachnoForgeProvider (App.jsx
+      // reagisce a session === null && !isGuest) l'intero albero di stato
+      // in memoria sparisce da solo, e i dati restano al sicuro sul
+      // rispettivo backend (Cloud o locale) per il prossimo accesso. Uscire
+      // da una Sandbox attiva torna sempre al profilo Cloud per pulizia.
+      signOut: () => {
+        setSandboxActive(false);
+        authSignOut();
+      }
     }),
-    [pushToast, audio.playSuccessChime, audio.playLevelUpChime, audio.playSkillUnlock, authSignOut]
+    [pushToast, audio, authSignOut]
   );
 
   const derived = useMemo(() => {
@@ -1038,7 +1333,15 @@ export function ArachnoForgeProvider({ children }) {
       karenQuotaByMateriaId: karenAutoRouter.byMateriaId,
       karenEventHorizonList: karenAutoRouter.eventHorizonList,
       // Karen's Tactical Suggestor — Primary Target (V18.0/V20.0).
-      primaryTarget
+      primaryTarget,
+      // V27.0 — Pillar 3 (Maximum Carnage Mode): stato derivato, letto da
+      // Sidebar/Shell/MissionControl per il feedback sensoriale globale.
+      // Ricalcolato ad ogni `nowTick` (heartbeat 60s) cosi' la finestra
+      // scade visivamente anche senza altre azioni dell'utente.
+      isMaxCarnageActive: isMaxCarnageActive(state.profile),
+      // V27.0 — Pillar 4 (Daily Web-Sling): true se il forziere di oggi è
+      // ancora disponibile — letto dal widget in Mission Control.
+      canClaimWebSling: canClaimWebSling(state.profile)
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, nowTick, spiderSense, progression, karenAutoRouter, primaryTarget, skillEffects]);
@@ -1059,9 +1362,16 @@ export function ArachnoForgeProvider({ children }) {
       FOCUS_QUALITY,
       FOCUS_QUALITY_META,
       // V26.0 — Pillar 4: stato del Cloud Sync, letto dal micro-HUD in Sidebar.
-      syncStatus
+      syncStatus,
+      // V28.1 — Pillar 2: 'cloud' | 'guest' | 'sandbox' — letto da
+      // Sidebar/CoreConfig per adattare copy e badge senza duplicare la
+      // logica di derivazione (isGuest || sandboxActive) altrove.
+      storageMode,
+      // V28.1 — Pillar 3: timestamp one-shot dell'ultimo Spider-Sense
+      // Focus Surge, letto da Mission Control per l'animazione di sblocco.
+      spiderSenseSurgeAt
     }),
-    [state, actions, timer, audio, sensoryZero, derived, toasts, pushToast, dismissToast, syncStatus]
+    [state, actions, timer, audio, sensoryZero, derived, toasts, pushToast, dismissToast, syncStatus, storageMode, spiderSenseSurgeAt]
   );
 
   // K.A.R.E.N. Boot Sequence: finché il fetch iniziale da Supabase non è

@@ -149,6 +149,18 @@ export function formatHoursMinutes(totalHours) {
   return `${h}h ${m}m`;
 }
 
+/**
+ * V27.0 — Pillar 4 (Daily Web-Sling): millisecondi residui alla mezzanotte
+ * LOCALE del dispositivo (non UTC assoluto come le date-only degli esami:
+ * il "giorno" del forziere è quello percepito dall'utente, coerente con
+ * `getDateKey()` che usa già l'ora locale del browser).
+ */
+export function msUntilNextLocalMidnight(from = new Date()) {
+  const now = new Date(from);
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+  return Math.max(0, next.getTime() - now.getTime());
+}
+
 /** Etichetta umana "Luglio 2026" (capitalizzata) da una chiave "YYYY-MM". */
 export function formatMonthYearHuman(monthKey) {
   if (!monthKey) return '';

@@ -2,6 +2,7 @@ import React, { useState, useMemo, useCallback, memo } from 'react';
 import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
 import { Icon } from '../components/Icons.jsx';
 import Modal from '../components/Modal.jsx';
+import AiIndexMatrixModal from '../components/AiIndexMatrixModal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import Dropdown from '../components/Dropdown.jsx';
 import EmptyState from '../components/EmptyState.jsx';
@@ -345,6 +346,7 @@ export default function QuadrantHub() {
   const [editingMateria, setEditingMateria] = useState(null);
   const [deleteMateriaTarget, setDeleteMateriaTarget] = useState(null);
   const [sfidaModalOpen, setSfidaModalOpen] = useState(false);
+  const [aiIndexModalOpen, setAiIndexModalOpen] = useState(false);
   const [nodeDetail, setNodeDetail] = useState(null);
   const [deleteNodeTarget, setDeleteNodeTarget] = useState(null);
   const [spiderSenseDrawerOpen, setSpiderSenseDrawerOpen] = useState(false);
@@ -813,6 +815,16 @@ export default function QuadrantHub() {
                     </button>
                     <button
                       type="button"
+                      onClick={() => setAiIndexModalOpen(true)}
+                      disabled={goblinActive}
+                      title={goblinActive ? 'Goblin Protocol attivo: importazione nodi bloccata' : 'AI Index Matrix — importa un indice generato via IA'}
+                      className={`hidden sm:inline-flex ${BTN_GHOST}`}
+                    >
+                      <Icon name="chip" className="w-5 h-5" />
+                      AI Index Matrix
+                    </button>
+                    <button
+                      type="button"
                       onClick={openAddSfida}
                       disabled={goblinActive}
                       title={goblinActive ? 'Goblin Protocol attivo: aggiunta nodi bloccata' : ''}
@@ -823,6 +835,19 @@ export default function QuadrantHub() {
                     </button>
                   </div>
                 </div>
+                {/* AI Index Matrix — su mobile il pulsante ghost non entra
+                    comodamente nella riga: riga dedicata a piena larghezza
+                    sotto l'header, mai un'icona-only che nasconde il
+                    significato dell'azione. */}
+                <button
+                  type="button"
+                  onClick={() => setAiIndexModalOpen(true)}
+                  disabled={goblinActive}
+                  className={`sm:hidden w-full ${BTN_GHOST}`}
+                >
+                  <Icon name="chip" className="w-5 h-5" />
+                  AI Index Matrix
+                </button>
               </div>
 
               {/* Livelli 2 + 3 — Nodi Padre e relativi Nodi Figli */}
@@ -1064,6 +1089,14 @@ export default function QuadrantHub() {
         title="Elimina Nodo Web-Matrix"
         message={`Eliminare "${deleteMateriaTarget?.nome}"? Tutti i nodi e i progressi collegati andranno persi.`}
         confirmLabel="Elimina"
+      />
+
+      {/* V27.0 — Pillar 2: AI Index Matrix — importazione bulk dello Skill Tree. */}
+      <AiIndexMatrixModal
+        open={aiIndexModalOpen}
+        onClose={() => setAiIndexModalOpen(false)}
+        materiaId={selectedMateria?.id || null}
+        materiaNome={selectedMateria?.nome || ''}
       />
 
       {/* Modal: nuovo nodo */}

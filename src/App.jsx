@@ -7,6 +7,7 @@ import CyberToastStack from './components/CyberToast.jsx';
 import PageErrorBoundary from './components/PageErrorBoundary.jsx';
 import NexusGate from './components/NexusGate.jsx';
 import BootScreen from './components/BootScreen.jsx';
+import MaxCarnageBanner from './components/MaxCarnageBanner.jsx';
 import { APP_BG } from './utils/designSystem.js';
 import MissionControl from './pages/MissionControl.jsx';
 import QuadrantHub from './pages/QuadrantHub.jsx';
@@ -50,6 +51,21 @@ function Shell() {
     };
   }, [state.settings.suit]);
 
+  // V27.0 — Pillar 3 (Maximum Carnage Mode): stesso pattern del True Theme
+  // Engine — [data-carnage] su <body> ritinteggia istantaneamente l'intera
+  // app in nero/argento/rosso simbionte (vedi index.css), senza toccare
+  // un solo componente esistente.
+  useEffect(() => {
+    if (derived.isMaxCarnageActive) {
+      document.body.dataset.carnage = 'true';
+    } else {
+      delete document.body.dataset.carnage;
+    }
+    return () => {
+      delete document.body.dataset.carnage;
+    };
+  }, [derived.isMaxCarnageActive]);
+
   const showInterference = derived.fatigued && !state.settings.calmMode;
 
   return (
@@ -58,6 +74,9 @@ function Shell() {
     // volta dopo un login riuscito — la "porta che si apre sull'hub".
     <div className={`flex min-h-screen relative af-shell-fade-in ${APP_BG}`}>
       <div className="af-grain" />
+      {/* V27.0 — Pillar 3: vignette simbionte a schermo intero, sopra ogni
+          pagina ma sotto toast/modali — Feedback Sensoriale Completo. */}
+      {derived.isMaxCarnageActive && <div className="af-carnage-overlay" />}
       <Sidebar currentPage={currentPage} navigate={navigate} />
       <main
         className={`flex-1 min-w-0 h-screen overflow-y-auto af-viewport px-4 py-6 md:px-8 md:py-8 transition-all duration-500 relative ${
@@ -66,6 +85,7 @@ function Shell() {
       >
         {showInterference && <div className="af-interference" />}
         <div className="max-w-[1400px] mx-auto pt-10 md:pt-0">
+          <MaxCarnageBanner />
           <PageErrorBoundary key={currentPage} onRecover={() => navigate(ROUTES.MISSION_CONTROL)}>
             <PageSwitch currentPage={currentPage} />
           </PageErrorBoundary>
@@ -88,18 +108,22 @@ function Shell() {
  * "trapelare" nella sessione successiva.
  */
 export default function App() {
-  const { session, loading } = useAuthContext();
+  const { session, loading, isGuest } = useAuthContext();
 
   if (loading) {
     return <BootScreen message="Verifica sessione Nexus in corso..." />;
   }
 
-  if (!session) {
+  // V28.1 — Pillar 2: Modalità Ospite monta lo stesso Provider di una
+  // sessione reale (stessa Shell, stesse pagine) — cambia solo il backend
+  // di persistenza scelto DENTRO ArachnoForgeProvider (vedi `storageMode`),
+  // mai la logica di routing/gating qui.
+  if (!session && !isGuest) {
     return <NexusGate />;
   }
 
   return (
-    <ArachnoForgeProvider key={session.user.id}>
+    <ArachnoForgeProvider key={session ? session.user.id : 'guest-local'}>
       <Shell />
     </ArachnoForgeProvider>
   );

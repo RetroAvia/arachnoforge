@@ -170,7 +170,7 @@ export default function Armory() {
       {/* Tab switcher — V25.0: la Suit Lab ospita ora anche il Mini Skill
           Tree (Pillar 3), separato in una scheda dedicata per non
           affollare la pagina originale di Blueprints/Shop/Trofei. */}
-      <div className="flex items-center gap-2 border-b border-secondary/15 pb-0">
+      <div className="flex items-center gap-2 border-b border-secondary/15 pb-0 overflow-x-auto af-scroll">
         {ARMORY_TABS.map((tab) => {
           const active = activeTab === tab.id;
           return (
@@ -178,7 +178,7 @@ export default function Armory() {
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id)}
-              className={`relative flex items-center gap-2 px-4 py-3 text-sm font-semibold tracking-wide transition-all duration-300 border-b-2 -mb-px ${
+              className={`relative flex items-center gap-2 px-4 py-3 text-sm font-semibold tracking-wide transition-all duration-300 border-b-2 -mb-px shrink-0 whitespace-nowrap ${
                 active ? 'text-white border-primary' : 'text-slate-500 border-transparent hover:text-slate-300'
               }`}
             >

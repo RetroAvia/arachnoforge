@@ -12,6 +12,38 @@ export const LAST_STAND_SACRIFICE_RATE = 0.1;
 export const FATIGUE_STAMINA_THRESHOLD = 20;
 export const REVIEW_FLAT_XP = 10;
 
+/**
+ * V27.0 — Pillar 3 "Maximum Carnage Mode": moltiplicatore XP simbionte,
+ * applicato DOPO tutti gli altri fattori (CFU, Overdrive, Qualità, Streak,
+ * Notturno, Skill Tree) — un vero raddoppio finale, mai un bonus piatto
+ * che si perderebbe nell'arrotondamento. Il costo Stamina viene invece
+ * azzerato del tutto (vedi computeFocusStaminaCost) per l'intera finestra
+ * di 2 ore: "furia dopaminica" totale, nessun compromesso energetico.
+ */
+export const MAX_CARNAGE_MULTIPLIER = 2;
+
+/**
+ * V28.1 — Pillar 3 "Spider-Sense Focus Surge": bonus XP dedicato alle
+ * sessioni di Focus completate PULITE (mai interrotte con un Blood Pact —
+ * per costruzione, un'interruzione azzera i minuti in sospeso PRIMA che
+ * FOCUS_COMPLETED possa mai scattare, quindi raggiungere questo bonus
+ * implica già sessione pulita, nessun tracking aggiuntivo necessario) su
+ * una sessione agganciata a una Materia universitaria. Scala linearmente
+ * sulla Difficoltà Percepita (1-5, Web-Path Planner) attorno a un
+ * baseline neutro a 3/5, cosi' le materie più ostiche premiano di più la
+ * costanza del "non mollare a metà".
+ */
+export const SPIDER_SENSE_BASE_XP = 20;
+export const SPIDER_SENSE_NEUTRAL_DIFFICULTY = 3;
+
+export function computeSpiderSenseSurgeXp(perceivedDifficulty) {
+  const safeDifficulty =
+    Number.isFinite(perceivedDifficulty) && perceivedDifficulty >= 1 && perceivedDifficulty <= 5
+      ? perceivedDifficulty
+      : SPIDER_SENSE_NEUTRAL_DIFFICULTY;
+  return Math.round(SPIDER_SENSE_BASE_XP * (safeDifficulty / SPIDER_SENSE_NEUTRAL_DIFFICULTY));
+}
+
 /** Costo Stamina base per un Focus "standard" da 25 minuti a difficoltà Media. */
 export const BASE_STAMINA_PER_25MIN = 15;
 export const BASE_FOCUS_MINUTES = 25;
@@ -213,7 +245,10 @@ export function xpRequiredForLevel(level) {
  * @param {number} [staminaCostMultiplier] - moltiplicatore aggiuntivo dallo
  *   Skill Tree ("Resistenza Simbionte": la Stamina scende più lentamente).
  */
-export function computeFocusStaminaCost(focusMinutes, difficulty = DIFFICULTY.MEDIUM, staminaCostMultiplier = 1) {
+export function computeFocusStaminaCost(focusMinutes, difficulty = DIFFICULTY.MEDIUM, staminaCostMultiplier = 1, isMaxCarnage = false) {
+  // Maximum Carnage Mode: "consumo di Stamina azzerato" — nessun calcolo
+  // parziale, il costo è letteralmente 0 per tutta la finestra attiva.
+  if (isMaxCarnage) return 0;
   const meta = DIFFICULTY_META[difficulty] || DIFFICULTY_META.MEDIUM;
   const base = Math.ceil((focusMinutes / BASE_FOCUS_MINUTES) * BASE_STAMINA_PER_25MIN);
   return Math.max(1, Math.ceil(base * meta.staminaMultiplier * staminaCostMultiplier));
@@ -248,7 +283,8 @@ export function computeFocusXp({
   xpBonusPct = 0,
   nightBonus = false,
   overdriveMultiplier = OVERDRIVE_MULTIPLIER,
-  streakThresholdBonus = 0
+  streakThresholdBonus = 0,
+  isMaxCarnage = false
 }) {
   const diffMeta = DIFFICULTY_META[difficulty] || DIFFICULTY_META.MEDIUM;
   const qualityMeta = FOCUS_QUALITY_META[quality] || FOCUS_QUALITY_META[DEFAULT_FOCUS_QUALITY];
@@ -261,6 +297,10 @@ export function computeFocusXp({
   if (nightBonus) xp *= 1.1;
   if (xpBonusPct) xp *= 1 + xpBonusPct;
   if (isFatigued) xp *= FATIGUE_MULTIPLIER;
+  // Maximum Carnage Mode (V27.0, Pillar 3): raddoppio finale, applicato per
+  // ultimo cosi' da moltiplicare l'intero risultato già rifinito da ogni
+  // altro fattore — mai combinato "dentro" gli altri moltiplicatori.
+  if (isMaxCarnage) xp *= MAX_CARNAGE_MULTIPLIER;
   return Math.round(xp);
 }
 

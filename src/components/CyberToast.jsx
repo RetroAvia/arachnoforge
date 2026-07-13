@@ -21,7 +21,7 @@ function ToastCard({ toast, onDismiss }) {
 
   return (
     <div
-      className={`relative w-72 bg-surface/90 backdrop-blur-2xl rounded-2xl px-4 py-3.5 flex items-start gap-3 font-mono border ${meta.border} shadow-[0_8px_28px_rgba(0,0,0,0.5)] ${meta.glow} animate-[toastIn_0.35s_ease-out] overflow-hidden`}
+      className={`relative w-full sm:w-72 bg-surface/90 backdrop-blur-2xl rounded-2xl px-4 py-3.5 flex items-start gap-3 font-mono border ${meta.border} shadow-[0_8px_28px_rgba(0,0,0,0.5)] ${meta.glow} animate-[toastIn_0.35s_ease-out] overflow-hidden`}
     >
       <div className={`absolute inset-0 pointer-events-none ${meta.bg}`} />
       <Icon name={meta.icon} className={`relative w-6 h-6 shrink-0 mt-0.5 ${meta.text}`} />
@@ -41,7 +41,7 @@ function ToastCard({ toast, onDismiss }) {
 export default function CyberToastStack({ toasts, onDismiss }) {
   if (toasts.length === 0) return null;
   return (
-    <div className="fixed bottom-4 right-4 z-[80] flex flex-col gap-2.5 items-end pointer-events-none">
+    <div className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-4 z-[80] flex flex-col gap-2.5 items-stretch sm:items-end pointer-events-none">
       <style>{`
         @keyframes toastIn {
           from { opacity: 0; transform: translateX(24px); }

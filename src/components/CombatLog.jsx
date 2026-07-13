@@ -13,7 +13,9 @@ const TAG_COLORS = {
   HUB: 'text-secondary',
   SHOP: 'text-accent',
   CONFIG: 'text-slate-400',
-  SYSTEM: 'text-slate-400'
+  SYSTEM: 'text-slate-400',
+  CARNAGE: 'text-primary',
+  SPIDERSENSE: 'text-secondary'
 };
 
 export default function CombatLog({ entries }) {

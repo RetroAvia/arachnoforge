@@ -53,7 +53,7 @@ function NexusInput({ icon, type, value, onChange, placeholder, onTic, autoCompl
 }
 
 export default function NexusGate() {
-  const { signIn, signUp } = useAuthContext();
+  const { signIn, signUp, enterGuest } = useAuthContext();
   const audio = useAudioEngine({ enabled: true });
 
   const [mode, setMode] = useState(MODES.LOGIN);
@@ -150,6 +150,15 @@ export default function NexusGate() {
     },
     [submitting, email, password, confirmPassword, username, mode, signIn, signUp, audio]
   );
+
+  // V28.1 — Pillar 2: login Guest immediato, nessuna credenziale, nessuna
+  // chiamata Supabase — App.jsx smonta il Nexus Gate non appena
+  // `isGuest` diventa true, esattamente come dopo un login riuscito.
+  const handleGuest = useCallback(() => {
+    if (submitting) return;
+    audio.playAccessGranted();
+    enterGuest();
+  }, [submitting, audio, enterGuest]);
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-hidden bg-af-bg">
@@ -298,8 +307,31 @@ export default function NexusGate() {
             </button>
           </form>
 
+          {/* V28.1 — Pillar 2: accesso Guest — divider + pulsante secondario,
+              deliberatamente meno prominente del CTA primario (l'account
+              reale resta il percorso consigliato, il Guest è una via rapida
+              di prova). */}
+          <div className="relative flex items-center gap-3 mt-5">
+            <span className="h-px flex-1 bg-white/10" />
+            <span className="text-[10px] font-mono tracking-widest text-slate-600">OPPURE</span>
+            <span className="h-px flex-1 bg-white/10" />
+          </div>
+          <button
+            type="button"
+            onClick={handleGuest}
+            disabled={submitting}
+            onMouseEnter={() => !submitting && audio.playHoverBlip()}
+            className="relative w-full mt-4 inline-flex items-center justify-center gap-2 bg-white/[0.03] backdrop-blur-md border border-white/10 text-slate-300 font-semibold tracking-wide text-sm px-5 py-3 rounded-xl hover:bg-white/[0.07] hover:border-secondary/40 hover:text-white transition-all duration-300 disabled:opacity-40 disabled:pointer-events-none"
+          >
+            <Icon name="user" className="w-5 h-5" />
+            Continua come Ospite
+          </button>
+          <p className="relative text-center text-[10px] text-slate-600 mt-2 leading-relaxed">
+            Dati salvati solo su questo browser — nessun account, nessuna sincronizzazione Cloud.
+          </p>
+
           <p className="relative text-center text-[10px] font-mono tracking-widest text-slate-600 mt-6">
-            CONNESSIONE CRITTOGRAFATA // SUPABASE AUTH // ARACHNOFORGE V26.0
+            CONNESSIONE CRITTOGRAFATA // SUPABASE AUTH // ARACHNOFORGE V28.1
           </p>
         </div>
       </div>

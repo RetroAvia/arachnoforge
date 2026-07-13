@@ -39,7 +39,17 @@ export function createDefaultState() {
       // V25.0 — Pillar 3 (Tech Tokens & Passive Skill Tree): 1 token per
       // ogni Level Up, spendibile nello Skill Tree della Suit Lab.
       techTokens: 0,
-      unlockedSkills: []
+      unlockedSkills: [],
+      // V27.0 — Pillar 3 (Maximum Carnage Mode): streak di azioni critiche
+      // (nodi Hard, Overdrive, vittorie Boss Fight) verso il prossimo
+      // sblocco, più lo stato della finestra attiva da 2 ore corrente.
+      criticalActionStreak: 0,
+      maxCarnageActive: false,
+      maxCarnageExpiresAt: null,
+      // V27.0 — Pillar 4 (Daily Web-Sling): dateKey dell'ultimo riscatto
+      // del Forziere di Parker — un solo claim al giorno, blindato sulla
+      // stessa chiave calendariale del Daily Patrol Engine.
+      webSlingLastClaimDateKey: null
     },
     settings: {
       focusTime: 25,
@@ -149,7 +159,14 @@ export function hydrateState(rawState) {
     ...defaults.profile,
     ...rawProfile,
     techTokens: Number.isFinite(rawProfile.techTokens) && rawProfile.techTokens >= 0 ? rawProfile.techTokens : 0,
-    unlockedSkills: Array.isArray(rawProfile.unlockedSkills) ? rawProfile.unlockedSkills : []
+    unlockedSkills: Array.isArray(rawProfile.unlockedSkills) ? rawProfile.unlockedSkills : [],
+    // V27.0 — Blindatura Maximum Carnage / Web-Sling: mai propagare valori
+    // "sporchi" (NaN, stringhe, timestamp malformati) da un salvataggio
+    // corrotto o un import esterno — fallback sicuro ai default neutri.
+    criticalActionStreak: Number.isFinite(rawProfile.criticalActionStreak) && rawProfile.criticalActionStreak >= 0 ? rawProfile.criticalActionStreak : 0,
+    maxCarnageActive: rawProfile.maxCarnageActive === true,
+    maxCarnageExpiresAt: typeof rawProfile.maxCarnageExpiresAt === 'string' ? rawProfile.maxCarnageExpiresAt : null,
+    webSlingLastClaimDateKey: typeof rawProfile.webSlingLastClaimDateKey === 'string' ? rawProfile.webSlingLastClaimDateKey : null
   };
 
   return {
