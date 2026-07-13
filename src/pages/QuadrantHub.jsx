@@ -503,6 +503,11 @@ export default function QuadrantHub() {
   const [aiIndexModalOpen, setAiIndexModalOpen] = useState(false);
   const [nodeDetail, setNodeDetail] = useState(null);
   const [deleteNodeTarget, setDeleteNodeTarget] = useState(null);
+  // V34.4 — "Riporta a da completare": undo per un nodo segnato COMPLETED
+  // per errore. Stesso pattern di deleteNodeTarget: la modale di dettaglio
+  // si chiude e la conferma vive nel proprio ConfirmDialog dedicato,
+  // cosi' un click accidentale sul bottone non riapre subito il nodo.
+  const [reopenNodeTarget, setReopenNodeTarget] = useState(null);
   const [spiderSenseDrawerOpen, setSpiderSenseDrawerOpen] = useState(false);
 
   // V34.2 — "Selezione Multipla Nodi": stato dedicato, isolato dal resto
@@ -855,6 +860,16 @@ export default function QuadrantHub() {
   const handleBossLockedAttempt = useCallback(() => {
     pushToast('Completa prima tutti i sotto-argomenti', 'danger');
   }, [pushToast]);
+
+  // V34.4 — Conferma effettiva del "Riporta a da completare": eseguita solo
+  // dopo la conferma nel ConfirmDialog dedicato (mai un click diretto sul
+  // bottone nella modale di dettaglio, per evitare un undo accidentale
+  // tanto quanto lo era stato il "Completa Nodo" di partenza).
+  const confirmReopenNode = useCallback(() => {
+    if (!selectedMateria || !reopenNodeTarget) return;
+    actions.reopenSfida(selectedMateria.id, reopenNodeTarget.id);
+    setReopenNodeTarget(null);
+  }, [actions, selectedMateria, reopenNodeTarget]);
 
   // V34.2 — "Selezione Multipla Nodi": toggle di un singolo id nel Set —
   // immutabile (nuovo Set ad ogni chiamata), coerente col resto dell'app.
@@ -1735,6 +1750,26 @@ export default function QuadrantHub() {
                     </div>
                   )}
 
+                  {/* V34.4 — "Riporta a da completare": undo per un
+                      "Completa Nodo" fatto per errore. Visibile su
+                      qualunque nodo con stato persistito COMPLETED (sia
+                      NEEDS_REVIEW che COMPLETED "puro"), sempre in coda
+                      alle azioni di ripasso cosi' da non essere il primo
+                      bottone cliccabile per sbaglio. */}
+                  {(status === NODE_STATUS.COMPLETED || status === NODE_STATUS.NEEDS_REVIEW) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReopenNodeTarget(nodeDetail);
+                        closeNodeDetail();
+                      }}
+                      className={`w-full ${BTN_GHOST}`}
+                    >
+                      <Icon name="undo" className="w-4 h-4" />
+                      Riporta a "da completare"
+                    </button>
+                  )}
+
                   {/* V16.0 (Pillar 1) — alert elegante "Boss non ancora sconfitto":
                       il pulsante resta visibile ma disattivato in stile, e un
                       click mostra il toast esplicativo invece di completare nulla. */}
@@ -1794,6 +1829,18 @@ export default function QuadrantHub() {
         title="Elimina Nodo"
         message={`Eliminare il nodo "${deleteNodeTarget?.nome}"? Eventuali nodi figli verranno promossi a Nodo Padre, non cancellati.`}
         confirmLabel="Elimina"
+      />
+
+      {/* V34.4 — "Riporta a da completare": conferma dedicata (mai danger=true,
+          non è un'eliminazione) prima di rimettere il nodo tra i "da fare". */}
+      <ConfirmDialog
+        open={!!reopenNodeTarget}
+        onClose={() => setReopenNodeTarget(null)}
+        onConfirm={confirmReopenNode}
+        title="Riporta a da completare"
+        message={`Riportare il nodo "${reopenNodeTarget?.nome}" tra i nodi da completare? XP, Tech Token e streak già assegnati restano acquisiti — solo lo stato del nodo torna indietro.`}
+        confirmLabel="Riporta indietro"
+        danger={false}
       />
 
       {/* V34.2 — "Selezione Multipla Nodi": conferma unica per l'intero

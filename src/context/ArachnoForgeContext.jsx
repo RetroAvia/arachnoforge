@@ -324,6 +324,50 @@ function reducer(state, action) {
       };
     }
 
+    // V34.4 — "Riporta a da completare": undo di un COMPLETE_SFIDA per
+    // errori di click. Riporta il nodo a PERSISTED_STATUS.PENDING (torna
+    // così AVAILABLE/LOCKED secondo deriveNodeStatus, in base ai suoi
+    // figli) SENZA ritirare XP/Tech Token/streak/Daily Patrol già
+    // assegnati: replicare esattamente l'inverso di applyXpDeltaWithTokens,
+    // updateStreakOnActivity, applyCriticalAction e
+    // applyQuestProgressAndProfile richiederebbe di ricostruire uno stato
+    // "prima" che l'app non persiste — un tentativo approssimato
+    // rischierebbe di produrre XP negativa, streak incoerenti o Daily
+    // Patrol/Trofei "ritirati" a metà. Coerente col resto dell'app (i
+    // ripassi via Spider-Sense funzionano allo stesso modo: registrano
+    // nuovi eventi, non riscrivono la storia).
+    case 'REOPEN_SFIDA': {
+      const { materiaId, sfidaId } = action.payload;
+      const materia = findMateria(state, materiaId);
+      if (!materia) return state;
+      const target = materia.sfide.find((s) => s.id === sfidaId);
+      if (!target) return state;
+      // Blindatura: si può riaprire solo un nodo davvero COMPLETED
+      // (persistito) — no-op su un nodo già PENDING.
+      if (target.status !== PERSISTED_STATUS.COMPLETED) return state;
+
+      const reopenedSfide = materia.sfide.map((s) =>
+        s.id === sfidaId
+          ? {
+              ...s,
+              status: PERSISTED_STATUS.PENDING,
+              completionTimestamp: null,
+              nextReviewDate: null,
+              lastReviewRating: null
+            }
+          : s
+      );
+
+      return {
+        ...updateMateriaSfide(state, materiaId, () => reopenedSfide),
+        combatLog: pushLog(
+          state.combatLog,
+          `Nodo "${target.nome}" riportato a "da completare" in ${materia.nome}. XP e progressi già assegnati non vengono ritirati.`,
+          'HUB'
+        )
+      };
+    }
+
     case 'REVIEW_SFIDA': {
       const { materiaId, sfidaId, rating } = action.payload;
       const materia = findMateria(state, materiaId);
@@ -1327,6 +1371,13 @@ export function ArachnoForgeProvider({ children }) {
       reviewSfida: (materiaId, sfidaId, rating) => {
         dispatch({ type: 'REVIEW_SFIDA', payload: { materiaId, sfidaId, rating } });
         audio.playSuccessChime();
+      },
+      // V34.4 — Undo di un Nodo completato per errore: nessun fanfare di
+      // successo qui, solo un click neutro (non è né una ricompensa né una
+      // penalità, semplice correzione di stato).
+      reopenSfida: (materiaId, sfidaId) => {
+        dispatch({ type: 'REOPEN_SFIDA', payload: { materiaId, sfidaId } });
+        audio.playWebClick();
       },
       applyQuickQuest: (questId) => dispatch({ type: 'APPLY_QUICK_QUEST', payload: { questId } }),
       addQuickQuest: (nome, staminaReward, xpReward) => dispatch({ type: 'ADD_QUICK_QUEST', payload: { nome, staminaReward, xpReward } }),

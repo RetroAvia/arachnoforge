@@ -94,7 +94,11 @@ const PATHS = {
   // V33.0 — "Aesthetic Level-Up": due icone dedicate che mancavano, prima
   // riusate da icone tematicamente vicine ma imprecise (flag/chartBar).
   calendar: ['M8 2v4', 'M16 2v4', 'M3 10h18', 'M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z'],
-  trendUp: ['M3 17l6-6 4 4 8-8', 'M15 7h6v6']
+  trendUp: ['M3 17l6-6 4 4 8-8', 'M15 7h6v6'],
+  // V34.4 — freccia "rotate-ccw" per il bottone "Riporta a da completare"
+  // (undo di un Nodo completato per errore): arco + punta di freccia,
+  // stesso linguaggio stroke-only delle altre icone di questo set.
+  undo: ['M4 9a9 9 0 1 1 2.6 8.4', 'M4 4v5h5']
 };
 
 function IconBase({ name, className = 'w-5 h-5', strokeWidth = 1.8 }) {
