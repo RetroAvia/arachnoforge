@@ -1,0 +1,1317 @@
+import React, { useState, useMemo, useCallback, memo } from 'react';
+import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
+import { Icon } from '../components/Icons.jsx';
+import Modal from '../components/Modal.jsx';
+import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import Dropdown from '../components/Dropdown.jsx';
+import EmptyState from '../components/EmptyState.jsx';
+import { deriveNodeStatus, NODE_STATUS, isDescendant, directChildrenOf } from '../utils/skillTree.js';
+import { formatDateOnlyHuman } from '../utils/dateUtils.js';
+import { DIFFICULTY, DIFFICULTY_META } from '../utils/xpEngine.js';
+import { REVIEW_RATING, REVIEW_RATING_META } from '../utils/spiderSense.js';
+import { isGoblinProtocol, computeEstimatedCompletion } from '../utils/materiaMeta.js';
+import {
+  CUSTOM_COURSE_ID,
+  getCourseDropdownOptions,
+  getCourseById,
+  getMissingPrerequisites,
+  computeSpiderScore,
+  DIFFICULTY_SLIDER_LABELS
+} from '../data/vanvitelliCourseMap.js';
+import { MIN_VOTO, MAX_VOTO, LODE_VALUE } from '../utils/gpaEngine.js';
+import { CARD, CARD_ALERT, BTN_PRIMARY, BTN_SECONDARY, BTN_SUCCESS, BTN_GHOST, INPUT, H1, H2, BADGE, RADIAL_GLOW } from '../utils/designSystem.js';
+
+/**
+ * Karen's Tactical Suggestor (V18.0, Pillar 2) — pannello HUD in cima al
+ * Web-Matrix, sempre visibile: l'IA scansiona le Materie non ancora
+ * superate e decreta il "Primary Target" secondo lo Spider-Score. Bordi
+ * neon pulsanti + glow, mai un pannello piatto: è la card che deve
+ * dimostrare che l'app "pensa" per l'utente.
+ */
+function KarenSuggestorPanel({ primaryTarget, onSelect }) {
+  return (
+    <div className="relative bg-surface/80 backdrop-blur-2xl border-2 border-secondary/50 rounded-2xl shadow-secondary-glow-lg p-6 overflow-hidden">
+      <div className="absolute -top-16 -left-16 w-64 h-64 rounded-full bg-secondary/20 blur-3xl pointer-events-none animate-pulse-slow" />
+      <div className="absolute -bottom-16 -right-16 w-64 h-64 rounded-full bg-primary/10 blur-3xl pointer-events-none" />
+      <div className="relative flex items-center gap-3 mb-4">
+        <div className="w-11 h-11 rounded-xl bg-secondary/15 border border-secondary/50 flex items-center justify-center text-secondary shrink-0 shadow-secondary-glow">
+          <Icon name="chip" className="w-6 h-6" />
+        </div>
+        <div>
+          <p className="text-xs tracking-[0.25em] text-secondary font-mono">KAREN OS</p>
+          <h2 className="text-lg font-extrabold text-white tracking-tight">Analisi Traiettoria Accademica</h2>
+        </div>
+      </div>
+
+      {!primaryTarget ? (
+        <div className="relative flex items-center gap-3 bg-emerald-900/20 border border-emerald-400/30 rounded-xl px-4 py-3.5">
+          <Icon name="check" className="w-5 h-5 text-emerald-400 shrink-0" />
+          <p className="text-sm text-emerald-300">
+            Karen: nessun esame in sospeso rilevato. Traiettoria pulita — apri un nuovo nodo dal piano di studi quando sei pronto.
+          </p>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => onSelect(primaryTarget.materia.id)}
+          className="relative w-full text-left bg-primary/10 border border-primary/40 rounded-xl px-5 py-4 flex items-start gap-4 hover:border-primary/70 hover:bg-primary/15 transition-all duration-300"
+        >
+          <div className="w-10 h-10 rounded-lg bg-primary/20 border border-primary/50 flex items-center justify-center text-primary shrink-0">
+            <Icon name="crosshair" className="w-5 h-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] font-mono tracking-widest text-primary">PRIMARY TARGET</span>
+              <span className={BADGE.amber}>
+                <Icon name="bolt" className="w-3.5 h-3.5" />
+                Spider-Score {primaryTarget.spiderScore}
+              </span>
+            </div>
+            <p className="text-lg font-bold text-white mt-1 truncate">{primaryTarget.materia.nome}</p>
+            <p className="text-sm text-slate-300 mt-1 leading-relaxed">{primaryTarget.reason}</p>
+          </div>
+          <Icon name="chevronDown" className="w-5 h-5 text-primary -rotate-90 shrink-0 mt-2" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Classi Tailwind statiche (mai concatenate a runtime — bandito dal Design System) per le due varianti cromatiche dello slider. */
+const TECH_SLIDER_ACCENT = {
+  primary: { track: 'accent-primary', text: 'text-primary' },
+  secondary: { track: 'accent-secondary', text: 'text-secondary' }
+};
+
+/** Slider "Stark-Tech" — riusa la grammatica cromatica reattiva al costume, mai uno slider nativo grigio. */
+function TechSlider({ value, onChange, labels, accent = 'primary' }) {
+  const accentCls = TECH_SLIDER_ACCENT[accent] || TECH_SLIDER_ACCENT.primary;
+  return (
+    <div>
+      <input
+        type="range"
+        min={1}
+        max={5}
+        step={1}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className={`w-full h-2 rounded-full appearance-none bg-surface/80 border border-white/10 cursor-pointer ${accentCls.track}`}
+      />
+      <div className="flex items-center justify-between mt-1.5">
+        <span className="text-xs text-slate-500">{labels[0]}</span>
+        <span className={`text-sm font-mono font-semibold ${accentCls.text}`}>{value}/5 — {labels[value - 1]}</span>
+        <span className="text-xs text-slate-500">{labels[labels.length - 1]}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Toggle Stark-Tech compatto — pillola in vetro con perno luminoso, per "Esame Superato". */
+function ExamPassedToggle({ checked, onChange }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={onChange}
+      className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl border transition-all duration-300 ${
+        checked ? 'bg-emerald-900/25 border-emerald-400/50' : 'bg-surface/80 border-white/10'
+      }`}
+    >
+      <span className={`text-sm font-semibold flex items-center gap-2 ${checked ? 'text-emerald-300' : 'text-slate-400'}`}>
+        <Icon name={checked ? 'check' : 'gear'} className="w-4 h-4" />
+        Esame Superato (propedeuticità soddisfatta per altri corsi)
+      </span>
+      <span
+        className={`shrink-0 w-11 h-6 rounded-full border relative transition-all duration-300 ${
+          checked ? 'bg-emerald-500/30 border-emerald-400/60' : 'bg-surface border-white/10'
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 w-5 h-5 rounded-full bg-gradient-to-br transition-all duration-300 ${
+            checked ? 'left-[22px] from-emerald-400 to-emerald-600' : 'left-0.5 from-slate-500 to-slate-600'
+          }`}
+        />
+      </span>
+    </button>
+  );
+}
+
+/**
+ * Stati del nodo — badge coerenti con la ricetta CFU/status del Design
+ * System (`bg-COLORE-900/50 text-COLORE-300 rounded-full px-3 py-1 text-xs`).
+ * COMPLETED riceve inoltre un bagliore radiale dietro l'icona di stato:
+ * mai un box piatto, sempre un'aura atmosferica sui traguardi raggiunti.
+ *
+ * V16.0 (Pillar 1) — LOCKED non significa più "il padre non è completato":
+ * i figli sono sempre liberamente completabili. LOCKED ora indica un nodo
+ * "Boss" (con sotto-argomenti collegati) che non può ancora essere chiuso
+ * perché non tutti i suoi figli diretti sono COMPLETED.
+ */
+const STATUS_META = {
+  LOCKED: { label: 'In Attesa', text: 'text-slate-400', border: 'border-slate-500/30', badge: BADGE.slate, icon: 'gear', glow: null },
+  AVAILABLE: { label: 'Disponibile', text: 'text-secondary', border: 'border-secondary/40', badge: BADGE.blue, icon: 'target', glow: RADIAL_GLOW.blue },
+  COMPLETED: { label: 'Completato', text: 'text-emerald-400', border: 'border-emerald-400/40', badge: BADGE.green, icon: 'check', glow: RADIAL_GLOW.green },
+  NEEDS_REVIEW: { label: 'Spider-Sense', text: 'text-accent', border: 'border-accent/40', badge: BADGE.amber, icon: 'alertTriangle', glow: RADIAL_GLOW.amber }
+};
+
+function ReviewButtons({ onReview, size = 'normal' }) {
+  const pad = size === 'small' ? 'py-2 text-sm' : 'py-2.5 text-base';
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {Object.values(REVIEW_RATING).map((rating) => {
+        const meta = REVIEW_RATING_META[rating];
+        return (
+          <button
+            key={rating}
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onReview(rating);
+            }}
+            className={`${pad} rounded-xl border ${meta.border} ${meta.color} bg-white/[0.02] font-semibold hover:brightness-125 hover:-translate-y-0.5 transition-all duration-300`}
+          >
+            {meta.label} (+{meta.days}gg)
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Icona di stato — nucleo del nodo, con bagliore radiale atmosferico dietro se completato/disponibile/in allerta. */
+const StatusIcon = memo(function StatusIcon({ meta, size = 'md' }) {
+  const dim = size === 'sm' ? 'w-9 h-9' : 'w-12 h-12';
+  const iconDim = size === 'sm' ? 'w-4 h-4' : 'w-5 h-5';
+  return (
+    <div className={`relative ${dim} shrink-0 flex items-center justify-center`}>
+      {meta.glow && <div className={meta.glow} />}
+      <div className={`relative ${dim} rounded-xl border ${meta.border} flex items-center justify-center ${meta.text} bg-surface/80`}>
+        <Icon name={meta.icon} className={iconDim} />
+      </div>
+    </div>
+  );
+});
+
+/**
+ * Livello 3 — Nodo Figlio: riga compatta connessa visivamente al proprio
+ * Nodo Padre tramite un vero e proprio "ramo" (linea verticale del
+ * contenitore + tacca orizzontale dedicata), non solo un rientro generico.
+ *
+ * V16.0 (Pillar 1): un nodo figlio è SEMPRE liberamente completabile. Se
+ * risulta comunque LOCKED è perché ha a sua volta dei sotto-argomenti
+ * ("Boss" annidato): mostriamo quanti ne mancano, mai più "Richiede: Padre".
+ */
+const ChildNodeRow = memo(function ChildNodeRow({ node, materia, onSelect }) {
+  if (!node) return null;
+  const siblingSfide = Array.isArray(materia?.sfide) ? materia.sfide : [];
+  const status = deriveNodeStatus(node, siblingSfide);
+  const meta = STATUS_META[status] || STATUS_META.LOCKED;
+  const diffMeta = DIFFICULTY_META[node.difficulty] || DIFFICULTY_META.MEDIUM;
+  const ownChildren = directChildrenOf(node, siblingSfide);
+  const pendingOwnChildren = ownChildren.filter((c) => c.status !== 'COMPLETED').length;
+
+  return (
+    <div className="relative">
+      {/* Tacca di connessione ramo -> nodo, sempre visibile: rende palese il collegamento gerarchico. */}
+      <span className="absolute -left-4 md:-left-5 top-8 w-4 md:w-5 h-0.5 bg-gradient-to-r from-secondary/50 to-transparent" />
+      <span className="absolute -left-[18px] md:-left-[22px] top-[30px] w-1.5 h-1.5 rounded-full bg-secondary/60" />
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => onSelect(node)}
+        onKeyDown={(e) => e.key === 'Enter' && onSelect(node)}
+        className={`group flex items-center gap-3 p-4 rounded-2xl border ${meta.border} bg-surface/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:bg-surface/85 cursor-pointer`}
+      >
+        <StatusIcon meta={meta} size="sm" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="font-medium text-base truncate text-slate-100">{node.nome}</p>
+            <span className={`text-xs font-mono px-2 py-0.5 rounded-full border shrink-0 ${diffMeta.border} ${diffMeta.color}`}>
+              {diffMeta.label}
+            </span>
+            {ownChildren.length > 0 && (
+              <span className="text-xs font-mono px-2 py-0.5 rounded-full border border-secondary/30 text-secondary shrink-0">Boss</span>
+            )}
+          </div>
+          {status === NODE_STATUS.LOCKED ? (
+            <p className="text-sm text-slate-500 mt-0.5 truncate">Completa prima {pendingOwnChildren} sotto-argomento/i</p>
+          ) : node.obiettivo ? (
+            <p className="text-sm text-slate-500 mt-0.5 truncate">{node.obiettivo}</p>
+          ) : null}
+        </div>
+        <div className="text-right shrink-0 flex items-center gap-2">
+          {status === NODE_STATUS.NEEDS_REVIEW && node.nextReviewDate && (
+            <span className={BADGE.amber}>
+              <Icon name="alertTriangle" className="w-3.5 h-3.5" />
+              ripassa
+            </span>
+          )}
+          <span className={meta.badge}>{meta.label}</span>
+          <Icon name="crosshair" className="w-4 h-4 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity duration-300 hidden md:block" />
+        </div>
+      </div>
+    </div>
+  );
+});
+
+/** Ricorsione dei Nodi Figli — tronco verticale reattivo al costume, mai un semplice rientro senza segno grafico. */
+const ChildTree = memo(function ChildTree({ parentId, sfide, depth, materia, onSelect }) {
+  if (!Array.isArray(sfide) || sfide.length === 0) return null;
+  const children = sfide.filter((s) => s && (s.parentId || null) === parentId);
+  if (children.length === 0) return null;
+  return (
+    <div className="ml-6 md:ml-7 pl-5 md:pl-6 border-l-2 border-secondary/25 space-y-3 relative">
+      {children.map((child) => (
+        <div key={child.id} className="space-y-3">
+          <ChildNodeRow node={child} materia={materia} onSelect={onSelect} />
+          <ChildTree parentId={child.id} sfide={sfide} depth={depth + 1} materia={materia} onSelect={onSelect} />
+        </div>
+      ))}
+    </div>
+  );
+});
+
+/**
+ * Livello 2 — Nodo Padre / Categoria: modulo autonomo in vetro tecnologico
+ * con accento laterale colorato in base allo stato e bagliore radiale
+ * dietro l'icona quando il nodo è completato — poi, subito sotto, l'intera
+ * discendenza (Livello 3) collegata dal tronco verticale.
+ *
+ * V16.0 (Pillar 1): se ha figli collegati, questo nodo è un "Boss" — lo
+ * segnaliamo esplicitamente quando è ancora LOCKED (sotto-argomenti da
+ * completare prima di poterlo chiudere).
+ */
+const ParentModuleCard = memo(function ParentModuleCard({ node, materia, onSelect }) {
+  const siblingSfide = Array.isArray(materia?.sfide) ? materia.sfide : [];
+  const status = deriveNodeStatus(node, siblingSfide);
+  const meta = STATUS_META[status] || STATUS_META.LOCKED;
+  const diffMeta = DIFFICULTY_META[node.difficulty] || DIFFICULTY_META.MEDIUM;
+  const daysUntil = node.nextReviewDate || null;
+  const children = directChildrenOf(node, siblingSfide);
+  const childCount = children.length;
+  const pendingChildren = children.filter((c) => c.status !== 'COMPLETED').length;
+
+  return (
+    <div className={`${CARD} space-y-4 border-l-4 ${meta.border}`}>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => onSelect(node)}
+        onKeyDown={(e) => e.key === 'Enter' && onSelect(node)}
+        className="relative flex items-center gap-4 cursor-pointer"
+      >
+        <StatusIcon meta={meta} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={BADGE.blue}>{childCount > 0 ? 'Boss — Nodo Padre' : 'Nodo Padre'}</span>
+            <p className="font-bold text-lg truncate text-white">{node.nome}</p>
+            <span className={`text-xs font-mono px-2 py-0.5 rounded-full border ${diffMeta.border} ${diffMeta.color}`}>
+              {diffMeta.label}
+            </span>
+          </div>
+          {node.obiettivo && <p className="text-base text-slate-400 mt-1.5 truncate">{node.obiettivo}</p>}
+          {childCount > 0 && (
+            <p className="text-sm text-slate-500 mt-1 flex items-center gap-1.5">
+              <Icon name="grid" className="w-3.5 h-3.5" />
+              {childCount} nodo/i figlio collegato/i
+              {status === NODE_STATUS.LOCKED && ` · ${pendingChildren} ancora da completare`}
+            </p>
+          )}
+        </div>
+        <div className="text-right shrink-0 space-y-1.5">
+          <span className={`${meta.badge} block`}>{meta.label}</span>
+          {status === NODE_STATUS.NEEDS_REVIEW && daysUntil && (
+            <span className="text-xs text-accent font-mono block">scaduto</span>
+          )}
+        </div>
+      </div>
+
+      <div className="relative">
+        <ChildTree parentId={node.id} sfide={siblingSfide} depth={1} materia={materia} onSelect={onSelect} />
+      </div>
+    </div>
+  );
+});
+
+export default function QuadrantHub() {
+  const { state, actions, derived, pushToast } = useArachnoForge();
+  // Guardia difensiva: se lo stato persistito è corrotto o non ancora
+  // idratato, non far mai propagare un `undefined`/non-array al render
+  // (causa nota di schermo nero da eccezione non gestita su .map()).
+  const materie = Array.isArray(state.materie) ? state.materie : [];
+  const [selectedMateriaId, setSelectedMateriaId] = useState(materie[0]?.id || '');
+  const [materiaModalOpen, setMateriaModalOpen] = useState(false);
+  const [editingMateria, setEditingMateria] = useState(null);
+  const [deleteMateriaTarget, setDeleteMateriaTarget] = useState(null);
+  const [sfidaModalOpen, setSfidaModalOpen] = useState(false);
+  const [nodeDetail, setNodeDetail] = useState(null);
+  const [deleteNodeTarget, setDeleteNodeTarget] = useState(null);
+  const [spiderSenseDrawerOpen, setSpiderSenseDrawerOpen] = useState(false);
+
+  // Web-Path Planner — form di creazione/modifica Materia basato sul piano
+  // di studi Vanvitelli (Ingegneria Aerospaziale): dropdown ufficiale con
+  // autocompilazione CFU, oppure "Materia Libera" per corsi fuori mappa.
+  const [formCourseId, setFormCourseId] = useState('');
+  const [formCustomNome, setFormCustomNome] = useState('');
+  const [formExamDate, setFormExamDate] = useState('');
+  const [formCfu, setFormCfu] = useState(6);
+  const [formDifficulty, setFormDifficulty] = useState(3);
+  const [formExamPassed, setFormExamPassed] = useState(false);
+  const [formVoto, setFormVoto] = useState('');
+  const [formLode, setFormLode] = useState(false);
+  const courseOptions = useMemo(() => getCourseDropdownOptions(), []);
+  const selectedCourse = formCourseId && formCourseId !== CUSTOM_COURSE_ID ? getCourseById(formCourseId) : null;
+  const missingPrereqs = useMemo(
+    () => (selectedCourse ? getMissingPrerequisites(selectedCourse.id, materie, editingMateria?.id || null) : []),
+    [selectedCourse, materie, editingMateria]
+  );
+  // Time-Weaver Formula (V20.0, Pillar 2): l'Urgenza manuale è sparita —
+  // il fattore tempo ora arriva SOLO dalla Data Esame reale (1000/giorni
+  // mancanti), quindi l'anteprima deve includere `examDate` per essere
+  // coerente col punteggio finale che Karen userà davvero.
+  const previewSpiderScore = useMemo(
+    () => computeSpiderScore({ perceivedDifficulty: formDifficulty, courseId: selectedCourse?.id || null, examDate: formExamDate || null }),
+    [formDifficulty, selectedCourse, formExamDate]
+  );
+
+  const [sfidaNome, setSfidaNome] = useState('');
+  const [sfidaObiettivo, setSfidaObiettivo] = useState('');
+  const [sfidaGiorni, setSfidaGiorni] = useState(3);
+  const [sfidaParentId, setSfidaParentId] = useState('');
+  const [sfidaDifficulty, setSfidaDifficulty] = useState(DIFFICULTY.MEDIUM);
+
+  const [detailParentId, setDetailParentId] = useState('');
+
+  // Time-Weaver Formula del Web-Path Planner (V20.0, Pillar 2): Spider-Score
+  // decrescente (Difficoltà + Esami Sbloccati + 1000/Giorni Mancanti) — il
+  // corso da attaccare per primo è sempre in cima, con il tempo come
+  // fattore dominante assoluto.
+  const sortedMaterie = useMemo(
+    () => [...materie].sort((a, b) => computeSpiderScore(b) - computeSpiderScore(a)),
+    [materie]
+  );
+
+  // Karen's Tactical Suggestor — Primary Target calcolato una sola volta a
+  // livello di Provider (ArachnoForgeContext) e riletto qui da `derived`,
+  // così Mission Control e Web-Matrix vedono sempre lo stesso identico
+  // suggerimento, mai due calcoli potenzialmente disallineati.
+  const { primaryTarget } = derived;
+
+  // Decluttering Accordion (V20.0, Pillar 2): le Materie della colonna a
+  // sinistra sono raggruppate per Anno di corso (1°/2°/3°), con una quarta
+  // sezione "Materie Libere" per i nodi fuori piano di studi (courseId
+  // null/custom). Solo l'anno che contiene il Primary Target parte aperto.
+  const materieByYear = useMemo(() => {
+    const groups = new Map();
+    sortedMaterie.forEach((m) => {
+      const course = getCourseById(m.courseId);
+      const key = course ? course.anno : 'libere';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(m);
+    });
+    return groups;
+  }, [sortedMaterie]);
+
+  const primaryTargetYearKey = useMemo(() => {
+    if (!primaryTarget) return null;
+    const course = getCourseById(primaryTarget.materia.courseId);
+    return course ? course.anno : 'libere';
+  }, [primaryTarget]);
+
+  // Stato iniziale calcolato una sola volta al mount (lazy initializer):
+  // è un DEFAULT, non un vincolo permanente — se l'utente chiude
+  // manualmente la sezione, non deve riaprirsi da sola ad ogni render.
+  const [openYears, setOpenYears] = useState(() => new Set([primaryTargetYearKey ?? 1]));
+
+  const toggleYear = useCallback((key) => {
+    setOpenYears((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const YEAR_SECTIONS = [
+    { key: 1, label: '1° Anno' },
+    { key: 2, label: '2° Anno' },
+    { key: 3, label: '3° Anno' },
+    { key: 'libere', label: 'Materie Libere' }
+  ];
+
+  const selectedMateria = useMemo(
+    () => materie.find((m) => m.id === selectedMateriaId) || null,
+    [materie, selectedMateriaId]
+  );
+  const selectedSfide = Array.isArray(selectedMateria?.sfide) ? selectedMateria.sfide : [];
+  const rootNodes = useMemo(
+    () => selectedSfide.filter((s) => !s.parentId),
+    [selectedSfide]
+  );
+
+  const goblinActive = selectedMateria ? isGoblinProtocol(selectedMateria) : false;
+  // V16.0 (Pillar 2): stima "Fine Prevista" millimetrica — somma esatta dei
+  // giorni residui di ogni nodo incompleto, nessuna media generica.
+  const estimate = useMemo(
+    () => (selectedMateria ? computeEstimatedCompletion(selectedMateria) : null),
+    [selectedMateria]
+  );
+
+  // Spider-Sense Schedule: tutti i nodi tracciati dal motore SRS, raggruppati
+  // per materia — visibilità totale (non solo i ripassi già scaduti).
+  const scheduleGroups = useMemo(() => {
+    const byMateria = new Map();
+    derived.allTrackedReviews.forEach((item) => {
+      if (!byMateria.has(item.materiaId)) byMateria.set(item.materiaId, { materiaId: item.materiaId, materiaNome: item.materiaNome, items: [] });
+      byMateria.get(item.materiaId).items.push(item);
+    });
+    return Array.from(byMateria.values());
+  }, [derived.allTrackedReviews]);
+
+  // NOTA: openNodeDetail deve essere dichiarata PRIMA di ogni useCallback
+  // che la referenzia nel proprio array di dipendenze — un riferimento in
+  // avanti a un'altra `const` nello stesso component body va in Temporal
+  // Dead Zone e lancia un ReferenceError ad ogni render (causa nota di
+  // schermo nero già riscontrata in passato). Ordine dichiarativo blindato.
+  const openNodeDetail = useCallback((node) => {
+    setNodeDetail(node);
+    setDetailParentId(node.parentId || '');
+  }, []);
+
+  const openNodeFromSchedule = useCallback((materiaId, sfidaId) => {
+    const materia = materie.find((m) => m.id === materiaId);
+    const node = materia?.sfide.find((s) => s.id === sfidaId);
+    if (materia && node) {
+      setSelectedMateriaId(materiaId);
+      openNodeDetail(node);
+    }
+  }, [materie, openNodeDetail]);
+
+  const openAddMateria = () => {
+    setEditingMateria(null);
+    setFormCourseId('');
+    setFormCustomNome('');
+    setFormExamDate('');
+    setFormCfu(6);
+    setFormDifficulty(3);
+    setFormExamPassed(false);
+    setFormVoto('');
+    setFormLode(false);
+    setMateriaModalOpen(true);
+  };
+
+  const openEditMateria = (materia) => {
+    setEditingMateria(materia);
+    setFormCourseId(materia.courseId || CUSTOM_COURSE_ID);
+    setFormCustomNome(materia.courseId ? '' : materia.nome);
+    setFormExamDate(materia.examDate || '');
+    setFormCfu(materia.cfu);
+    setFormDifficulty(Number.isFinite(materia.perceivedDifficulty) ? materia.perceivedDifficulty : 3);
+    setFormExamPassed(!!materia.examPassed);
+    setFormVoto(Number.isFinite(materia.voto) ? String(materia.voto) : '');
+    setFormLode(!!materia.lode);
+    setMateriaModalOpen(true);
+  };
+
+  const handleCourseChange = (courseId) => {
+    setFormCourseId(courseId);
+    const course = courseId && courseId !== CUSTOM_COURSE_ID ? getCourseById(courseId) : null;
+    if (course) setFormCfu(course.cfu);
+  };
+
+  const submitMateria = () => {
+    const nome = selectedCourse ? selectedCourse.nome : formCustomNome.trim();
+    if (!formCourseId || !nome) return;
+    // Multiverse Simulator (V18.0): il Voto conta SOLO se l'Esame è
+    // dichiarato Superato — se l'utente disattiva il toggle, il voto non
+    // viene mai persistito (niente medie sporcate da esami non superati).
+    const parsedVoto = Number(formVoto);
+    const voto = formExamPassed && Number.isFinite(parsedVoto) && parsedVoto >= MIN_VOTO && parsedVoto <= MAX_VOTO ? parsedVoto : null;
+    const payload = {
+      nome,
+      courseId: selectedCourse ? selectedCourse.id : null,
+      examDate: formExamDate || null, // stringa "YYYY-MM-DD" pura: aritmetica sempre in UTC assoluto (fix timezone shift).
+      cfu: selectedCourse ? selectedCourse.cfu : Math.max(1, Number(formCfu) || 6),
+      perceivedDifficulty: formDifficulty,
+      examPassed: formExamPassed,
+      voto,
+      lode: voto === LODE_VALUE && formLode
+    };
+    if (editingMateria) {
+      actions.updateMateria(editingMateria.id, payload);
+    } else {
+      actions.addMateria(payload);
+    }
+    setMateriaModalOpen(false);
+  };
+
+  const openAddSfida = () => {
+    setSfidaNome('');
+    setSfidaObiettivo('');
+    setSfidaGiorni(3);
+    setSfidaParentId('');
+    setSfidaDifficulty(DIFFICULTY.MEDIUM);
+    setSfidaModalOpen(true);
+  };
+
+  const submitSfida = () => {
+    if (!selectedMateria || !sfidaNome.trim() || goblinActive) return;
+    actions.addSfida(selectedMateria.id, {
+      nome: sfidaNome.trim(),
+      obiettivo: sfidaObiettivo.trim(),
+      giorni: Math.max(1, Number(sfidaGiorni) || 1),
+      parentId: sfidaParentId || null,
+      difficulty: sfidaDifficulty
+    });
+    setSfidaModalOpen(false);
+  };
+
+  const commitParentChange = useCallback((node, newParentId) => {
+    actions.updateSfida(selectedMateria.id, node.id, { parentId: newParentId || null });
+    setDetailParentId(newParentId);
+  }, [actions, selectedMateria]);
+
+  const handleReview = useCallback((node, rating) => {
+    const materia = materie.find((m) => Array.isArray(m?.sfide) && m.sfide.some((s) => s.id === node.id));
+    if (materia) actions.reviewSfida(materia.id, node.id, rating);
+  }, [materie, actions]);
+
+  // V16.0 (Pillar 1) — tentativo di completare un nodo "Boss" prima che
+  // tutti i suoi figli diretti siano COMPLETED: nessuna azione distruttiva,
+  // solo un alert elegante (toast) a spiegare cosa manca. Il reducer
+  // (COMPLETE_SFIDA) resta comunque l'ultima linea di difesa idempotente.
+  const handleAttemptComplete = useCallback((node) => {
+    actions.completeSfida(selectedMateria.id, node.id);
+    setNodeDetail(null);
+  }, [actions, selectedMateria]);
+
+  const handleBossLockedAttempt = useCallback(() => {
+    pushToast('Completa prima tutti i sotto-argomenti', 'danger');
+  }, [pushToast]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className={H1}>The Web-Matrix</h1>
+          <p className="text-base text-slate-400 mt-1.5">
+            Karen: Web-Path Planner attivo. Skill Tree ordinato per Spider-Score — sotto-argomenti sempre liberi, il Nodo Padre è un Boss da sconfiggere per ultimo.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={() => setSpiderSenseDrawerOpen(true)} className={`relative ${BTN_SECONDARY}`}>
+            <Icon name="alertTriangle" className="w-5 h-5" />
+            Attiva Spider-Sense
+            {derived.upcomingReviews.length > 0 && (
+              <span className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-primary text-white text-[11px] flex items-center justify-center font-mono shadow-primary-glow">
+                {derived.upcomingReviews.length}
+              </span>
+            )}
+          </button>
+          <button type="button" onClick={openAddMateria} className={BTN_PRIMARY}>
+            <Icon name="plus" className="w-5 h-5" />
+            Nuovo Nodo Web-Matrix
+          </button>
+        </div>
+      </div>
+
+      <KarenSuggestorPanel primaryTarget={primaryTarget} onSelect={setSelectedMateriaId} />
+
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* Colonna materie — Decluttering Accordion per Anno (V20.0, Pillar
+            2): raggruppate 1°/2°/3° Anno + Materie Libere, ordinate
+            internamente per Spider-Score decrescente (Time-Weaver Formula:
+            Difficoltà + Esami Sbloccati + 1000/Giorni Mancanti). Solo
+            l'anno del Primary Target parte aperto di default. */}
+        <div className="lg:col-span-1 space-y-3">
+          {materie.length === 0 && (
+            <div className={CARD}>
+              <EmptyState
+                variant="tree"
+                compact
+                title="Karen: nessun nodo del Web-Matrix rilevato."
+                subtitle="Apri il tuo primo corso dal piano di studi per iniziare a tracciare lo Skill Tree."
+              />
+            </div>
+          )}
+          {YEAR_SECTIONS.filter((sec) => (materieByYear.get(sec.key) || []).length > 0).map((sec) => {
+            const items = materieByYear.get(sec.key) || [];
+            const isOpen = openYears.has(sec.key);
+            const hasPrimaryTarget = sec.key === primaryTargetYearKey;
+            return (
+              <div key={sec.key} className="rounded-2xl border border-secondary/15 bg-surface/40 backdrop-blur-xl overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => toggleYear(sec.key)}
+                  className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left hover:bg-surface/60 transition-all duration-300"
+                >
+                  <span className="text-sm font-bold tracking-wide text-slate-200 flex items-center gap-2 flex-wrap">
+                    {sec.label}
+                    <span className={BADGE.slate}>{items.length}</span>
+                    {hasPrimaryTarget && (
+                      <span className={BADGE.amber}>
+                        <Icon name="crosshair" className="w-3 h-3" />
+                        target
+                      </span>
+                    )}
+                  </span>
+                  <Icon name="chevronDown" className={`w-4 h-4 text-slate-500 transition-transform duration-300 shrink-0 ${isOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {isOpen && (
+                  <div className="px-3 pb-3 space-y-3">
+                    {items.map((m) => {
+                      const spiderScore = computeSpiderScore(m);
+                      const mSfide = Array.isArray(m?.sfide) ? m.sfide : [];
+                      const total = mSfide.length;
+                      const done = mSfide.filter((s) => s.status === 'COMPLETED').length;
+                      const active = m.id === selectedMateriaId;
+                      const goblin = isGoblinProtocol(m);
+                      const quota = derived.karenQuotaByMateriaId.get(m.id);
+                      // Quantum Router (V23.0, Modulo 1): 3 stati invece del
+                      // vecchio booleano eventHorizon — Ottimale non riceve
+                      // mai uno stile speciale (nessun falso allarme),
+                      // Attenzione un respiro ambra morbido, Critico il
+                      // lampeggio rosso di prima.
+                      const status = quota?.status;
+                      const critico = status === 'CRITICO';
+                      const attenzione = status === 'ATTENZIONE';
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => setSelectedMateriaId(m.id)}
+                          className={`relative w-full text-left p-4 rounded-2xl border transition-all duration-300 backdrop-blur-2xl overflow-hidden ${
+                            critico
+                              ? 'af-event-horizon border-primary/70 bg-primary/10'
+                              : goblin
+                              ? 'af-goblin border-primary/60 bg-primary/10'
+                              : attenzione
+                              ? 'af-attenzione-pulse border-accent/60 bg-accent/10'
+                              : active
+                              ? 'bg-surface/80 border-secondary/60 shadow-secondary-glow'
+                              : 'bg-surface/60 border-secondary/15 hover:border-secondary/40'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-base flex items-center gap-1.5 min-w-0 truncate text-slate-100">
+                              {critico ? (
+                                <Icon name="alertTriangle" className="w-4 h-4 text-primary shrink-0" />
+                              ) : attenzione ? (
+                                <Icon name="alertTriangle" className="w-4 h-4 text-accent shrink-0" />
+                              ) : (
+                                goblin && <Icon name="skull" className="w-4 h-4 text-primary shrink-0" />
+                              )}
+                              <span className="truncate">{m.nome}</span>
+                            </span>
+                            <span className="flex items-center gap-1.5 shrink-0">
+                              <span className={BADGE.blue}>{m.cfu} CFU</span>
+                              <span className={BADGE.amber} title="Spider-Score — Time-Weaver Formula">
+                                <Icon name="bolt" className="w-3.5 h-3.5" />
+                                {spiderScore}
+                              </span>
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                            {m.examDate && <p className="text-sm text-slate-500">Esame: {formatDateOnlyHuman(m.examDate)}</p>}
+                            {m.examPassed && (
+                              <span className="text-xs font-mono text-emerald-400 flex items-center gap-1">
+                                <Icon name="check" className="w-3.5 h-3.5" />
+                                superato{Number.isFinite(m.voto) ? ` · ${m.voto}${m.lode ? ' e lode' : ''}/30` : ''}
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-3 h-2 af-web-bar bg-surface/80 rounded-full overflow-hidden border border-secondary/15">
+                            <div
+                              className="h-full bg-gradient-to-r from-secondary to-secondary-dark"
+                              style={{ width: total > 0 ? `${(done / total) * 100}%` : '0%' }}
+                            />
+                          </div>
+                          <p className="text-sm text-slate-500 mt-1.5">{done}/{total} nodi</p>
+                          {critico && (
+                            <p className="text-xs text-primary mt-2 font-semibold flex items-start gap-1.5">
+                              <Icon name="alertTriangle" className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                              Karen: traiettoria insostenibile. Rischio esaurimento. Consigliato rinvio appello.
+                            </p>
+                          )}
+                          {attenzione && (
+                            <p className="text-xs text-accent mt-2 font-medium flex items-start gap-1.5">
+                              <Icon name="alertTriangle" className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                              Karen: ritmo leggermente indietro rispetto alla Fine Prevista.
+                            </p>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Colonna Skill Tree */}
+        <div className="lg:col-span-3 space-y-5">
+          {selectedMateria ? (
+            <>
+              {/* Livello 1 — Macro-Materia / Esame */}
+              <div className={goblinActive ? `${CARD_ALERT} space-y-4 af-goblin` : `${CARD} space-y-4`}>
+                {goblinActive && (
+                  <div className="relative bg-primary/10 border border-primary/40 rounded-xl px-4 py-3.5 flex items-start gap-3">
+                    <Icon name="skull" className="w-6 h-6 text-primary shrink-0" />
+                    <div>
+                      <p className="text-base font-semibold text-primary">Green Goblin Protocol Attivo</p>
+                      <p className="text-sm text-slate-400 mt-0.5">
+                        Esame imminente (≤3 giorni). Creazione di nuovi nodi bloccata: concentrati esclusivamente su ripasso e Sinister Six Simulator.
+                      </p>
+                    </div>
+                  </div>
+                )}
+                <div className="relative flex items-start justify-between flex-wrap gap-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h2 className={H2}>{selectedMateria.nome}</h2>
+                      <span className={BADGE.blue}>{selectedMateria.cfu} CFU</span>
+                    </div>
+                    <div className="flex items-center gap-x-5 gap-y-1 flex-wrap mt-3">
+                      {selectedMateria.examDate && (
+                        <span className="text-sm text-slate-400 flex items-center gap-1.5">
+                          <Icon name="radar" className="w-4 h-4 text-slate-500" />
+                          Esame: <span className="font-mono text-slate-200">{formatDateOnlyHuman(selectedMateria.examDate)}</span>
+                        </span>
+                      )}
+                      {estimate && !estimate.done && estimate.dateKey && (
+                        <span className="text-sm text-secondary flex items-center gap-1.5" title={`${estimate.totalDaysNeeded} giorni totali stimati sui ${estimate.remaining} nodi ancora incompleti`}>
+                          <Icon name="bolt" className="w-4 h-4" />
+                          Fine prevista: <span className="font-mono">{formatDateOnlyHuman(estimate.dateKey)}</span>
+                        </span>
+                      )}
+                      {estimate && estimate.done && (
+                        <span className="text-sm text-emerald-400 flex items-center gap-1.5">
+                          <Icon name="check" className="w-4 h-4" />
+                          Nodo Web-Matrix completato
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => openEditMateria(selectedMateria)}
+                      className="p-2.5 rounded-xl bg-white/[0.03] border border-white/10 text-slate-400 hover:text-secondary hover:border-secondary/40 transition-all duration-300"
+                      aria-label="Modifica nodo Web-Matrix"
+                    >
+                      <Icon name="edit" className="w-5 h-5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteMateriaTarget(selectedMateria)}
+                      className="p-2.5 rounded-xl bg-white/[0.03] border border-white/10 text-slate-400 hover:text-primary hover:border-primary/40 transition-all duration-300"
+                      aria-label="Elimina nodo Web-Matrix"
+                    >
+                      <Icon name="trash" className="w-5 h-5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openAddSfida}
+                      disabled={goblinActive}
+                      title={goblinActive ? 'Goblin Protocol attivo: aggiunta nodi bloccata' : ''}
+                      className={BTN_SECONDARY}
+                    >
+                      <Icon name="plus" className="w-5 h-5" />
+                      Nodo
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Livelli 2 + 3 — Nodi Padre e relativi Nodi Figli */}
+              {rootNodes.length === 0 ? (
+                <div className={CARD}>
+                  <EmptyState
+                    variant="tree"
+                    title="Karen: nessun nodo in questo ramo del Web-Matrix."
+                    subtitle="Aggiungi il primo Nodo Padre per cominciare a costruire lo Skill Tree."
+                  />
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  {rootNodes.map((node) => (
+                    <ParentModuleCard key={node.id} node={node} materia={selectedMateria} onSelect={openNodeDetail} />
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className={CARD}>
+              <EmptyState
+                variant="tree"
+                title="Karen: nessun nodo selezionato."
+                subtitle="Seleziona un nodo del Web-Matrix dalla colonna a sinistra, o aprine uno nuovo dal piano di studi, per visualizzare lo Skill Tree."
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Spider-Sense Schedule — visibilità totale sui ripassi tracciati, dovuti o futuri. */}
+      <div className={`${CARD} space-y-5`}>
+        <div className="relative flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-xl bg-secondary/10 border border-secondary/30 flex items-center justify-center text-secondary shrink-0">
+              <Icon name="radar" className="w-6 h-6" />
+            </div>
+            <div>
+              <h2 className={H2}>Spider-Sense Schedule</h2>
+              <p className="text-sm text-slate-500">Timeline completa dei ripassi tracciati, materia per materia.</p>
+            </div>
+          </div>
+          <span className={BADGE.blue}>{derived.allTrackedReviews.length} nodi tracciati</span>
+        </div>
+
+        {scheduleGroups.length === 0 ? (
+          <EmptyState
+            variant="radar"
+            compact
+            title="Nessun nodo tracciato"
+            subtitle="Completa il primo nodo di uno Skill Tree per iniziare a tracciare i ripassi con lo Spider-Sense."
+          />
+        ) : (
+          <div className="relative space-y-5">
+            {scheduleGroups.map((group) => (
+              <div key={group.materiaId}>
+                <p className="text-sm font-semibold text-slate-500 tracking-widest mb-2.5">{group.materiaNome.toUpperCase()}</p>
+                <div className="flex flex-wrap gap-2">
+                  {group.items.map((item) => {
+                    const overdue = item.daysUntil < 0;
+                    const dueToday = item.daysUntil === 0;
+                    const urgent = overdue || dueToday;
+                    return (
+                      <button
+                        key={item.sfidaId}
+                        type="button"
+                        onClick={() => openNodeFromSchedule(item.materiaId, item.sfidaId)}
+                        className={urgent ? BADGE.red : BADGE.blue}
+                      >
+                        <Icon name={urgent ? 'alertTriangle' : 'check'} className="w-3.5 h-3.5" />
+                        {item.sfidaNome}
+                        <span className="opacity-70 font-normal">
+                          {overdue ? `— scaduto da ${Math.abs(item.daysUntil)}gg` : dueToday ? '— ripassa ora' : `— tra ${item.daysUntil}gg`}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Modal: Web-Path Planner — crea/modifica Materia dal piano di studi Vanvitelli */}
+      <Modal
+        open={materiaModalOpen}
+        onClose={() => setMateriaModalOpen(false)}
+        title={editingMateria ? 'Modifica Nodo Web-Matrix' : 'Web-Path Planner — Nuovo Nodo'}
+        maxWidth="max-w-xl"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm text-slate-400 block mb-1.5">Corso (piano di studi Ingegneria Aerospaziale — Vanvitelli)</label>
+            <Dropdown
+              value={formCourseId}
+              onChange={handleCourseChange}
+              options={courseOptions}
+              placeholder="Seleziona un corso ufficiale o una Materia Libera..."
+            />
+          </div>
+
+          {formCourseId === CUSTOM_COURSE_ID && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-sm text-slate-400 block mb-1.5">Nome materia</label>
+                <input
+                  type="text"
+                  value={formCustomNome}
+                  onChange={(e) => setFormCustomNome(e.target.value)}
+                  className={INPUT}
+                  placeholder="Es. Corso a scelta libera"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-slate-400 block mb-1.5">CFU</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={30}
+                  value={formCfu}
+                  onChange={(e) => setFormCfu(e.target.value)}
+                  className={INPUT}
+                />
+              </div>
+            </div>
+          )}
+
+          {selectedCourse && (
+            <div className="flex items-center gap-3 bg-surface/70 border border-secondary/20 rounded-xl px-4 py-3">
+              <span className={BADGE.blue}>{selectedCourse.cfu} CFU — autocompilati</span>
+              <span className={BADGE.slate}>{selectedCourse.anno}° anno</span>
+            </div>
+          )}
+
+          {/* Soft-Lock Propedeuticità — Warning UI elegante, MAI bloccante:
+              il nodo resta sempre creabile per studiare gli appunti in anticipo. */}
+          {missingPrereqs.length > 0 && (
+            <div className="relative bg-accent/10 border border-accent/40 rounded-xl px-4 py-3.5 flex items-start gap-3">
+              <Icon name="alertTriangle" className="w-5 h-5 text-accent shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-accent">
+                  Richiede {missingPrereqs.map((c) => c.nome).join(', ')} per l'esame ufficiale.
+                </p>
+                <p className="text-sm text-slate-400 mt-0.5">
+                  Karen: permesso di studio simultaneo accordato — puoi comunque tracciare gli appunti in anticipo su questo nodo.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="text-sm text-slate-400 block mb-1.5">Data esame</label>
+            <input
+              type="date"
+              value={formExamDate}
+              onChange={(e) => setFormExamDate(e.target.value)}
+              className={INPUT}
+            />
+          </div>
+
+          <div className="bg-surface/70 border border-secondary/15 rounded-xl px-4 py-4">
+            <TechSlider value={formDifficulty} onChange={setFormDifficulty} labels={DIFFICULTY_SLIDER_LABELS} accent="primary" />
+          </div>
+
+          {/* Time-Weaver Formula (V20.0, Pillar 2): l'Urgenza manuale è
+              stata rimossa — il fattore tempo ora arriva SOLO dalla Data
+              Esame reale (1000/giorni mancanti), calcolato automaticamente
+              da Karen. Nessuno slider soggettivo può più scavalcarlo. */}
+          <div className="flex items-center justify-between gap-3 bg-surface/70 border border-secondary/15 rounded-xl px-4 py-3">
+            <span className="text-sm text-slate-400">Spider-Score risultante (Time-Weaver Formula)</span>
+            <span className={BADGE.amber}>
+              <Icon name="bolt" className="w-3.5 h-3.5" />
+              {previewSpiderScore}
+            </span>
+          </div>
+
+          <ExamPassedToggle checked={formExamPassed} onChange={() => setFormExamPassed((v) => !v)} />
+
+          {/* Multiverse Simulator (V18.0, Pillar 3) — il Voto ufficiale entra
+              nella Media Ponderata Reale solo se l'Esame è Superato. */}
+          {formExamPassed && (
+            <div className="bg-surface/70 border border-accent/25 rounded-xl px-4 py-4 space-y-3">
+              <p className="text-sm text-accent font-semibold flex items-center gap-1.5">
+                <Icon name="chartBar" className="w-4 h-4" />
+                Voto — alimenta il Multiverse Simulator (Media Ponderata / Proiezione di Laurea)
+              </p>
+              <div className="grid grid-cols-2 gap-3 items-end">
+                <div>
+                  <label className="text-sm text-slate-400 block mb-1.5">Voto (18-30)</label>
+                  <input
+                    type="number"
+                    min={MIN_VOTO}
+                    max={MAX_VOTO}
+                    value={formVoto}
+                    onChange={(e) => setFormVoto(e.target.value)}
+                    placeholder="Es. 27"
+                    className={INPUT}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setFormLode((v) => !v)}
+                  disabled={Number(formVoto) !== LODE_VALUE}
+                  className={`h-[50px] rounded-xl border font-semibold text-sm transition-all duration-300 flex items-center justify-center gap-2 ${
+                    formLode && Number(formVoto) === LODE_VALUE
+                      ? 'bg-accent/20 border-accent/60 text-accent'
+                      : 'bg-surface/80 border-white/10 text-slate-500'
+                  } disabled:opacity-40 disabled:pointer-events-none`}
+                >
+                  <Icon name="trophy" className="w-4 h-4" />
+                  e Lode
+                </button>
+              </div>
+              <p className="text-xs text-slate-500">Lasciando il campo vuoto, questo esame non entrerà nel calcolo della media ponderata.</p>
+            </div>
+          )}
+
+          <p className="text-sm text-slate-500">XP nodo = XP_Base × (1 + CFU × 0.05): più CFU, più XP per ogni traguardo.</p>
+          <button
+            type="button"
+            disabled={!formCourseId || (formCourseId === CUSTOM_COURSE_ID && !formCustomNome.trim())}
+            onClick={submitMateria}
+            className={`w-full ${BTN_PRIMARY}`}
+          >
+            {editingMateria ? 'Salva Modifiche' : 'Apri Nodo nel Web-Matrix'}
+          </button>
+        </div>
+      </Modal>
+
+      <ConfirmDialog
+        open={!!deleteMateriaTarget}
+        onClose={() => setDeleteMateriaTarget(null)}
+        onConfirm={() => {
+          actions.deleteMateria(deleteMateriaTarget.id);
+          if (selectedMateriaId === deleteMateriaTarget.id) setSelectedMateriaId('');
+        }}
+        title="Elimina Nodo Web-Matrix"
+        message={`Eliminare "${deleteMateriaTarget?.nome}"? Tutti i nodi e i progressi collegati andranno persi.`}
+        confirmLabel="Elimina"
+      />
+
+      {/* Modal: nuovo nodo */}
+      <Modal open={sfidaModalOpen} onClose={() => setSfidaModalOpen(false)} title="Nuovo Nodo dello Skill Tree">
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm text-slate-400 block mb-1.5">Nome nodo</label>
+            <input
+              type="text"
+              value={sfidaNome}
+              onChange={(e) => setSfidaNome(e.target.value)}
+              className={INPUT}
+              placeholder="Es. Equazioni di Navier-Stokes"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-slate-400 block mb-1.5">Obiettivo</label>
+            <textarea
+              value={sfidaObiettivo}
+              onChange={(e) => setSfidaObiettivo(e.target.value)}
+              rows={3}
+              className={`${INPUT} resize-none`}
+              placeholder="Cosa significa completare questo nodo?"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm text-slate-400 block mb-1.5">Giorni stimati</label>
+              <input
+                type="number"
+                min={1}
+                value={sfidaGiorni}
+                onChange={(e) => setSfidaGiorni(e.target.value)}
+                className={INPUT}
+              />
+            </div>
+            <div>
+              <label className="text-sm text-slate-400 block mb-1.5">Difficoltà</label>
+              <Dropdown
+                value={sfidaDifficulty}
+                onChange={setSfidaDifficulty}
+                options={Object.values(DIFFICULTY).map((d) => ({ value: d, label: DIFFICULTY_META[d].label }))}
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-sm text-slate-400 block mb-1.5">Nodo Padre (Categoria / prerequisito)</label>
+            <Dropdown
+              value={sfidaParentId}
+              onChange={setSfidaParentId}
+              placeholder="Nessuno (Nodo Padre — categoria di primo livello)"
+              options={[
+                { value: '', label: 'Nessuno (Nodo Padre — categoria di primo livello)' },
+                ...selectedSfide.map((s) => ({ value: s.id, label: s.nome }))
+              ]}
+            />
+            <p className="text-sm text-slate-500 mt-1.5">
+              Questo nodo sarà sempre liberamente completabile. Se in futuro diventerà a sua volta un Nodo Padre
+              (altri nodi lo useranno come prerequisito), potrà chiudersi solo a sotto-argomenti tutti completati.
+            </p>
+          </div>
+          <button type="button" disabled={!sfidaNome.trim()} onClick={submitSfida} className={`w-full ${BTN_SECONDARY}`}>
+            Aggiungi Nodo
+          </button>
+        </div>
+      </Modal>
+
+      {/* Modal / pannello di dettaglio nodo — qui vivono tutte le azioni
+          rapide (Ripassa, Forza Ripasso, gestione Nodo Padre), tenute
+          fuori dalle righe dell'albero per non affollarle. */}
+      <Modal open={!!nodeDetail} onClose={() => setNodeDetail(null)} title={nodeDetail?.nome || ''}>
+        {nodeDetail && selectedMateria && (() => {
+          const status = deriveNodeStatus(nodeDetail, selectedSfide);
+          const meta = STATUS_META[status];
+          const diffMeta = DIFFICULTY_META[nodeDetail.difficulty];
+          const ownChildren = directChildrenOf(nodeDetail, selectedSfide);
+          const isBoss = ownChildren.length > 0;
+          const pendingOwnChildren = ownChildren.filter((c) => c.status !== 'COMPLETED').length;
+          const canComplete = status === NODE_STATUS.AVAILABLE;
+          const bossLocked = isBoss && status === NODE_STATUS.LOCKED;
+          const parentOptions = selectedSfide.filter(
+            (s) => s.id !== nodeDetail.id && !isDescendant(selectedSfide, nodeDetail.id, s.id)
+          );
+          return (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={meta.badge}>{meta.label}</span>
+                <span className={`text-sm font-mono px-2.5 py-1 rounded-full border ${diffMeta.border} ${diffMeta.color}`}>
+                  {diffMeta.label}{nodeDetail.difficulty === 'HARD' ? ' (+30% XP)' : ''}
+                </span>
+                {isBoss && <span className="text-sm font-mono px-2.5 py-1 rounded-full border border-secondary/30 text-secondary">Boss — {ownChildren.length} figlio/i</span>}
+              </div>
+              {nodeDetail.obiettivo && <p className="text-base text-slate-300">{nodeDetail.obiettivo}</p>}
+              <p className="text-sm text-slate-500">
+                Durata stimata: {nodeDetail.giorni} giorni · {nodeDetail.focusMinutes} min di Focus accumulati
+              </p>
+              {(status === NODE_STATUS.COMPLETED || status === NODE_STATUS.NEEDS_REVIEW) && nodeDetail.nextReviewDate && (
+                <p className="text-sm text-slate-500">
+                  Prossimo ripasso: <span className="font-mono text-slate-300">{nodeDetail.nextReviewDate}</span>
+                  {nodeDetail.lastReviewRating && ` · ultimo giudizio: ${REVIEW_RATING_META[nodeDetail.lastReviewRating].label}`}
+                  {nodeDetail.reviewCount > 0 && ` · ${nodeDetail.reviewCount} ripassi totali`}
+                </p>
+              )}
+
+              {status !== NODE_STATUS.COMPLETED && status !== NODE_STATUS.NEEDS_REVIEW && (
+                <div>
+                  <label className="text-sm text-slate-400 block mb-1.5">Nodo Padre</label>
+                  <Dropdown
+                    value={detailParentId}
+                    onChange={(val) => commitParentChange(nodeDetail, val)}
+                    placeholder="Nessuno (Nodo Padre)"
+                    options={[
+                      { value: '', label: 'Nessuno (Nodo Padre)' },
+                      ...parentOptions.map((s) => ({ value: s.id, label: s.nome }))
+                    ]}
+                  />
+                </div>
+              )}
+
+              {status === NODE_STATUS.NEEDS_REVIEW && (
+                <div className="space-y-2">
+                  <p className="text-sm text-accent font-semibold flex items-center gap-1.5">
+                    <Icon name="alertTriangle" className="w-4 h-4" />
+                    Lo Spider-Sense formicola: è ora di ripassare.
+                  </p>
+                  <ReviewButtons onReview={(rating) => { handleReview(nodeDetail, rating); setNodeDetail(null); }} />
+                </div>
+              )}
+
+              {status === NODE_STATUS.COMPLETED && (
+                <div className="space-y-2 pt-3 border-t border-white/10">
+                  <p className="text-sm text-secondary font-semibold flex items-center gap-1.5">
+                    <Icon name="bolt" className="w-4 h-4" />
+                    Forza Ripasso Manuale — rinforza subito la memoria, senza aspettare lo Spider-Sense.
+                  </p>
+                  <ReviewButtons onReview={(rating) => { handleReview(nodeDetail, rating); setNodeDetail(null); }} />
+                </div>
+              )}
+
+              {/* V16.0 (Pillar 1) — alert elegante "Boss non ancora sconfitto":
+                  il pulsante resta visibile ma disattivato in stile, e un
+                  click mostra il toast esplicativo invece di completare nulla. */}
+              {bossLocked && (
+                <>
+                  <div className="relative bg-primary/10 border border-primary/40 rounded-xl px-4 py-3.5 flex items-start gap-3">
+                    <Icon name="alertTriangle" className="w-5 h-5 text-primary shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-base font-semibold text-primary">Completa prima tutti i sotto-argomenti</p>
+                      <p className="text-sm text-slate-400 mt-0.5">
+                        {pendingOwnChildren} sotto-argomento/i ancora incompleto/i su {ownChildren.length}: questo nodo è un Boss e si chiude solo a battaglia vinta.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleBossLockedAttempt}
+                    className={`w-full ${BTN_SUCCESS} opacity-40 grayscale`}
+                  >
+                    Completa Nodo
+                  </button>
+                </>
+              )}
+
+              {canComplete && (
+                <button
+                  type="button"
+                  onClick={() => handleAttemptComplete(nodeDetail)}
+                  className={`w-full ${BTN_SUCCESS}`}
+                >
+                  Completa Nodo
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteNodeTarget(nodeDetail);
+                  setNodeDetail(null);
+                }}
+                className={`w-full ${BTN_GHOST}`}
+              >
+                <Icon name="trash" className="w-4 h-4" />
+                Elimina Nodo
+              </button>
+            </div>
+          );
+        })()}
+      </Modal>
+
+      <ConfirmDialog
+        open={!!deleteNodeTarget}
+        onClose={() => setDeleteNodeTarget(null)}
+        onConfirm={() => actions.deleteSfida(selectedMateria.id, deleteNodeTarget.id)}
+        title="Elimina Nodo"
+        message={`Eliminare il nodo "${deleteNodeTarget?.nome}"? Eventuali nodi figli verranno promossi a Nodo Padre, non cancellati.`}
+        confirmLabel="Elimina"
+      />
+
+      {/* Drawer globale: Attiva Spider-Sense — pannello a scorrimento
+          laterale per le azioni rapide di ripasso in blocco. */}
+      {spiderSenseDrawerOpen && (
+        <div className="fixed inset-0 z-[70]">
+          <div className="absolute inset-0 bg-surface/75 backdrop-blur-sm" onClick={() => setSpiderSenseDrawerOpen(false)} />
+          <div className="absolute top-0 right-0 h-full w-full max-w-md bg-surface/90 backdrop-blur-2xl border-l border-secondary/20 shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-secondary/15">
+              <div>
+                <p className="text-sm text-accent tracking-widest">SPIDER-SENSE ENGINE</p>
+                <p className="text-lg font-semibold mt-0.5 text-white">Ripassi in sospeso ({derived.upcomingReviews.length})</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSpiderSenseDrawerOpen(false)}
+                className="text-slate-500 hover:text-primary transition-all duration-300"
+                aria-label="Chiudi drawer"
+              >
+                <Icon name="close" className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto af-scroll p-6 space-y-3">
+              {derived.upcomingReviews.length === 0 ? (
+                <EmptyState
+                  variant="safe"
+                  title="La città è sicura."
+                  subtitle="Nessun ripasso in sospeso: lo Spider-Sense è tranquillo. Torna dopo aver completato nuovi nodi."
+                />
+              ) : (
+                derived.upcomingReviews.map((r) => {
+                  const diffMeta = DIFFICULTY_META[r.difficulty];
+                  return (
+                    <div key={r.sfidaId} className="bg-surface/70 border border-accent/30 rounded-2xl p-4 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-base font-medium truncate text-slate-100">{r.sfidaNome}</p>
+                          <p className="text-sm text-slate-500">{r.materiaNome}</p>
+                        </div>
+                        <span className={`text-xs font-mono px-2 py-0.5 rounded-full border shrink-0 ${diffMeta.border} ${diffMeta.color}`}>
+                          {diffMeta.label}
+                        </span>
+                      </div>
+                      <ReviewButtons size="small" onReview={(rating) => actions.reviewSfida(r.materiaId, r.sfidaId, rating)} />
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
