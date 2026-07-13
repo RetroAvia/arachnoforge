@@ -1414,8 +1414,19 @@ export function ArachnoForgeProvider({ children }) {
 
   const derived = useMemo(() => {
     const fatigued = state.profile.stamina < FATIGUE_STAMINA_THRESHOLD;
+    // V34.1 — FIX: una Materia già superata (`examPassed`, voto registrato)
+    // restava candidata a "Prossimo Esame" finché la sua `examDate` non
+    // veniva manualmente cambiata/rimossa — bastava che la data fosse la
+    // più vicina nell'ordinamento per far comparire una materia CHIUSA
+    // nella Traiettoria (Sidebar), nel Doomsday Clock (Mission Control) e
+    // nel Web-Velocity Focus Analytics (Daily Bugle Archives), che quindi
+    // mostrava "100% — quadrante già completato" all'infinito invece di
+    // sparire e lasciare spazio al prossimo esame REALE. Stesso identico
+    // filtro già usato da K.A.R.E.N. Auto-Router (vedi useKarenAutoRouter,
+    // `.filter((m) => !m.examPassed)`) — un solo criterio di "esame ancora
+    // da sostenere", condiviso da ogni consumatore di `derived.nextExam`.
     const upcomingExams = [...state.materie]
-      .filter((m) => m.examDate)
+      .filter((m) => m.examDate && !m.examPassed)
       .sort((a, b) => a.examDate.localeCompare(b.examDate));
     const nextExam = upcomingExams[0] || null;
 
