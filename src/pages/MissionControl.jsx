@@ -289,6 +289,22 @@ export default function MissionControl() {
   // selezionata, quindi nessuna Difficoltà su cui basare il bonus).
   const spiderSenseTensionActive = timer.status === TIMER_STATUS.FOCUS && !!activeMateria;
 
+  // V31.3 — Feedback loop chiuso: le skill passive dello Skill Tree
+  // modificano la matematica della sessione ma finora restavano invisibili
+  // fuori dalla tab Skill Tree della Suit Lab. Mostra qui SOLO i bonus
+  // realmente in gioco nella sessione corrente (mai un elenco statico di
+  // "tutto ciò che hai sbloccato" — quello vive già in Armory).
+  const activeSkillChips = [];
+  if (timer.status === TIMER_STATUS.FOCUS) {
+    const eff = derived.skillEffects;
+    if (eff.xpBonusPct > 0) activeSkillChips.push(`+${Math.round(eff.xpBonusPct * 100)}% XP`);
+    if (eff.staminaCostMultiplier < 1) activeSkillChips.push(`-${Math.round((1 - eff.staminaCostMultiplier) * 100)}% Stamina`);
+    if (eff.streakThresholdBonus > 0) activeSkillChips.push(`Streak soglie -${eff.streakThresholdBonus}gg`);
+    const sessionHour = new Date().getHours();
+    if (eff.nightBonusEnabled && sessionHour >= 0 && sessionHour < 4) activeSkillChips.push('+10% XP notturno');
+    if (timer.isOverdriveActive) activeSkillChips.push(`Overdrive x${eff.overdriveMultiplier.toFixed(2)}`);
+  }
+
   if (sensoryZero) {
     return (
       <div className="fixed inset-0 z-[100] bg-[radial-gradient(ellipse_at_center,rgb(var(--af-surface-rgb))_0%,#000000_100%)] flex flex-col items-center justify-center">
@@ -503,6 +519,20 @@ export default function MissionControl() {
                 Sensory Zero
               </button>
             </div>
+
+            {/* V31.3 — Skill Tree Feedback Loop: bonus passivi realmente
+                attivi sulla sessione in corso, mai un doppione dell'elenco
+                skill statico già presente in Armory. */}
+            {activeSkillChips.length > 0 && (
+              <div className="relative flex flex-wrap items-center justify-center gap-1.5 -mt-1 mb-3">
+                {activeSkillChips.map((label) => (
+                  <span key={label} className={BADGE.blue}>
+                    <Icon name="chip" className="w-3 h-3" />
+                    {label}
+                  </span>
+                ))}
+              </div>
+            )}
 
             <div className="relative w-52 h-52 sm:w-64 sm:h-64 flex items-center justify-center">
               <svg className="w-52 h-52 sm:w-64 sm:h-64 -rotate-90" viewBox="0 0 260 260">

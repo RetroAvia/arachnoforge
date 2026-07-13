@@ -17,6 +17,12 @@ const ILLUMINATION_HEAL = 10;
 const ILLUMINATION_MAX_USES = 2;
 const ENRAGE_THRESHOLD = 0.15;
 const LAST_STAND_WINDOW_MS = 3000;
+// V32.0 — Sinister Six Gauntlet: 6 Villain in fila, stessa configurazione
+// (materia/durata) per ogni round, HP che torna a 100 a ogni nuovo
+// ingaggio. La run finisce alla prima sconfitta OPPURE alla vittoria sul
+// sesto Villain — nessun continue, nessuna seconda chance tra un round e
+// l'altro (a parte gli strumenti già esistenti: Pausa Tattica, Illuminazione, Last Stand).
+const GAUNTLET_SIZE = 6;
 
 function computeEfficiency(hp, remainingSeconds, totalSeconds) {
   const hpScore = hp / 100;
@@ -62,6 +68,10 @@ export default function BossFight() {
   const [reportData, setReportData] = useState(null);
   const [lastStandActive, setLastStandActive] = useState(false);
   const [lastStandMsLeft, setLastStandMsLeft] = useState(0);
+  // V32.0 — Sinister Six Gauntlet.
+  const [gauntletMode, setGauntletMode] = useState(false);
+  const [gauntletRound, setGauntletRound] = useState(1);
+  const [gauntletHistory, setGauntletHistory] = useState([]);
 
   const endTimestampRef = useRef(null);
   const intervalRef = useRef(null);
@@ -71,6 +81,10 @@ export default function BossFight() {
   const lastStandTimeoutRef = useRef(null);
   const lastStandIntervalRef = useRef(null);
   const remainingSecondsRef = useRef(remainingSeconds);
+  // Ref stabile verso `endRound` (definito più sotto, dopo `tick`): rompe
+  // la dipendenza circolare tick -> endRound -> tick senza mai lasciare
+  // `tick` con una closure stantia sull'ultimo round del Gauntlet.
+  const endRoundRef = useRef(null);
   useEffect(() => { hpRef.current = hp; }, [hp]);
   useEffect(() => { remainingSecondsRef.current = remainingSeconds; }, [remainingSeconds]);
 
@@ -127,9 +141,63 @@ export default function BossFight() {
     const remaining = Math.max(0, Math.ceil(remainingMs / 1000));
     setRemainingSeconds(remaining);
     if (remainingMs <= 0) {
-      endFight(hpRef.current > 0, hpRef.current);
+      endRoundRef.current?.(hpRef.current > 0, hpRef.current);
     }
-  }, [endFight]);
+  }, []);
+
+  /**
+   * V32.0 — Sinister Six Gauntlet: wrapper attorno a `endFight` che resta
+   * l'UNICA via d'uscita da un round, sia in Boss Fight singolo che in
+   * Gauntlet. Fuori dal Gauntlet il comportamento è identico, byte per
+   * byte, a prima (chiama `endFight` e basta — nessun rischio di
+   * regressione sul percorso stabile). Dentro il Gauntlet: registra il
+   * round in `gauntletHistory` tramite lo stesso `actions.bossFightResult`
+   * già usato dal Boss Fight singolo (nessuna nuova fonte di XP), poi
+   * incatena il Villain successivo se si è vinto e mancano round, oppure
+   * chiude la run (sconfitta in qualunque round, o vittoria sul sesto).
+   */
+  const endRound = useCallback((win, finalHp) => {
+    if (!gauntletMode) {
+      endFight(win, finalHp);
+      return;
+    }
+    clearAllIntervals();
+    endTimestampRef.current = null;
+    freezeEndRef.current = null;
+    const finalRemaining = remainingSeconds;
+    const finalTotal = totalSeconds;
+    setFrozen(false);
+    const roundReport = buildReport(win, finalHp, finalRemaining, finalTotal);
+    actions.bossFightResult({
+      win,
+      hpRemaining: finalHp,
+      materiaNome: materia ? materia.nome : null,
+      timeRemainingSeconds: finalRemaining,
+      totalSeconds: finalTotal
+    });
+    setGauntletHistory((prev) => [...prev, { round: gauntletRound, win, hp: finalHp, xpGain: roundReport.xpGain, efficiency: roundReport.efficiency }]);
+
+    if (win && gauntletRound < GAUNTLET_SIZE) {
+      actions.logEvent(`Sinister Six Gauntlet — Villain ${gauntletRound}/${GAUNTLET_SIZE} abbattuto. Prossimo ingaggio in arrivo.`, 'SUCCESS');
+      setGauntletRound((r) => r + 1);
+      const durationSeconds = Math.max(60, Math.round(durationMinutes * 60));
+      endTimestampRef.current = Date.now() + durationSeconds * 1000;
+      setTotalSeconds(durationSeconds);
+      setRemainingSeconds(durationSeconds);
+      setHp(MAX_HP);
+      setPenaltyLog(0);
+      setIlluminazioniUsate(0);
+      intervalRef.current = setInterval(tick, 250);
+      // phase resta FIGHTING: nessuna schermata WON intermedia tra un Villain e l'altro.
+    } else {
+      setPhase(win ? PHASES.WON : PHASES.LOST);
+      setReportData(roundReport);
+      setReportOpen(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gauntletMode, gauntletRound, actions, materia, remainingSeconds, totalSeconds, durationMinutes, tick, endFight]);
+
+  useEffect(() => { endRoundRef.current = endRound; }, [endRound]);
 
   useEffect(() => () => clearAllIntervals(), []);
 
@@ -142,6 +210,10 @@ export default function BossFight() {
     setPenaltyLog(0);
     setIlluminazioniUsate(0);
     setFrozen(false);
+    if (gauntletMode) {
+      setGauntletRound(1);
+      setGauntletHistory([]);
+    }
     setPhase(PHASES.FIGHTING);
     intervalRef.current = setInterval(tick, 250);
   };
@@ -174,7 +246,7 @@ export default function BossFight() {
         lastStandTimeoutRef.current = null;
         lastStandIntervalRef.current = null;
         setLastStandActive(false);
-        endFight(false, 0);
+        endRoundRef.current?.(false, 0);
       }, LAST_STAND_WINDOW_MS);
     } else {
       setHp(next);
@@ -191,9 +263,9 @@ export default function BossFight() {
     setHp(1);
   };
 
-  const declareVictory = () => endFight(true, hpRef.current);
+  const declareVictory = () => endRoundRef.current?.(true, hpRef.current);
 
-  const abandon = () => endFight(false, hpRef.current);
+  const abandon = () => endRoundRef.current?.(false, hpRef.current);
 
   const activateTacticalPause = () => {
     if (frozen || hpRef.current < TACTICAL_PAUSE_COST) return;
@@ -239,6 +311,10 @@ export default function BossFight() {
     setLastStandMsLeft(0);
     setReportOpen(false);
     setReportData(null);
+    // Il toggle Gauntlet resta com'era (comodo per incatenare più run),
+    // ma round/storico ripartono sempre puliti.
+    setGauntletRound(1);
+    setGauntletHistory([]);
   };
 
   const hpPct = (hp / MAX_HP) * 100;
@@ -301,6 +377,36 @@ export default function BossFight() {
                   className={INPUT}
                 />
               </div>
+              <div>
+                <label className="text-sm text-slate-400 flex items-center gap-1.5 mb-1.5">
+                  <Icon name="skull" className="w-4 h-4" />
+                  Modalità
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setGauntletMode(false)}
+                    className={`py-2.5 rounded-xl border text-sm font-semibold transition-all duration-300 ${
+                      !gauntletMode
+                        ? 'border-secondary/60 bg-secondary/10 text-secondary shadow-secondary-glow'
+                        : 'border-white/10 bg-white/[0.02] text-slate-400 hover:border-white/20'
+                    }`}
+                  >
+                    Villain Singolo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGauntletMode(true)}
+                    className={`py-2.5 rounded-xl border text-sm font-semibold transition-all duration-300 ${
+                      gauntletMode
+                        ? 'border-primary/60 bg-primary/10 text-primary shadow-primary-glow'
+                        : 'border-white/10 bg-white/[0.02] text-slate-400 hover:border-white/20'
+                    }`}
+                  >
+                    Gauntlet (6 in fila)
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div className="relative bg-surface/70 border border-secondary/15 rounded-xl p-4 space-y-2.5">
@@ -313,11 +419,16 @@ export default function BossFight() {
               <BriefLine icon="moon">Pausa Tattica: congela il timer 3 minuti per -{TACTICAL_PAUSE_COST} HP.</BriefLine>
               <BriefLine icon="bolt">Illuminazione: +{ILLUMINATION_HEAL} HP, usabile max {ILLUMINATION_MAX_USES} volte a run.</BriefLine>
               <BriefLine icon="alertTriangle">Sotto il {Math.round(ENRAGE_THRESHOLD * 100)}% del tempo residuo: Fase Enrage.</BriefLine>
+              {gauntletMode && (
+                <BriefLine icon="skull">
+                  <span className="text-primary">Sinister Six Gauntlet:</span> {GAUNTLET_SIZE} Villain in fila, HP che torna a 100 a ogni nuovo ingaggio. La sconfitta in un QUALSIASI round chiude subito l'intera run.
+                </BriefLine>
+              )}
             </div>
 
             <button type="button" onClick={startFight} className={`relative w-full ${BTN_PRIMARY}`}>
               <Icon name="crosshair" className="w-6 h-6" />
-              Ingaggia Sinister Six Simulator
+              {gauntletMode ? `Ingaggia il Sinister Six Gauntlet (${GAUNTLET_SIZE} Villain)` : 'Ingaggia Sinister Six Simulator'}
             </button>
           </div>
         )}
@@ -328,7 +439,14 @@ export default function BossFight() {
             <div className={isEnrage ? `${CARD_ALERT} space-y-6` : `${CARD} space-y-6`}>
               {isEnrage && <div className="absolute -inset-1 rounded-2xl bg-primary/10 blur-xl pointer-events-none" />}
               <div className="relative flex items-center justify-between gap-3 flex-wrap">
-                <span className="text-base tracking-widest text-slate-400 font-mono truncate min-w-0">{materia ? materia.nome.toUpperCase() : 'SIMULAZIONE'}</span>
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-base tracking-widest text-slate-400 font-mono truncate min-w-0">{materia ? materia.nome.toUpperCase() : 'SIMULAZIONE'}</span>
+                  {gauntletMode && (
+                    <span className="shrink-0 text-[11px] font-mono px-2 py-0.5 rounded-full border border-primary/50 bg-primary/10 text-primary">
+                      VILLAIN {gauntletRound}/{GAUNTLET_SIZE}
+                    </span>
+                  )}
+                </div>
                 <span className={`text-3xl sm:text-4xl font-mono font-bold af-mono-nums shrink-0 ${isEnrage ? 'text-primary af-enrage' : 'text-white'}`}>
                   {formatClock(remainingSeconds)}
                 </span>
@@ -417,12 +535,18 @@ export default function BossFight() {
             <div className={`absolute -top-16 left-1/2 -translate-x-1/2 w-56 h-56 rounded-full blur-3xl pointer-events-none ${phase === PHASES.WON ? 'bg-emerald-500/20' : 'bg-primary/20'}`} />
             <Icon name={phase === PHASES.WON ? 'trophy' : 'skull'} className={`relative w-16 h-16 mx-auto ${phase === PHASES.WON ? 'text-emerald-400' : 'text-primary'}`} />
             <h2 className={`relative text-3xl font-extrabold ${phase === PHASES.WON ? 'text-emerald-400' : 'text-primary'}`}>
-              {phase === PHASES.WON ? 'BOSS ABBATTUTO' : 'GAME OVER'}
+              {gauntletMode
+                ? (phase === PHASES.WON ? 'SINISTER SIX GAUNTLET COMPLETATA' : `GAUNTLET FALLITA — VILLAIN ${gauntletRound}/${GAUNTLET_SIZE}`)
+                : (phase === PHASES.WON ? 'BOSS ABBATTUTO' : 'GAME OVER')}
             </h2>
             <p className="relative text-base text-slate-400">
-              {phase === PHASES.WON
-                ? 'Prova superata. Consulta il Post-Match Report per il dettaglio.'
-                : 'La simulazione è fallita. Nessun XP guadagnato — riprova quando sei pronto.'}
+              {gauntletMode
+                ? (phase === PHASES.WON
+                    ? `Tutti e ${GAUNTLET_SIZE} i Villain abbattuti in fila. Consulta il Post-Match Report per il riepilogo round per round.`
+                    : 'La run si è interrotta qui. L\'XP dei round già vinti resta comunque accreditato — consulta il report.')
+                : (phase === PHASES.WON
+                    ? 'Prova superata. Consulta il Post-Match Report per il dettaglio.'
+                    : 'La simulazione è fallita. Nessun XP guadagnato — riprova quando sei pronto.')}
             </p>
             <div className="relative flex items-center justify-center gap-3">
               <button type="button" onClick={() => setReportOpen(true)} className={BTN_SECONDARY}>
@@ -457,8 +581,12 @@ export default function BossFight() {
         open={abandonConfirmOpen}
         onClose={() => setAbandonConfirmOpen(false)}
         onConfirm={abandon}
-        title="Abbandona Sinister Six Simulator"
-        message="Abbandonare ora la simulazione conta come sconfitta: nessun XP verrà accreditato. Confermi?"
+        title={gauntletMode ? 'Abbandona il Sinister Six Gauntlet' : 'Abbandona Sinister Six Simulator'}
+        message={
+          gauntletMode
+            ? `Abbandonare ora chiude l'intero Gauntlet come sconfitta al Villain ${gauntletRound}/${GAUNTLET_SIZE}: quel round non darà XP, ma l'XP dei round già vinti resta accreditato. Confermi?`
+            : 'Abbandonare ora la simulazione conta come sconfitta: nessun XP verrà accreditato. Confermi?'
+        }
         confirmLabel="Abbandona"
       />
 
@@ -483,6 +611,27 @@ export default function BossFight() {
                 <p className="text-[10px] sm:text-xs text-slate-500">Tempo Avanzato</p>
               </div>
             </div>
+
+            {gauntletMode && gauntletHistory.length > 0 && (
+              <div className="space-y-2 pt-2 border-t border-white/5">
+                <p className="text-xs tracking-widest text-slate-500 font-mono">SINISTER SIX GAUNTLET — RIEPILOGO</p>
+                <div className="space-y-1.5">
+                  {gauntletHistory.map((r) => (
+                    <div key={r.round} className="flex items-center justify-between gap-2 bg-surface/60 border border-white/5 rounded-lg px-3 py-1.5">
+                      <span className="text-sm text-slate-300 flex items-center gap-1.5">
+                        <Icon name={r.win ? 'trophy' : 'skull'} className={`w-4 h-4 ${r.win ? 'text-emerald-400' : 'text-primary'}`} />
+                        Villain {r.round}/{GAUNTLET_SIZE}
+                      </span>
+                      <span className="text-xs font-mono text-slate-400">HP {r.hp}/100 · +{r.xpGain} XP</span>
+                    </div>
+                  ))}
+                </div>
+                {gauntletHistory.length === GAUNTLET_SIZE && gauntletHistory.every((r) => r.win) && (
+                  <p className="text-xs text-emerald-400 font-mono text-center pt-1">GAUNTLET PULITA — {GAUNTLET_SIZE}/{GAUNTLET_SIZE} VILLAIN ABBATTUTI</p>
+                )}
+              </div>
+            )}
+
             <button
               type="button"
               onClick={() => {

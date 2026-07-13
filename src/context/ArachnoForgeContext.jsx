@@ -33,8 +33,10 @@ import {
 } from '../utils/xpEngine.js';
 import { NODE_STATUS, PERSISTED_STATUS, deriveNodeStatus, orphanChildren, createSfida, markFirstCompletion } from '../utils/skillTree.js';
 import { getSkillDef, canUnlockSkill, computeSkillEffects } from '../data/techTree.js';
-import { computeNextReviewDate } from '../utils/spiderSense.js';
+import { computeNextReviewDate, REVIEW_RATING } from '../utils/spiderSense.js';
+import { isBountyTarget, computeFriction } from '../utils/friction.js';
 import { isGoblinProtocol } from '../utils/materiaMeta.js';
+import { computeWeightedAverage, isGradedMateria } from '../utils/gpaEngine.js';
 import { nowIso, getDateKey, isSameDay, daysBetween, crossedThreeAM, daysUntilDateOnly } from '../utils/dateUtils.js';
 import { evaluateTrophies } from '../data/trophies.js';
 import { TIMER_STATUS } from '../hooks/useTimerEngine.js';
@@ -47,7 +49,7 @@ import { computePrimaryTarget } from '../utils/karenSuggestor.js';
 import { generateDailyQuests, applyQuestEvent, QUEST_EVENTS } from '../utils/dailyPatrol.js';
 import { useAchievements } from '../hooks/useAchievements.js';
 import { isMaxCarnageActive, bumpCriticalActionStreak, deactivateMaxCarnage } from '../utils/maxCarnage.js';
-import { canClaimWebSling, rollWebSlingReward } from '../utils/webSling.js';
+import { canClaimWebSling, rollWebSlingRewardWithPity, isHighTier } from '../utils/webSling.js';
 import { createSfideTreeFromAiIndex } from '../utils/aiIndexParser.js';
 import { validateAdminPassphrase, sandboxStorageKey, guestStorageKey, loadLocalState, saveLocalState } from '../utils/adminOverride.js';
 
@@ -84,10 +86,18 @@ function updateMateriaSfide(state, materiaId, updater) {
 function applyCriticalAction(profile, combatLog, isCriticalAction) {
   if (!isCriticalAction) return { profile, combatLog };
   const { justActivated, ...patch } = bumpCriticalActionStreak(profile, 1);
-  const nextProfile = { ...profile, ...patch };
+  let nextProfile = { ...profile, ...patch };
   if (!justActivated) return { profile: nextProfile, combatLog };
-  const nextLog = pushLog(
-    combatLog,
+  // V31.3 — Suit Unlock Gating: il primo trigger di Maximum Carnage sblocca
+  // per sempre la Symbiote Suit (flag one-way, mai revocato — coerente col
+  // resto dei traguardi "a vita" dell'app, es. Tech Tokens/Trofei).
+  let nextLog = combatLog;
+  if (!nextProfile.symbioteSuitUnlocked) {
+    nextProfile = { ...nextProfile, symbioteSuitUnlocked: true };
+    nextLog = pushLog(nextLog, 'Symbiote Suit sbloccata — disponibile in Karen OS Settings.', 'CARNAGE');
+  }
+  nextLog = pushLog(
+    nextLog,
     'MAXIMUM CARNAGE MODE ATTIVATA — Il simbionte prende il sopravvento per le prossime 2 ore. XP raddoppiati, Stamina illimitata.',
     'CARNAGE'
   );
@@ -169,11 +179,30 @@ function reducer(state, action) {
       };
     }
 
-    case 'UPDATE_MATERIA':
+    case 'UPDATE_MATERIA': {
+      const prevMateria = findMateria(state, action.payload.id);
+      const wasGraded = isGradedMateria(prevMateria);
+      const nextMaterie = state.materie.map((m) => (m.id === action.payload.id ? { ...m, ...action.payload.patch } : m));
+      const updatedMateria = nextMaterie.find((m) => m.id === action.payload.id);
+      const isNowGraded = isGradedMateria(updatedMateria);
+      // V32.0 — Storico Media Ponderata: registra un punto SOLO alla
+      // transizione "non ancora votata -> votata" (mai su ogni singola
+      // modifica della Materia, altrimenti correggere un voto già
+      // registrato o toccare altri campi gonfierebbe lo storico con punti
+      // ridondanti/fuorvianti).
+      const gradeHistory = (!wasGraded && isNowGraded)
+        ? [...state.gradeHistory, {
+            dateKey: getDateKey(),
+            average: computeWeightedAverage(nextMaterie).average,
+            gradedCount: computeWeightedAverage(nextMaterie).gradedCount
+          }]
+        : state.gradeHistory;
       return {
         ...state,
-        materie: state.materie.map((m) => (m.id === action.payload.id ? { ...m, ...action.payload.patch } : m))
+        materie: nextMaterie,
+        gradeHistory
       };
+    }
 
     case 'DELETE_MATERIA': {
       const materia = findMateria(state, action.payload.id);
@@ -283,9 +312,20 @@ function reducer(state, action) {
       const wasDue = deriveNodeStatus(target, materia.sfide) === NODE_STATUS.NEEDS_REVIEW;
 
       const nextReviewDate = computeNextReviewDate(rating);
+      // V31.3 — Bounty Board (Friction Analytics): un giudizio "Difficile"
+      // conta come tentativo fallito (segnale di attrito reale sul nodo),
+      // "Facile"/"Medio" come tentativo riuscito — alimenta isBountyTarget
+      // in utils/friction.js senza toccarne la formula.
       const reviewedSfide = materia.sfide.map((s) =>
         s.id === sfidaId
-          ? { ...s, nextReviewDate, lastReviewRating: rating, reviewCount: (s.reviewCount || 0) + 1 }
+          ? {
+              ...s,
+              nextReviewDate,
+              lastReviewRating: rating,
+              reviewCount: (s.reviewCount || 0) + 1,
+              tentativiSuccessi: (s.tentativiSuccessi || 0) + (rating === REVIEW_RATING.HARD ? 0 : 1),
+              tentativiFalliti: (s.tentativiFalliti || 0) + (rating === REVIEW_RATING.HARD ? 1 : 0)
+            }
           : s
       );
 
@@ -354,6 +394,13 @@ function reducer(state, action) {
         isMaxCarnage
       });
       const staminaCost = computeFocusStaminaCost(focusMinutes, difficulty, skillEffects.staminaCostMultiplier, isMaxCarnage);
+      // V31.3 — Spider-Sense Surge XP calcolato QUI (anziché più sotto),
+      // così può essere allegato come campo dedicato `surgeXp` sulla stessa
+      // voce FOCUS_SESSION dello Star Log invece di restare impastato nel
+      // totale XP della sessione — StarLog.jsx può cosi' mostrarlo come
+      // riga a sé stante nelle statistiche storiche. Zero voci aggiuntive
+      // in starLog (nessun impatto sulla crescita dell'array).
+      const spiderSenseBonus = materia ? computeSpiderSenseSurgeXp(materia.perceivedDifficulty) : 0;
 
       let profile = applyXpDeltaWithTokens(state.profile, xpGain);
       profile = {
@@ -387,6 +434,10 @@ function reducer(state, action) {
         dateKey: key,
         minutes: focusMinutes,
         xp: xpGain,
+        // V31.3 — Spider-Sense Surge scorporato come campo dedicato (0
+        // quando la sessione non è agganciata a una Materia), cosi' resta
+        // visibile nella cronologia invece di sparire dentro `xp`.
+        surgeXp: spiderSenseBonus,
         hour: new Date().getHours(),
         timestamp: nowIso(),
         quality,
@@ -430,7 +481,6 @@ function reducer(state, action) {
       // Percepita della Materia (1-5, Web-Path Planner) — mai al singolo
       // nodo, coerente con "difficoltà della materia" richiesta.
       if (materia) {
-        const spiderSenseBonus = computeSpiderSenseSurgeXp(materia.perceivedDifficulty);
         profile = applyXpDeltaWithTokens(profile, spiderSenseBonus);
         combatLog = pushLog(
           combatLog,
@@ -681,13 +731,17 @@ function reducer(state, action) {
     // deciso. Doppio-claim blindato sulla dateKey persistita.
     case 'WEB_SLING_CLAIM': {
       if (!canClaimWebSling(state.profile)) return state;
-      const { tier } = action.payload;
+      const { tier, pityTriggered } = action.payload;
       let profile = tier.xp > 0 ? applyXpDeltaWithTokens(state.profile, tier.xp) : state.profile;
       profile = {
         ...profile,
         webSlingLastClaimDateKey: getDateKey(),
         stamina: tier.restoreStamina ? 100 : profile.stamina,
-        techTokens: (Number.isFinite(profile.techTokens) ? profile.techTokens : 0) + (tier.techTokens || 0)
+        techTokens: (Number.isFinite(profile.techTokens) ? profile.techTokens : 0) + (tier.techTokens || 0),
+        // V31.3 — Pity System: azzerato su ogni tier Alto (Raro/Forziere di
+        // Parker, sia genuino sia garantito dalla pity stessa), incrementato
+        // altrimenti — un solo contatore, mai due fonti di verità.
+        webSlingPityCounter: isHighTier(tier) ? 0 : (Number.isFinite(state.profile.webSlingPityCounter) ? state.profile.webSlingPityCounter : 0) + 1
       };
       const rewardParts = [`+${tier.xp} XP`];
       if (tier.restoreStamina) rewardParts.push('Stamina rigenerata al 100%');
@@ -697,7 +751,7 @@ function reducer(state, action) {
         profile,
         combatLog: pushLog(
           state.combatLog,
-          `Daily Web-Sling — Forziere aperto: ${tier.label} (${tier.rarity}). ${rewardParts.join(', ')}.`,
+          `Daily Web-Sling — Forziere aperto: ${tier.label} (${tier.rarity})${pityTriggered ? ' [Spider-Sense della Fortuna — garanzia Pity attivata]' : ''}. ${rewardParts.join(', ')}.`,
           'REFUEL'
         )
       };
@@ -1150,6 +1204,49 @@ export function ArachnoForgeProvider({ children }) {
       deleteMateria: (id) => dispatch({ type: 'DELETE_MATERIA', payload: { id } }),
       addSfida: (materiaId, payload) => dispatch({ type: 'ADD_SFIDA', payload: { materiaId, ...payload } }),
       updateSfida: (materiaId, sfidaId, patch) => dispatch({ type: 'UPDATE_SFIDA', payload: { materiaId, sfidaId, patch } }),
+      // V31.2 — Pillar 2 (Robust State & Supabase Sync): salvataggio
+      // dedicato dell'Editor di Personalizzazione Nodo. Il Context globale
+      // viene aggiornato PRIMA di ogni round-trip di rete (dispatch
+      // sincrono via reducer) cosi' la UI riflette il nodo modificato
+      // istantaneamente, senza sfarfallio ne' attesa del debounce di
+      // autosave da 2.5s usato altrove. Subito dopo, esegue una query di
+      // update mirata alla riga Cloud dell'utente (unica chiave reale
+      // dello schema JSONB `user_data`), incorporando SOLO la patch del
+      // nodo appena modificato dentro `app_state.materie[].sfide[]`,
+      // individuato dal suo identificativo unico (sfidaId). Ritorna una
+      // Promise { success, error } così il chiamante può pilotare il
+      // proprio feedback di salvataggio/errore in tempo reale.
+      updateSfidaAndSync: async (materiaId, sfidaId, patch) => {
+        dispatch({ type: 'UPDATE_SFIDA', payload: { materiaId, sfidaId, patch } });
+
+        const nextState = {
+          ...stateRef.current,
+          materie: stateRef.current.materie.map((m) =>
+            m.id === materiaId
+              ? { ...m, sfide: m.sfide.map((s) => (s.id === sfidaId ? { ...s, ...patch } : s)) }
+              : m
+          )
+        };
+
+        try {
+          if (storageMode === 'cloud') {
+            const { error } = await supabase
+              .from(USER_DATA_TABLE)
+              .update({ app_state: nextState })
+              .eq('user_id', user.id);
+            if (error) throw error;
+          } else {
+            // Guest/Sandbox: nessuna query di rete, mai una riga Supabase
+            // toccata da qui — stesso backend locale usato dall'autosave.
+            const key = storageMode === 'guest' ? guestStorageKey() : sandboxStorageKey(user.id);
+            saveLocalState(key, nextState);
+          }
+          return { success: true };
+        } catch (err) {
+          console.error('[ArachnoForge] Sync immediato del Nodo fallito.', err);
+          return { success: false, error: err };
+        }
+      },
       deleteSfida: (materiaId, sfidaId) => dispatch({ type: 'DELETE_SFIDA', payload: { materiaId, sfidaId } }),
       completeSfida: (materiaId, sfidaId) => {
         // Level Up Chime per i Nodi Padre ("Boss" dello Skill Tree, cioè
@@ -1211,8 +1308,9 @@ export function ArachnoForgeProvider({ children }) {
       // di apertura sul risultato reale, mai un placeholder ottimistico.
       claimWebSling: () => {
         if (!canClaimWebSling(stateRef.current.profile)) return null;
-        const tier = rollWebSlingReward();
-        dispatch({ type: 'WEB_SLING_CLAIM', payload: { tier } });
+        const pityCounter = Number.isFinite(stateRef.current.profile.webSlingPityCounter) ? stateRef.current.profile.webSlingPityCounter : 0;
+        const { tier, pityTriggered } = rollWebSlingRewardWithPity(pityCounter);
+        dispatch({ type: 'WEB_SLING_CLAIM', payload: { tier, pityTriggered } });
         audio.playChestOpen();
         return tier;
       },
@@ -1267,7 +1365,11 @@ export function ArachnoForgeProvider({ children }) {
         authSignOut();
       }
     }),
-    [pushToast, audio, authSignOut]
+    // storageMode/user entrano nelle dipendenze per via di updateSfidaAndSync
+    // (V31.2, Pillar 2), che li legge in chiusura per decidere backend
+    // Cloud vs locale — evita una closure "stale" se l'utente attiva/esce
+    // dalla Sandbox mentre l'editor di un nodo è aperto.
+    [pushToast, audio, authSignOut, storageMode, user]
   );
 
   const derived = useMemo(() => {
@@ -1299,6 +1401,25 @@ export function ArachnoForgeProvider({ children }) {
       const record = state.trophies.find((r) => r.id === t.id);
       return { ...t, unlockedAt: record ? record.unlockedAt : null };
     });
+
+    // V31.3 — Bounty Board (Friction Analytics): riattiva utils/friction.js,
+    // rimasto scaffoldato ma mai collegato a nessuna UI. Richiede almeno 3
+    // tentativi di ripasso registrati prima di segnalare un nodo, per non
+    // marcare come "Bounty" un nodo dopo un solo giudizio "Difficile"
+    // (rumore statistico su un campione troppo piccolo). Top 5 per frizione
+    // decrescente, letto da QuadrantHub per il pannello dedicato.
+    const bountyTargets = state.materie
+      .flatMap((m) => (Array.isArray(m.sfide) ? m.sfide : []).map((s) => ({ materia: m, sfida: s })))
+      .filter(({ sfida }) => (sfida.tentativiSuccessi || 0) + (sfida.tentativiFalliti || 0) >= 3 && isBountyTarget(sfida))
+      .map(({ materia, sfida }) => ({
+        materiaId: materia.id,
+        materiaNome: materia.nome,
+        sfidaId: sfida.id,
+        sfidaNome: sfida.nome,
+        friction: computeFriction(sfida.tentativiSuccessi, sfida.tentativiFalliti)
+      }))
+      .sort((a, b) => b.friction - a.friction)
+      .slice(0, 5);
 
     const todayKey = getDateKey();
     const todayMinutes = state.starLog
@@ -1348,7 +1469,9 @@ export function ArachnoForgeProvider({ children }) {
       isMaxCarnageActive: isMaxCarnageActive(state.profile),
       // V27.0 — Pillar 4 (Daily Web-Sling): true se il forziere di oggi è
       // ancora disponibile — letto dal widget in Mission Control.
-      canClaimWebSling: canClaimWebSling(state.profile)
+      canClaimWebSling: canClaimWebSling(state.profile),
+      // V31.3 — Bounty Board (Friction Analytics).
+      bountyTargets
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, nowTick, spiderSense, progression, karenAutoRouter, primaryTarget, skillEffects]);

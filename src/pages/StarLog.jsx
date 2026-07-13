@@ -28,6 +28,7 @@ const GYM_QUEST_HINT = 'palestra';
 
 const WEEKS_VISIBLE = 18;
 const DAY_MS = 86400000;
+const WEEK_MS = 7 * DAY_MS;
 
 function intensityLevel(minutes) {
   if (minutes <= 0) return 0;
@@ -157,6 +158,9 @@ function TimelineEntry({ entry }) {
         <div className="text-right shrink-0 font-mono text-xs">
           <p className="text-slate-300">{entry.minutes} min</p>
           {entry.xp > 0 && <p className="text-accent">+{entry.xp} XP</p>}
+          {/* V31.3 — Spider-Sense Surge scorporato dalla voce storica (era
+              impastato nel totale XP): visibile qui riga per riga. */}
+          {entry.surgeXp > 0 && <p className="text-secondary">+{entry.surgeXp} Surge</p>}
         </div>
       </div>
     );
@@ -238,6 +242,53 @@ export default function StarLog() {
     const wins = state.starLog.filter((e) => e.type === 'BOSS_WIN').length;
     const losses = state.starLog.filter((e) => e.type === 'BOSS_LOSS').length;
     return { wins, losses };
+  }, [state.starLog]);
+
+  /**
+   * V32.0 — Weekly Bugle: prima pagina settimanale ricomposta interamente
+   * da dati già esistenti (starLog + gradeHistory + trophyList), NESSUN
+   * nuovo campo persistito. Confronto per `dateKey` (stringa YYYY-MM-DD,
+   * ordinabile lessicograficamente) — coerente col resto della pagina.
+   * Piccola imprecisione accettata ai bordi fuso orario (± un giorno),
+   * irrilevante per un riepilogo settimanale informativo.
+   */
+  const weeklyBugle = useMemo(() => {
+    const cutoffKey = getDateKey(new Date(Date.now() - WEEK_MS));
+    const recentLog = state.starLog.filter((e) => e && typeof e.dateKey === 'string' && e.dateKey >= cutoffKey);
+    const focusEntries = recentLog.filter((e) => e.type === 'FOCUS_SESSION');
+    const focusMinutes = recentLog.filter((e) => e.type === 'FOCUS_MINUTES').reduce((sum, e) => sum + (e.minutes || 0), 0);
+    const totalXp = recentLog.reduce((sum, e) => sum + (e.xp || 0), 0);
+    const surgeXp = focusEntries.reduce((sum, e) => sum + (e.surgeXp || 0), 0);
+    const bossWins = recentLog.filter((e) => e.type === 'BOSS_WIN').length;
+    const bossLosses = recentLog.filter((e) => e.type === 'BOSS_LOSS').length;
+    const gradeHistory = Array.isArray(state.gradeHistory) ? state.gradeHistory : [];
+    const examsGraded = gradeHistory.filter((e) => e && typeof e.dateKey === 'string' && e.dateKey >= cutoffKey);
+    const trophiesUnlocked = (derived.trophyList || []).filter(
+      (t) => typeof t.unlockedAt === 'string' && t.unlockedAt.slice(0, 10) >= cutoffKey
+    );
+    const hasActivity = recentLog.length > 0 || examsGraded.length > 0 || trophiesUnlocked.length > 0;
+    return {
+      cutoffKey,
+      focusMinutes,
+      sessions: focusEntries.length,
+      totalXp,
+      surgeXp,
+      bossWins,
+      bossLosses,
+      examsGraded,
+      trophiesUnlocked,
+      hasActivity
+    };
+  }, [state.starLog, state.gradeHistory, derived.trophyList]);
+
+  // V31.3 — Spider-Sense Surge Analytics: prima d'ora il bonus finiva
+  // impastato dentro l'XP totale della sessione, invisibile a posteriori
+  // nella cronologia. `surgeXp` (campo dedicato sulla voce FOCUS_SESSION)
+  // lo rende finalmente misurabile nel tempo.
+  const spiderSenseSurgeStats = useMemo(() => {
+    const surges = state.starLog.filter((e) => e.type === 'FOCUS_SESSION' && e.surgeXp > 0);
+    const totalXp = surges.reduce((sum, e) => sum + e.surgeXp, 0);
+    return { count: surges.length, totalXp };
   }, [state.starLog]);
 
   // Tactical Debriefing Analytics — riassume la "Qualità del Focus"
@@ -372,6 +423,94 @@ export default function StarLog() {
           <p className="text-3xl font-mono font-bold mt-1.5 text-primary">{bossStats.losses}</p>
         </div>
       </div>
+
+      {/* V32.0 — Weekly Bugle: prima pagina degli ultimi 7 giorni, in stile
+          "edizione del Daily Bugle" coerente col tema della pagina. */}
+      <div className={`${CARD} space-y-4`}>
+        <div className="relative flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Icon name="chartBar" className="w-5 h-5 text-primary" />
+            <span className={H2}>THE WEEKLY BUGLE</span>
+          </div>
+          <span className="text-xs font-mono text-slate-500">
+            Edizione dal {formatDateOnlyHuman(weeklyBugle.cutoffKey)} a oggi
+          </span>
+        </div>
+
+        {!weeklyBugle.hasActivity ? (
+          <EmptyState
+            variant="log"
+            compact
+            title="Karen: nessuna notizia questa settimana"
+            subtitle="Completa una sessione di Focus, una simulazione o vota un esame per far uscire la prossima edizione."
+          />
+        ) : (
+          <>
+            <div className="relative grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-3 text-center">
+                <p className="text-xl font-mono font-bold text-white">{weeklyBugle.focusMinutes}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">min Focus</p>
+              </div>
+              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-3 text-center">
+                <p className="text-xl font-mono font-bold text-accent">+{weeklyBugle.totalXp}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">XP totali</p>
+              </div>
+              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-3 text-center">
+                <p className="text-xl font-mono font-bold text-secondary">{weeklyBugle.sessions}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">sessioni Focus</p>
+              </div>
+              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-3 text-center">
+                <p className="text-xl font-mono font-bold text-white">{weeklyBugle.bossWins}<span className="text-slate-500">/{weeklyBugle.bossLosses}</span></p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Sinister Six V/S</p>
+              </div>
+            </div>
+
+            {weeklyBugle.surgeXp > 0 && (
+              <p className="relative text-sm text-secondary flex items-center gap-1.5">
+                <Icon name="bolt" className="w-4 h-4" />
+                +{weeklyBugle.surgeXp} XP da Spider-Sense Surge questa settimana.
+              </p>
+            )}
+
+            {weeklyBugle.examsGraded.length > 0 && (
+              <p className="relative text-sm text-slate-400 flex items-center gap-1.5">
+                <Icon name="book" className="w-4 h-4 text-slate-500" />
+                {weeklyBugle.examsGraded.length} esame{weeklyBugle.examsGraded.length > 1 ? 'i' : ''} votat{weeklyBugle.examsGraded.length > 1 ? 'i' : 'o'} questa settimana
+                {weeklyBugle.examsGraded.length > 0 && ` — Media aggiornata a ${weeklyBugle.examsGraded[weeklyBugle.examsGraded.length - 1].average.toFixed(2)}.`}
+              </p>
+            )}
+
+            {weeklyBugle.trophiesUnlocked.length > 0 && (
+              <div className="relative space-y-1.5 pt-1 border-t border-white/5">
+                <p className="text-xs tracking-widest text-slate-500 font-mono">TROFEI SBLOCCATI</p>
+                {weeklyBugle.trophiesUnlocked.map((t) => (
+                  <p key={t.id} className="text-sm text-white flex items-center gap-1.5">
+                    <Icon name="trophy" className="w-4 h-4 text-amber-400 shrink-0" />
+                    {t.nome}
+                  </p>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* V31.3 — Spider-Sense Surge Analytics: bonus totale accumulato
+          nel tempo dalle sessioni pulite, prima invisibile a posteriori. */}
+      {spiderSenseSurgeStats.count > 0 && (
+        <div className={`${CARD} flex items-center justify-between gap-3 flex-wrap`}>
+          <div className="relative flex items-center gap-3">
+            <div className="w-11 h-11 rounded-xl bg-secondary/10 border border-secondary/30 flex items-center justify-center text-secondary shrink-0">
+              <Icon name="bolt" className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-base font-semibold text-white">Spider-Sense Surge</p>
+              <p className="text-sm text-slate-500">{spiderSenseSurgeStats.count} sessioni pulite senza interruzioni</p>
+            </div>
+          </div>
+          <p className="relative text-2xl font-mono font-bold text-secondary">+{spiderSenseSurgeStats.totalXp} XP</p>
+        </div>
+      )}
 
       {/* Tactical Debriefing Analytics — Qualità del Focus raccolta dal
           Post-Session Debriefing Modal di Stark-Web Terminal. */}

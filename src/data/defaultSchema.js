@@ -49,7 +49,15 @@ export function createDefaultState() {
       // V27.0 — Pillar 4 (Daily Web-Sling): dateKey dell'ultimo riscatto
       // del Forziere di Parker — un solo claim al giorno, blindato sulla
       // stessa chiave calendariale del Daily Patrol Engine.
-      webSlingLastClaimDateKey: null
+      webSlingLastClaimDateKey: null,
+      // V31.3 — Pity System: aperture consecutive senza tier Raro+,
+      // vedi utils/webSling.js (rollWebSlingRewardWithPity).
+      webSlingPityCounter: 0,
+      // V31.3 — Suit Unlock Gating: la Symbiote Suit si sblocca al primo
+      // trigger di Maximum Carnage Mode (vedi applyCriticalAction) — un
+      // flag one-way, mai revocato. La 2099 Suit non ha bisogno di un
+      // flag dedicato: si sblocca direttamente a Lv.50+ (vedi CoreConfig).
+      symbioteSuitUnlocked: false
     },
     settings: {
       focusTime: 25,
@@ -61,8 +69,28 @@ export function createDefaultState() {
     },
     materie: [],
     starLog: [],
+    // V32.0 — Multiverse Simulator (Storico Media Ponderata): ogni volta
+    // che una Materia passa a "votata" per la prima volta, il reducer
+    // registra un punto `{ dateKey, average, gradedCount }` qui — un
+    // ledger append-only leggero (solo 3 numeri/stringhe per voce, non i
+    // dettagli della Materia) che alimenta il grafico storico. Mai
+    // ricalcolato retroattivamente sui voti passati: uno storico onesto
+    // parte da zero al momento dell'aggiornamento.
+    gradeHistory: [],
     combatLog: [],
-    shopRewards: [],
+    // V31.3 — Reward Shop: un profilo nuovo di zecca partiva sempre vuoto,
+    // costringendo il Cadetto a inventarsi da solo la prima ricompensa
+    // prima che il loop "guadagna XP -> spendi XP" avesse un senso
+    // qualsiasi. Quattro esempi di partenza, liberamente modificabili o
+    // cancellabili — MAI iniettati retroattivamente su un profilo già
+    // esistente (vedi hydrateState: uno shopRewards già presente, anche
+    // vuoto, resta intoccato).
+    shopRewards: [
+      { id: 'reward_starter_snack', nome: 'Snack goloso', costoXp: 50 },
+      { id: 'reward_starter_episodio', nome: 'Un episodio della tua serie preferita', costoXp: 80 },
+      { id: 'reward_starter_gioco', nome: '30 minuti di gioco libero', costoXp: 120 },
+      { id: 'reward_starter_cinema', nome: 'Serata cinema', costoXp: 300 }
+    ],
     inventory: [],
     trophies: [],
     quickQuests: [
@@ -109,7 +137,12 @@ function migrateSfida(raw, index, arr) {
     lastReviewRating: raw.lastReviewRating || null,
     reviewCount: typeof raw.reviewCount === 'number' ? raw.reviewCount : 0,
     focusMinutes: raw.focusMinutes || 0,
-    blueprint: raw.blueprint || ''
+    blueprint: raw.blueprint || '',
+    // V31.3 — Bounty Board (Friction Analytics): contatori di ripasso
+    // Facile/Medio vs Difficile per nodo, alimentano `utils/friction.js`.
+    // Blindati a interi >= 0 anche da un import/salvataggio corrotto.
+    tentativiSuccessi: Number.isFinite(raw.tentativiSuccessi) && raw.tentativiSuccessi >= 0 ? raw.tentativiSuccessi : 0,
+    tentativiFalliti: Number.isFinite(raw.tentativiFalliti) && raw.tentativiFalliti >= 0 ? raw.tentativiFalliti : 0
   };
 }
 
@@ -166,7 +199,13 @@ export function hydrateState(rawState) {
     criticalActionStreak: Number.isFinite(rawProfile.criticalActionStreak) && rawProfile.criticalActionStreak >= 0 ? rawProfile.criticalActionStreak : 0,
     maxCarnageActive: rawProfile.maxCarnageActive === true,
     maxCarnageExpiresAt: typeof rawProfile.maxCarnageExpiresAt === 'string' ? rawProfile.maxCarnageExpiresAt : null,
-    webSlingLastClaimDateKey: typeof rawProfile.webSlingLastClaimDateKey === 'string' ? rawProfile.webSlingLastClaimDateKey : null
+    webSlingLastClaimDateKey: typeof rawProfile.webSlingLastClaimDateKey === 'string' ? rawProfile.webSlingLastClaimDateKey : null,
+    webSlingPityCounter: Number.isFinite(rawProfile.webSlingPityCounter) && rawProfile.webSlingPityCounter >= 0 ? rawProfile.webSlingPityCounter : 0,
+    // V31.3 — Suit Unlock Gating: retro-compatibile — un profilo pre-V31.3
+    // che ha GIÀ la Symbiote Suit attiva in `settings.suit` viene
+    // grandfathered direttamente in CoreConfig (mai un downgrade forzato),
+    // quindi qui basta un fallback booleano sicuro.
+    symbioteSuitUnlocked: rawProfile.symbioteSuitUnlocked === true
   };
 
   return {
@@ -175,6 +214,11 @@ export function hydrateState(rawState) {
     settings: { ...defaults.settings, ...(rawState.settings || {}) },
     materie: Array.isArray(rawState.materie) ? rawState.materie.map(migrateMateria) : defaults.materie,
     starLog: Array.isArray(rawState.starLog) ? rawState.starLog : defaults.starLog,
+    // V32.0 — Storico Media Ponderata: blindato voce per voce (mai un
+    // punto con data/average corrotti che romperebbe il grafico).
+    gradeHistory: Array.isArray(rawState.gradeHistory)
+      ? rawState.gradeHistory.filter((e) => e && typeof e.dateKey === 'string' && Number.isFinite(e.average))
+      : defaults.gradeHistory,
     combatLog: Array.isArray(rawState.combatLog) ? rawState.combatLog : defaults.combatLog,
     shopRewards: Array.isArray(rawState.shopRewards) ? rawState.shopRewards : defaults.shopRewards,
     inventory: Array.isArray(rawState.inventory) ? rawState.inventory : defaults.inventory,

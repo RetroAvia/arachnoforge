@@ -5,6 +5,7 @@ import { Icon } from '../components/Icons.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import CombatLog from '../components/CombatLog.jsx';
 import { SCHEMA_VERSION, SUITS } from '../data/defaultSchema.js';
+import { validateAdminPassphrase } from '../utils/adminOverride.js';
 import { CARD, CARD_ALERT, H1, H2, BTN_PRIMARY, BTN_SECONDARY, BTN_GHOST, INPUT } from '../utils/designSystem.js';
 
 const SUIT_OPTIONS = [
@@ -51,7 +52,7 @@ function TechSwitch({ checked, onChange, ariaLabel }) {
 }
 
 export default function CoreConfig() {
-  const { state, actions, storageMode } = useArachnoForge();
+  const { state, actions, storageMode, pushToast } = useArachnoForge();
   const { user, isGuest } = useAuthContext();
   const [focusTime, setFocusTime] = useState(state.settings.focusTime);
   const [shortBreakTime, setShortBreakTime] = useState(state.settings.shortBreakTime);
@@ -81,7 +82,7 @@ export default function CoreConfig() {
   // fondo alla catena, cosi' l'override scatta senza se e senza ma.
   const handleActivateSandbox = () => {
     const cleaned = adminPassword.trim();
-    if (cleaned === 'Spazioaereo10!') {
+    if (validateAdminPassphrase(cleaned)) {
       setAdminError(null);
       setAdminPassword('');
       actions.activateSandbox(cleaned);
@@ -115,6 +116,50 @@ export default function CoreConfig() {
     const stamp = new Date().toISOString().slice(0, 10);
     a.href = url;
     a.download = `arachnoforge-profile-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  /**
+   * V32.0 — Export ICS: le date d'esame già presenti sulle Materie del
+   * Web-Matrix (`materia.examDate`, formato YYYY-MM-DD) diventano un file
+   * .ics standard RFC 5545, importabile in Google Calendar/Apple
+   * Calendar/Outlook. Eventi "giornata intera" (VALUE=DATE, nessun
+   * DTEND — per specifica RFC 5545 un evento DATE senza DTEND dura
+   * esattamente un giorno). Nessuna dipendenza esterna: stringa
+   * costruita a mano, stesso pattern già in uso per l'Export Profilo JSON
+   * qui sopra (Blob + link temporaneo, mai un round-trip di rete).
+   */
+  const escapeIcsText = (text) => String(text).replace(/[\\;,]/g, (m) => `\\${m}`).replace(/\n/g, '\\n');
+
+  const exportExamDatesIcs = () => {
+    const materieConData = state.materie.filter((m) => m && typeof m.examDate === 'string' && m.examDate.length === 10);
+    if (materieConData.length === 0) {
+      pushToast?.('Karen: nessuna data d\'esame impostata sulle Materie del Web-Matrix.', 'info');
+      return;
+    }
+    const stampUtc = `${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z`;
+    const events = materieConData.map((m) => {
+      const dt = m.examDate.replace(/-/g, '');
+      return [
+        'BEGIN:VEVENT',
+        `UID:${m.id}@arachnoforge`,
+        `DTSTAMP:${stampUtc}`,
+        `DTSTART;VALUE=DATE:${dt}`,
+        `SUMMARY:${escapeIcsText(`Esame: ${m.nome}`)}`,
+        `DESCRIPTION:${escapeIcsText(`${m.cfu} CFU${m.examPassed ? ' — già superato' : ''}`)}`,
+        'END:VEVENT'
+      ].join('\r\n');
+    });
+    const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//ArachnoForge//Web-Matrix Exam Dates//IT', 'CALSCALE:GREGORIAN', ...events, 'END:VCALENDAR'].join('\r\n');
+    const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `arachnoforge-esami-${stamp}.ics`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -270,25 +315,52 @@ export default function CoreConfig() {
         <div className="relative grid grid-cols-1 sm:grid-cols-3 gap-3">
           {SUIT_OPTIONS.map((suit) => {
             const active = state.settings.suit === suit.id;
+            // V32.0 — Sblocco Tute: la Classic è sempre disponibile; Symbiote si
+            // sblocca attivando almeno una volta Maximum Carnage Mode; 2099 al
+            // raggiungimento del Livello 50. Grandfathering: se la tuta risulta
+            // già attiva nelle impostazioni correnti, non viene mai bloccata
+            // retroattivamente (evita di "rubare" una tuta già in uso a un
+            // profilo esistente in caso di dati storici incompleti).
+            let locked = false;
+            let lockReason = '';
+            if (suit.id === SUITS.SYMBIOTE) {
+              locked = !active && state.profile.symbioteSuitUnlocked !== true;
+              lockReason = 'Sblocca la Symbiote Suit attivando almeno una volta il Maximum Carnage Mode (5 azioni critiche di fila).';
+            } else if (suit.id === SUITS.Y2099) {
+              locked = !active && (state.profile.level || 1) < 50;
+              lockReason = 'Sblocca la 2099 Suit raggiungendo il Livello 50 — Difensore del Multiverso.';
+            }
             return (
               <button
                 key={suit.id}
                 type="button"
-                onClick={() => actions.updateSettings({ suit: suit.id })}
+                onClick={() => {
+                  if (locked) {
+                    pushToast?.(lockReason, 'info');
+                    return;
+                  }
+                  actions.updateSettings({ suit: suit.id });
+                }}
                 className={`text-left p-4 rounded-2xl border transition-all duration-300 backdrop-blur-md ${
                   active
                     ? 'border-secondary/60 bg-secondary/10 shadow-secondary-glow'
+                    : locked
+                    ? 'border-white/5 bg-white/[0.01] opacity-60 hover:border-white/10'
                     : 'border-white/10 bg-white/[0.02] hover:border-secondary/30'
                 }`}
               >
-                <div className="flex gap-1.5 mb-3">
-                  {suit.swatch.map((color, i) => (
-                    <span key={i} className="w-6 h-6 rounded-full border border-white/20 shadow-[0_0_8px_rgba(255,255,255,0.15)]" style={{ backgroundColor: color }} />
-                  ))}
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex gap-1.5">
+                    {suit.swatch.map((color, i) => (
+                      <span key={i} className="w-6 h-6 rounded-full border border-white/20 shadow-[0_0_8px_rgba(255,255,255,0.15)]" style={{ backgroundColor: color, filter: locked ? 'grayscale(0.6)' : 'none' }} />
+                    ))}
+                  </div>
+                  {locked && <Icon name="lock" className="w-4 h-4 text-slate-500" />}
                 </div>
                 <p className="text-base font-semibold text-slate-100">{suit.nome}</p>
                 <p className="text-base text-slate-500 mt-0.5">{suit.descrizione}</p>
                 {active && <p className="text-[11px] text-secondary mt-2 font-mono">ATTIVA</p>}
+                {locked && <p className="text-[11px] text-slate-500 mt-2 font-mono">BLOCCATA</p>}
               </button>
             );
           })}
@@ -399,6 +471,16 @@ export default function CoreConfig() {
           {storageMode === 'cloud' ? ' sul Cloud' : storageMode === 'sandbox' ? ' nella Sandbox locale (mai sul Cloud reale)' : ' in locale su questo browser'}.
           In caso di file corrotto, il profilo attuale resta invariato.
         </p>
+
+        <div className="relative pt-3 border-t border-white/5">
+          <button type="button" onClick={exportExamDatesIcs} className={`w-full ${BTN_GHOST}`}>
+            <Icon name="flag" className="w-6 h-6" />
+            Esporta Date Esami (.ics)
+          </button>
+          <p className="relative text-sm text-slate-500 leading-relaxed mt-2">
+            Scarica un file .ics con tutte le date d'esame impostate sulle Materie del Web-Matrix — importabile in Google Calendar, Apple Calendar o Outlook.
+          </p>
+        </div>
       </section>
 
       {/* V28.1 — Pillar 1 (UI Reorganization): il Combat Log lascia la Home

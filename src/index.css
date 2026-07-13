@@ -590,3 +590,19 @@ body[data-carnage='true'] {
 .af-spidersense-unlock {
   animation: af-spidersense-unlock-ring 1.1s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* ------------------------------------------------------------------ *
+ * V31.2 — Pillar 1: "Ultimate Node Customization" — ingresso fluido
+ * dell'Editor di Personalizzazione dentro la modale di dettaglio nodo.
+ * Stessa grammatica cubic-bezier "pop" già in uso per Daily Patrol/Web-
+ * Sling, applicata qui al morph campi statici -> pannello interattivo.
+ * ------------------------------------------------------------------ */
+@keyframes af-edit-mode-in {
+  0% { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  60% { opacity: 1; transform: translateY(1px) scale(1.002); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.af-edit-mode-in {
+  transform-origin: top center;
+  animation: af-edit-mode-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}

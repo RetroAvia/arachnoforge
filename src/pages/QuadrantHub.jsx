@@ -78,6 +78,52 @@ function KarenSuggestorPanel({ primaryTarget, onSelect }) {
   );
 }
 
+/**
+ * V31.3 — Bounty Board (Friction Analytics): riattiva `utils/friction.js`,
+ * finora scaffoldato ma mai esposto in nessuna UI. Mostra i nodi con più
+ * "attrito" (ripassi giudicati Difficile) tra quelli con almeno 3
+ * tentativi registrati (guardia contro il rumore statistico su campioni
+ * piccoli, applicata a monte in `derived.bountyTargets`). Ogni riga salta
+ * direttamente al nodo riusando lo stesso meccanismo di quick-jump dello
+ * Spider-Sense Schedule (`openNodeFromSchedule`).
+ */
+function BountyBoardPanel({ targets, onSelect }) {
+  if (!targets || targets.length === 0) return null;
+  return (
+    <div className="relative bg-surface/80 backdrop-blur-2xl border-2 border-primary/40 rounded-2xl shadow-primary-glow p-6 overflow-hidden">
+      <div className="absolute -top-16 -right-16 w-64 h-64 rounded-full bg-primary/15 blur-3xl pointer-events-none" />
+      <div className="relative flex items-center gap-3 mb-4">
+        <div className="w-11 h-11 rounded-xl bg-primary/15 border border-primary/50 flex items-center justify-center text-primary shrink-0 shadow-primary-glow">
+          <Icon name="crosshair" className="w-6 h-6" />
+        </div>
+        <div>
+          <p className="text-xs tracking-[0.25em] text-primary font-mono">BOUNTY BOARD</p>
+          <h2 className="text-lg font-extrabold text-white tracking-tight">Nodi ad Alta Frizione</h2>
+        </div>
+      </div>
+      <div className="relative space-y-2">
+        {targets.map((t) => (
+          <button
+            key={t.sfidaId}
+            type="button"
+            onClick={() => onSelect(t.materiaId, t.sfidaId)}
+            className="w-full text-left bg-primary/5 border border-primary/25 rounded-xl px-4 py-3 flex items-center justify-between gap-3 hover:border-primary/60 hover:bg-primary/10 transition-all duration-300"
+          >
+            <div className="min-w-0">
+              <p className="text-base font-semibold text-white truncate">{t.sfidaNome}</p>
+              <p className="text-sm text-slate-500 truncate">{t.materiaNome}</p>
+            </div>
+            <span className={BADGE.red}>
+              <Icon name="alertTriangle" className="w-3.5 h-3.5" />
+              {t.friction}% frizione
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** Classi Tailwind statiche (mai concatenate a runtime — bandito dal Design System) per le due varianti cromatiche dello slider. */
 const TECH_SLIDER_ACCENT = {
   primary: { track: 'accent-primary', text: 'text-primary' },
@@ -194,6 +240,12 @@ const StatusIcon = memo(function StatusIcon({ meta, size = 'md' }) {
   );
 });
 
+/** Riferimento stabile condiviso per il default prop `bountyIds` — mai un
+ * `new Set()` inline nella firma della funzione, altrimenti ogni render
+ * senza la prop esplicita romperebbe l'uguaglianza referenziale su cui
+ * si basa `memo`. */
+const EMPTY_SET = new Set();
+
 /**
  * Livello 3 — Nodo Figlio: riga compatta connessa visivamente al proprio
  * Nodo Padre tramite un vero e proprio "ramo" (linea verticale del
@@ -203,7 +255,7 @@ const StatusIcon = memo(function StatusIcon({ meta, size = 'md' }) {
  * risulta comunque LOCKED è perché ha a sua volta dei sotto-argomenti
  * ("Boss" annidato): mostriamo quanti ne mancano, mai più "Richiede: Padre".
  */
-const ChildNodeRow = memo(function ChildNodeRow({ node, materia, onSelect }) {
+const ChildNodeRow = memo(function ChildNodeRow({ node, materia, onSelect, bountyIds = EMPTY_SET }) {
   if (!node) return null;
   const siblingSfide = Array.isArray(materia?.sfide) ? materia.sfide : [];
   const status = deriveNodeStatus(node, siblingSfide);
@@ -211,6 +263,7 @@ const ChildNodeRow = memo(function ChildNodeRow({ node, materia, onSelect }) {
   const diffMeta = DIFFICULTY_META[node.difficulty] || DIFFICULTY_META.MEDIUM;
   const ownChildren = directChildrenOf(node, siblingSfide);
   const pendingOwnChildren = ownChildren.filter((c) => c.status !== 'COMPLETED').length;
+  const isBounty = bountyIds.has(node.id);
 
   return (
     <div className="relative">
@@ -233,6 +286,12 @@ const ChildNodeRow = memo(function ChildNodeRow({ node, materia, onSelect }) {
             </span>
             {ownChildren.length > 0 && (
               <span className="text-xs font-mono px-2 py-0.5 rounded-full border border-secondary/30 text-secondary shrink-0">Boss</span>
+            )}
+            {isBounty && (
+              <span className={`${BADGE.red} shrink-0`} title="Bounty Target — alta frizione nei ripassi">
+                <Icon name="crosshair" className="w-3.5 h-3.5" />
+                Bounty
+              </span>
             )}
           </div>
           {status === NODE_STATUS.LOCKED ? (
@@ -257,7 +316,7 @@ const ChildNodeRow = memo(function ChildNodeRow({ node, materia, onSelect }) {
 });
 
 /** Ricorsione dei Nodi Figli — tronco verticale reattivo al costume, mai un semplice rientro senza segno grafico. */
-const ChildTree = memo(function ChildTree({ parentId, sfide, depth, materia, onSelect }) {
+const ChildTree = memo(function ChildTree({ parentId, sfide, depth, materia, onSelect, bountyIds = EMPTY_SET }) {
   if (!Array.isArray(sfide) || sfide.length === 0) return null;
   const children = sfide.filter((s) => s && (s.parentId || null) === parentId);
   if (children.length === 0) return null;
@@ -265,8 +324,8 @@ const ChildTree = memo(function ChildTree({ parentId, sfide, depth, materia, onS
     <div className="ml-6 md:ml-7 pl-5 md:pl-6 border-l-2 border-secondary/25 space-y-3 relative">
       {children.map((child) => (
         <div key={child.id} className="space-y-3">
-          <ChildNodeRow node={child} materia={materia} onSelect={onSelect} />
-          <ChildTree parentId={child.id} sfide={sfide} depth={depth + 1} materia={materia} onSelect={onSelect} />
+          <ChildNodeRow node={child} materia={materia} onSelect={onSelect} bountyIds={bountyIds} />
+          <ChildTree parentId={child.id} sfide={sfide} depth={depth + 1} materia={materia} onSelect={onSelect} bountyIds={bountyIds} />
         </div>
       ))}
     </div>
@@ -283,7 +342,7 @@ const ChildTree = memo(function ChildTree({ parentId, sfide, depth, materia, onS
  * segnaliamo esplicitamente quando è ancora LOCKED (sotto-argomenti da
  * completare prima di poterlo chiudere).
  */
-const ParentModuleCard = memo(function ParentModuleCard({ node, materia, onSelect }) {
+const ParentModuleCard = memo(function ParentModuleCard({ node, materia, onSelect, bountyIds = EMPTY_SET }) {
   const siblingSfide = Array.isArray(materia?.sfide) ? materia.sfide : [];
   const status = deriveNodeStatus(node, siblingSfide);
   const meta = STATUS_META[status] || STATUS_META.LOCKED;
@@ -292,6 +351,7 @@ const ParentModuleCard = memo(function ParentModuleCard({ node, materia, onSelec
   const children = directChildrenOf(node, siblingSfide);
   const childCount = children.length;
   const pendingChildren = children.filter((c) => c.status !== 'COMPLETED').length;
+  const isBounty = bountyIds.has(node.id);
 
   return (
     <div className={`${CARD} space-y-4 border-l-4 ${meta.border}`}>
@@ -310,6 +370,12 @@ const ParentModuleCard = memo(function ParentModuleCard({ node, materia, onSelec
             <span className={`text-xs font-mono px-2 py-0.5 rounded-full border ${diffMeta.border} ${diffMeta.color}`}>
               {diffMeta.label}
             </span>
+            {isBounty && (
+              <span className={BADGE.red} title="Bounty Target — alta frizione nei ripassi">
+                <Icon name="crosshair" className="w-3.5 h-3.5" />
+                Bounty
+              </span>
+            )}
           </div>
           {node.obiettivo && <p className="text-base text-slate-400 mt-1.5 truncate">{node.obiettivo}</p>}
           {childCount > 0 && (
@@ -329,7 +395,7 @@ const ParentModuleCard = memo(function ParentModuleCard({ node, materia, onSelec
       </div>
 
       <div className="relative">
-        <ChildTree parentId={node.id} sfide={siblingSfide} depth={1} materia={materia} onSelect={onSelect} />
+        <ChildTree parentId={node.id} sfide={siblingSfide} depth={1} materia={materia} onSelect={onSelect} bountyIds={bountyIds} />
       </div>
     </div>
   );
@@ -350,6 +416,24 @@ export default function QuadrantHub() {
   const [nodeDetail, setNodeDetail] = useState(null);
   const [deleteNodeTarget, setDeleteNodeTarget] = useState(null);
   const [spiderSenseDrawerOpen, setSpiderSenseDrawerOpen] = useState(false);
+
+  // V31.2 — Pillar 1 (Ultimate Node Customization): stato dedicato
+  // dell'editor olografico dentro la modale di dettaglio nodo. I campi
+  // `edit*` sono uno STAGING locale — mai scritti nel Context finché
+  // "Salva Modifiche" non viene premuto — cosi' "Annulla" può sempre
+  // ripristinare i valori originali con un semplice reset dello stato,
+  // senza toccare il nodo reale.
+  const [nodeEditMode, setNodeEditMode] = useState(false);
+  const [nodeSaveState, setNodeSaveState] = useState('idle'); // idle | saving | success | error
+  const [editNome, setEditNome] = useState('');
+  const [editObiettivo, setEditObiettivo] = useState('');
+  const [editGiorni, setEditGiorni] = useState(1);
+  const [editDifficulty, setEditDifficulty] = useState(DIFFICULTY.MEDIUM);
+  const [editParentId, setEditParentId] = useState('');
+  // V31.2.1 — guardia "modifiche non salvate": mostra un ConfirmDialog
+  // invece di scartare silenziosamente lo staging quando si tenta di
+  // chiudere la modale (backdrop/Esc/X) mentre l'Editor è aperto.
+  const [nodeEditCloseConfirmOpen, setNodeEditCloseConfirmOpen] = useState(false);
 
   // Web-Path Planner — form di creazione/modifica Materia basato sul piano
   // di studi Vanvitelli (Ingegneria Aerospaziale): dropdown ufficiale con
@@ -382,8 +466,6 @@ export default function QuadrantHub() {
   const [sfidaGiorni, setSfidaGiorni] = useState(3);
   const [sfidaParentId, setSfidaParentId] = useState('');
   const [sfidaDifficulty, setSfidaDifficulty] = useState(DIFFICULTY.MEDIUM);
-
-  const [detailParentId, setDetailParentId] = useState('');
 
   // Time-Weaver Formula del Web-Path Planner (V20.0, Pillar 2): Spider-Score
   // decrescente (Difficoltà + Esami Sbloccati + 1000/Giorni Mancanti) — il
@@ -452,6 +534,14 @@ export default function QuadrantHub() {
     [selectedSfide]
   );
 
+  // V31.3 — Bounty Board: Set stabile di sfidaId ad alta frizione, per il
+  // badge inline su ParentModuleCard/ChildNodeRow senza ricalcolare nulla
+  // lì dentro (derived.bountyTargets è già filtrato/ordinato dal Context).
+  const bountySfidaIds = useMemo(
+    () => new Set(derived.bountyTargets.map((t) => t.sfidaId)),
+    [derived.bountyTargets]
+  );
+
   const goblinActive = selectedMateria ? isGoblinProtocol(selectedMateria) : false;
   // V16.0 (Pillar 2): stima "Fine Prevista" millimetrica — somma esatta dei
   // giorni residui di ogni nodo incompleto, nessuna media generica.
@@ -478,8 +568,33 @@ export default function QuadrantHub() {
   // schermo nero già riscontrata in passato). Ordine dichiarativo blindato.
   const openNodeDetail = useCallback((node) => {
     setNodeDetail(node);
-    setDetailParentId(node.parentId || '');
+    setNodeEditMode(false);
+    setNodeSaveState('idle');
   }, []);
+
+  // Chiusura della modale di dettaglio: reset esplicito anche dell'Editor
+  // di Personalizzazione, cosi' una riapertura successiva (anche su un
+  // nodo diverso) parte sempre pulita, mai in edit mode residuo.
+  const closeNodeDetail = useCallback(() => {
+    setNodeDetail(null);
+    setNodeEditMode(false);
+    setNodeSaveState('idle');
+    setNodeEditCloseConfirmOpen(false);
+  }, []);
+
+  // Punto d'ingresso UNICO per la chiusura "utente" della modale (backdrop,
+  // Esc, pulsante X — tutti passano dalla prop onClose di <Modal>): se
+  // l'Editor è aperto con modifiche in staging non ancora salvate, chiede
+  // conferma invece di scartarle silenziosamente. Un salvataggio in corso
+  // blocca del tutto la chiusura, per non interrompere la sincronizzazione.
+  const requestCloseNodeDetail = useCallback(() => {
+    if (nodeSaveState === 'saving') return;
+    if (nodeEditMode) {
+      setNodeEditCloseConfirmOpen(true);
+      return;
+    }
+    closeNodeDetail();
+  }, [nodeEditMode, nodeSaveState, closeNodeDetail]);
 
   const openNodeFromSchedule = useCallback((materiaId, sfidaId) => {
     const materia = materie.find((m) => m.id === materiaId);
@@ -569,10 +684,54 @@ export default function QuadrantHub() {
     setSfidaModalOpen(false);
   };
 
-  const commitParentChange = useCallback((node, newParentId) => {
-    actions.updateSfida(selectedMateria.id, node.id, { parentId: newParentId || null });
-    setDetailParentId(newParentId);
-  }, [actions, selectedMateria]);
+  // V31.2 — Pillar 1 (Ultimate Node Customization): ingresso in modalità
+  // interattiva — copia i valori correnti del nodo nello staging locale
+  // `edit*`, cosi' "Annulla" può sempre tornare indietro senza toccare il
+  // nodo reale nel Context.
+  const openNodeEditMode = useCallback((node) => {
+    setEditNome(node.nome);
+    setEditObiettivo(node.obiettivo || '');
+    setEditGiorni(node.giorni);
+    setEditDifficulty(node.difficulty);
+    setEditParentId(node.parentId || '');
+    setNodeSaveState('idle');
+    setNodeEditMode(true);
+  }, []);
+
+  const cancelNodeEdit = useCallback(() => {
+    setNodeEditMode(false);
+    setNodeSaveState('idle');
+  }, []);
+
+  // Pillar 2 — persistenza: dispatcha la patch al Context (istantaneo,
+  // Pillar 2.1) e sincronizza su Supabase tramite l'azione dedicata
+  // (Pillar 2.2/2.3). `nodeDetail` viene aggiornato in loco con la patch
+  // già confermata, cosi' la modale mostra subito i nuovi valori senza
+  // dover essere richiusa e riaperta.
+  const saveNodeEdits = useCallback(async (node) => {
+    if (!selectedMateria || !editNome.trim() || nodeSaveState === 'saving') return;
+    setNodeSaveState('saving');
+    const patch = {
+      nome: editNome.trim(),
+      obiettivo: editObiettivo.trim(),
+      giorni: Math.max(1, Number(editGiorni) || 1),
+      difficulty: editDifficulty,
+      parentId: editParentId || null
+    };
+    const result = await actions.updateSfidaAndSync(selectedMateria.id, node.id, patch);
+    if (result.success) {
+      setNodeDetail((prev) => (prev && prev.id === node.id ? { ...prev, ...patch } : prev));
+      setNodeSaveState('success');
+      pushToast('Nodo aggiornato — modifiche sincronizzate su Supabase.', 'success');
+      setTimeout(() => {
+        setNodeEditMode(false);
+        setNodeSaveState('idle');
+      }, 1000);
+    } else {
+      setNodeSaveState('error');
+      pushToast('Karen: sincronizzazione Cloud fallita. Riprova a salvare.', 'danger');
+    }
+  }, [selectedMateria, editNome, editObiettivo, editGiorni, editDifficulty, editParentId, nodeSaveState, actions, pushToast]);
 
   const handleReview = useCallback((node, rating) => {
     const materia = materie.find((m) => Array.isArray(m?.sfide) && m.sfide.some((s) => s.id === node.id));
@@ -585,8 +744,8 @@ export default function QuadrantHub() {
   // (COMPLETE_SFIDA) resta comunque l'ultima linea di difesa idempotente.
   const handleAttemptComplete = useCallback((node) => {
     actions.completeSfida(selectedMateria.id, node.id);
-    setNodeDetail(null);
-  }, [actions, selectedMateria]);
+    closeNodeDetail();
+  }, [actions, selectedMateria, closeNodeDetail]);
 
   const handleBossLockedAttempt = useCallback(() => {
     pushToast('Completa prima tutti i sotto-argomenti', 'danger');
@@ -619,6 +778,7 @@ export default function QuadrantHub() {
       </div>
 
       <KarenSuggestorPanel primaryTarget={primaryTarget} onSelect={setSelectedMateriaId} />
+      <BountyBoardPanel targets={derived.bountyTargets} onSelect={openNodeFromSchedule} />
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Colonna materie — Decluttering Accordion per Anno (V20.0, Pillar
@@ -883,7 +1043,7 @@ export default function QuadrantHub() {
               ) : (
                 <div className="space-y-5">
                   {rootNodes.map((node) => (
-                    <ParentModuleCard key={node.id} node={node} materia={selectedMateria} onSelect={openNodeDetail} />
+                    <ParentModuleCard key={node.id} node={node} materia={selectedMateria} onSelect={openNodeDetail} bountyIds={bountySfidaIds} />
                   ))}
                 </div>
               )}
@@ -1186,9 +1346,9 @@ export default function QuadrantHub() {
       </Modal>
 
       {/* Modal / pannello di dettaglio nodo — qui vivono tutte le azioni
-          rapide (Ripassa, Forza Ripasso, gestione Nodo Padre), tenute
-          fuori dalle righe dell'albero per non affollarle. */}
-      <Modal open={!!nodeDetail} onClose={() => setNodeDetail(null)} title={nodeDetail?.nome || ''}>
+          rapide (Ripassa, Forza Ripasso, Editor di Personalizzazione),
+          tenute fuori dalle righe dell'albero per non affollarle. */}
+      <Modal open={!!nodeDetail} onClose={requestCloseNodeDetail} title={nodeDetail?.nome || ''}>
         {nodeDetail && selectedMateria && (() => {
           const status = deriveNodeStatus(nodeDetail, selectedSfide);
           const meta = STATUS_META[status];
@@ -1201,107 +1361,245 @@ export default function QuadrantHub() {
           const parentOptions = selectedSfide.filter(
             (s) => s.id !== nodeDetail.id && !isDescendant(selectedSfide, nodeDetail.id, s.id)
           );
+          const currentParent = selectedSfide.find((s) => s.id === nodeDetail.parentId) || null;
+          const isSaving = nodeSaveState === 'saving';
+
           return (
             <div className="space-y-4">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className={meta.badge}>{meta.label}</span>
-                <span className={`text-sm font-mono px-2.5 py-1 rounded-full border ${diffMeta.border} ${diffMeta.color}`}>
-                  {diffMeta.label}{nodeDetail.difficulty === 'HARD' ? ' (+30% XP)' : ''}
-                </span>
+                {!nodeEditMode && (
+                  <span className={`text-sm font-mono px-2.5 py-1 rounded-full border ${diffMeta.border} ${diffMeta.color}`}>
+                    {diffMeta.label}{nodeDetail.difficulty === 'HARD' ? ' (+30% XP)' : ''}
+                  </span>
+                )}
                 {isBoss && <span className="text-sm font-mono px-2.5 py-1 rounded-full border border-secondary/30 text-secondary">Boss — {ownChildren.length} figlio/i</span>}
+                {bountySfidaIds.has(nodeDetail.id) && (
+                  <span className={BADGE.red} title="Bounty Target — alta frizione nei ripassi">
+                    <Icon name="crosshair" className="w-3.5 h-3.5" />
+                    Bounty Target
+                  </span>
+                )}
               </div>
-              {nodeDetail.obiettivo && <p className="text-base text-slate-300">{nodeDetail.obiettivo}</p>}
-              <p className="text-sm text-slate-500">
-                Durata stimata: {nodeDetail.giorni} giorni · {nodeDetail.focusMinutes} min di Focus accumulati
-              </p>
-              {(status === NODE_STATUS.COMPLETED || status === NODE_STATUS.NEEDS_REVIEW) && nodeDetail.nextReviewDate && (
-                <p className="text-sm text-slate-500">
-                  Prossimo ripasso: <span className="font-mono text-slate-300">{nodeDetail.nextReviewDate}</span>
-                  {nodeDetail.lastReviewRating && ` · ultimo giudizio: ${REVIEW_RATING_META[nodeDetail.lastReviewRating].label}`}
-                  {nodeDetail.reviewCount > 0 && ` · ${nodeDetail.reviewCount} ripassi totali`}
-                </p>
-              )}
 
-              {status !== NODE_STATUS.COMPLETED && status !== NODE_STATUS.NEEDS_REVIEW && (
-                <div>
-                  <label className="text-sm text-slate-400 block mb-1.5">Nodo Padre</label>
-                  <Dropdown
-                    value={detailParentId}
-                    onChange={(val) => commitParentChange(nodeDetail, val)}
-                    placeholder="Nessuno (Nodo Padre)"
-                    options={[
-                      { value: '', label: 'Nessuno (Nodo Padre)' },
-                      ...parentOptions.map((s) => ({ value: s.id, label: s.nome }))
-                    ]}
-                  />
-                </div>
-              )}
-
-              {status === NODE_STATUS.NEEDS_REVIEW && (
-                <div className="space-y-2">
-                  <p className="text-sm text-accent font-semibold flex items-center gap-1.5">
-                    <Icon name="alertTriangle" className="w-4 h-4" />
-                    Lo Spider-Sense formicola: è ora di ripassare.
-                  </p>
-                  <ReviewButtons onReview={(rating) => { handleReview(nodeDetail, rating); setNodeDetail(null); }} />
-                </div>
-              )}
-
-              {status === NODE_STATUS.COMPLETED && (
-                <div className="space-y-2 pt-3 border-t border-white/10">
-                  <p className="text-sm text-secondary font-semibold flex items-center gap-1.5">
-                    <Icon name="bolt" className="w-4 h-4" />
-                    Forza Ripasso Manuale — rinforza subito la memoria, senza aspettare lo Spider-Sense.
-                  </p>
-                  <ReviewButtons onReview={(rating) => { handleReview(nodeDetail, rating); setNodeDetail(null); }} />
-                </div>
-              )}
-
-              {/* V16.0 (Pillar 1) — alert elegante "Boss non ancora sconfitto":
-                  il pulsante resta visibile ma disattivato in stile, e un
-                  click mostra il toast esplicativo invece di completare nulla. */}
-              {bossLocked && (
-                <>
-                  <div className="relative bg-primary/10 border border-primary/40 rounded-xl px-4 py-3.5 flex items-start gap-3">
-                    <Icon name="alertTriangle" className="w-5 h-5 text-primary shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-base font-semibold text-primary">Completa prima tutti i sotto-argomenti</p>
-                      <p className="text-sm text-slate-400 mt-0.5">
-                        {pendingOwnChildren} sotto-argomento/i ancora incompleto/i su {ownChildren.length}: questo nodo è un Boss e si chiude solo a battaglia vinta.
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleBossLockedAttempt}
-                    className={`w-full ${BTN_SUCCESS} opacity-40 grayscale`}
-                  >
-                    Completa Nodo
-                  </button>
-                </>
-              )}
-
-              {canComplete && (
+              {/* V31.2 — Pillar 1: pulsante olografico Karen OS. Design
+                  adattivo — glow/etichetta cambiano col nodo, e sparisce
+                  del tutto quando l'Editor è già aperto (mai due ingressi
+                  contemporanei nella stessa modale). */}
+              {!nodeEditMode && (
                 <button
                   type="button"
-                  onClick={() => handleAttemptComplete(nodeDetail)}
-                  className={`w-full ${BTN_SUCCESS}`}
+                  onClick={() => openNodeEditMode(nodeDetail)}
+                  className="group relative w-full flex items-center justify-between gap-3 bg-secondary/10 border border-secondary/40 rounded-xl px-4 py-3.5 overflow-hidden hover:border-secondary/70 hover:bg-secondary/15 hover:-translate-y-0.5 transition-all duration-300"
                 >
-                  Completa Nodo
+                  <span className="absolute -top-10 -right-10 w-32 h-32 rounded-full bg-secondary/20 blur-2xl pointer-events-none group-hover:bg-secondary/30 transition-all duration-500" />
+                  <span className="relative flex items-center gap-3 min-w-0">
+                    <span className="w-9 h-9 rounded-lg bg-secondary/15 border border-secondary/50 flex items-center justify-center text-secondary shrink-0 shadow-secondary-glow">
+                      <Icon name="chip" className="w-4.5 h-4.5" />
+                    </span>
+                    <span className="text-left min-w-0">
+                      <span className="block text-[10px] tracking-[0.25em] text-secondary font-mono">KAREN OS</span>
+                      <span className="block text-sm font-bold text-white truncate">Personalizza / Modifica</span>
+                    </span>
+                  </span>
+                  <Icon name="edit" className="relative w-4 h-4 text-secondary shrink-0 group-hover:scale-110 transition-transform duration-300" />
                 </button>
               )}
 
-              <button
-                type="button"
-                onClick={() => {
-                  setDeleteNodeTarget(nodeDetail);
-                  setNodeDetail(null);
-                }}
-                className={`w-full ${BTN_GHOST}`}
-              >
-                <Icon name="trash" className="w-4 h-4" />
-                Elimina Nodo
-              </button>
+              {nodeEditMode ? (
+                <div className="relative bg-secondary/5 border border-secondary/25 rounded-2xl p-4 sm:p-5 space-y-4 overflow-hidden af-edit-mode-in">
+                  <div className="absolute -top-14 -left-14 w-48 h-48 rounded-full bg-secondary/10 blur-3xl pointer-events-none" />
+                  <div className="relative flex items-center gap-2 text-secondary">
+                    <Icon name="chip" className="w-4 h-4" />
+                    <span className="text-xs font-mono tracking-[0.2em]">MODALITÀ PERSONALIZZAZIONE ATTIVA</span>
+                  </div>
+
+                  <div className="relative">
+                    <label className="text-sm text-slate-400 block mb-1.5">Titolo del nodo</label>
+                    <input
+                      type="text"
+                      value={editNome}
+                      onChange={(e) => setEditNome(e.target.value)}
+                      className={INPUT}
+                      placeholder="Es. Equazioni di Navier-Stokes"
+                      disabled={isSaving}
+                    />
+                  </div>
+
+                  <div className="relative">
+                    <label className="text-sm text-slate-400 block mb-1.5">Obiettivo</label>
+                    <textarea
+                      value={editObiettivo}
+                      onChange={(e) => setEditObiettivo(e.target.value)}
+                      rows={3}
+                      className={`${INPUT} resize-none`}
+                      placeholder="Cosa significa completare questo nodo?"
+                      disabled={isSaving}
+                    />
+                  </div>
+
+                  <div className="relative grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-sm text-slate-400 block mb-1.5">Giorni stimati</label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={editGiorni}
+                        onChange={(e) => setEditGiorni(e.target.value)}
+                        className={INPUT}
+                        disabled={isSaving}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-400 block mb-1.5">Difficoltà</label>
+                      <Dropdown
+                        value={editDifficulty}
+                        onChange={setEditDifficulty}
+                        options={Object.values(DIFFICULTY).map((d) => ({ value: d, label: DIFFICULTY_META[d].label }))}
+                        disabled={isSaving}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="relative">
+                    <label className="text-sm text-slate-400 block mb-1.5">Nodo Padre (Categoria / prerequisito)</label>
+                    <Dropdown
+                      value={editParentId}
+                      onChange={setEditParentId}
+                      placeholder="Nessuno (Nodo Padre — categoria di primo livello)"
+                      options={[
+                        { value: '', label: 'Nessuno (Nodo Padre — categoria di primo livello)' },
+                        ...parentOptions.map((s) => ({ value: s.id, label: s.nome }))
+                      ]}
+                      disabled={isSaving}
+                    />
+                  </div>
+
+                  {nodeSaveState === 'error' && (
+                    <div className="relative bg-primary/10 border border-primary/40 rounded-xl px-4 py-3 flex items-start gap-3 af-holo-alert-in">
+                      <Icon name="cloudOff" className="w-5 h-5 text-primary af-sync-error shrink-0 mt-0.5" />
+                      <p className="text-sm text-primary">Karen: sincronizzazione Cloud fallita. Le modifiche non sono ancora confermate — riprova a salvare.</p>
+                    </div>
+                  )}
+
+                  {nodeSaveState === 'success' && (
+                    <div className="relative bg-emerald-900/20 border border-emerald-400/40 rounded-xl px-4 py-3 flex items-center gap-3 af-holo-alert-in">
+                      <Icon name="cloudCheck" className="w-5 h-5 text-emerald-400 shrink-0" />
+                      <p className="text-sm text-emerald-300">Modifiche salvate e sincronizzate su Supabase.</p>
+                    </div>
+                  )}
+
+                  <div className="relative flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={cancelNodeEdit}
+                      disabled={isSaving}
+                      className={`flex-1 ${BTN_GHOST}`}
+                    >
+                      Annulla
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => saveNodeEdits(nodeDetail)}
+                      disabled={!editNome.trim() || isSaving}
+                      className={`flex-[2] ${BTN_SUCCESS}`}
+                    >
+                      {isSaving ? (
+                        <>
+                          <Icon name="cloud" className="w-4 h-4 af-cloud-syncing" />
+                          Salvataggio in corso...
+                        </>
+                      ) : (
+                        <>
+                          <Icon name="check" className="w-4 h-4" />
+                          Salva Modifiche
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {nodeDetail.obiettivo && <p className="text-base text-slate-300">{nodeDetail.obiettivo}</p>}
+                  <p className="text-sm text-slate-500">
+                    Durata stimata: {nodeDetail.giorni} giorni · {nodeDetail.focusMinutes} min di Focus accumulati
+                    {currentParent && <> · Nodo Padre: <span className="text-slate-300">{currentParent.nome}</span></>}
+                  </p>
+                  {(status === NODE_STATUS.COMPLETED || status === NODE_STATUS.NEEDS_REVIEW) && nodeDetail.nextReviewDate && (
+                    <p className="text-sm text-slate-500">
+                      Prossimo ripasso: <span className="font-mono text-slate-300">{nodeDetail.nextReviewDate}</span>
+                      {nodeDetail.lastReviewRating && ` · ultimo giudizio: ${REVIEW_RATING_META[nodeDetail.lastReviewRating].label}`}
+                      {nodeDetail.reviewCount > 0 && ` · ${nodeDetail.reviewCount} ripassi totali`}
+                    </p>
+                  )}
+
+                  {status === NODE_STATUS.NEEDS_REVIEW && (
+                    <div className="space-y-2">
+                      <p className="text-sm text-accent font-semibold flex items-center gap-1.5">
+                        <Icon name="alertTriangle" className="w-4 h-4" />
+                        Lo Spider-Sense formicola: è ora di ripassare.
+                      </p>
+                      <ReviewButtons onReview={(rating) => { handleReview(nodeDetail, rating); closeNodeDetail(); }} />
+                    </div>
+                  )}
+
+                  {status === NODE_STATUS.COMPLETED && (
+                    <div className="space-y-2 pt-3 border-t border-white/10">
+                      <p className="text-sm text-secondary font-semibold flex items-center gap-1.5">
+                        <Icon name="bolt" className="w-4 h-4" />
+                        Forza Ripasso Manuale — rinforza subito la memoria, senza aspettare lo Spider-Sense.
+                      </p>
+                      <ReviewButtons onReview={(rating) => { handleReview(nodeDetail, rating); closeNodeDetail(); }} />
+                    </div>
+                  )}
+
+                  {/* V16.0 (Pillar 1) — alert elegante "Boss non ancora sconfitto":
+                      il pulsante resta visibile ma disattivato in stile, e un
+                      click mostra il toast esplicativo invece di completare nulla. */}
+                  {bossLocked && (
+                    <>
+                      <div className="relative bg-primary/10 border border-primary/40 rounded-xl px-4 py-3.5 flex items-start gap-3">
+                        <Icon name="alertTriangle" className="w-5 h-5 text-primary shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-base font-semibold text-primary">Completa prima tutti i sotto-argomenti</p>
+                          <p className="text-sm text-slate-400 mt-0.5">
+                            {pendingOwnChildren} sotto-argomento/i ancora incompleto/i su {ownChildren.length}: questo nodo è un Boss e si chiude solo a battaglia vinta.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleBossLockedAttempt}
+                        className={`w-full ${BTN_SUCCESS} opacity-40 grayscale`}
+                      >
+                        Completa Nodo
+                      </button>
+                    </>
+                  )}
+
+                  {canComplete && (
+                    <button
+                      type="button"
+                      onClick={() => handleAttemptComplete(nodeDetail)}
+                      className={`w-full ${BTN_SUCCESS}`}
+                    >
+                      Completa Nodo
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleteNodeTarget(nodeDetail);
+                      closeNodeDetail();
+                    }}
+                    className={`w-full ${BTN_GHOST}`}
+                  >
+                    <Icon name="trash" className="w-4 h-4" />
+                    Elimina Nodo
+                  </button>
+                </>
+              )}
             </div>
           );
         })()}
@@ -1314,6 +1612,18 @@ export default function QuadrantHub() {
         title="Elimina Nodo"
         message={`Eliminare il nodo "${deleteNodeTarget?.nome}"? Eventuali nodi figli verranno promossi a Nodo Padre, non cancellati.`}
         confirmLabel="Elimina"
+      />
+
+      {/* V31.2.1 — guardia "modifiche non salvate" sull'Editor di
+          Personalizzazione: mai uno scarto silenzioso di dati non
+          persistiti quando l'utente tenta di chiudere la modale. */}
+      <ConfirmDialog
+        open={nodeEditCloseConfirmOpen}
+        onClose={() => setNodeEditCloseConfirmOpen(false)}
+        onConfirm={closeNodeDetail}
+        title="Modifiche non salvate"
+        message="Hai modifiche non ancora salvate nell'Editor di Personalizzazione. Chiudendo ora andranno perse. Vuoi scartarle?"
+        confirmLabel="Scarta modifiche"
       />
 
       {/* Drawer globale: Attiva Spider-Sense — pannello a scorrimento

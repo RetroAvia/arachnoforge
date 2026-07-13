@@ -94,4 +94,45 @@ export function rollWebSlingReward(rngFn = Math.random) {
   return WEB_SLING_TIERS[0]; // fallback di sicurezza, matematicamente irraggiungibile
 }
 
-export default { WEB_SLING_TIERS, canClaimWebSling, rollWebSlingReward };
+/**
+ * V31.3 — Pity System (bad-luck protection). RARE (4%) + PARKER_CHEST (1%)
+ * insieme fanno solo il 5%: un giocatore sfortunato potrebbe restare per
+ * settimane sui soli tier Comune/Non Comune, l'unica vera fonte di Tech
+ * Token oltre al level-up. Dopo `WEB_SLING_PITY_THRESHOLD` aperture DI
+ * FILA senza mai pescare Raro o superiore, il prossimo forziere che
+ * risulterebbe Comune/Non Comune viene garantito almeno Raro.
+ *
+ * Non tocca MAI la probabilità reale dell'1% del Forziere di Parker: la
+ * pity garantisce solo il pavimento "Raro", il vero jackpot resta
+ * genuinamente casuale e rarissimo com'è per design.
+ */
+export const WEB_SLING_PITY_THRESHOLD = 15;
+
+const HIGH_TIERS = ['RARE', 'PARKER_CHEST'];
+
+export function isHighTier(tier) {
+  return !!tier && HIGH_TIERS.includes(tier.id);
+}
+
+/**
+ * `pityCounter` = numero di aperture consecutive già effettuate SENZA un
+ * tier Alto (Raro/Forziere di Parker), prima di questa chiamata — letto
+ * da `profile.webSlingPityCounter`, blindato a 0 se assente/non numerico
+ * dal chiamante. `rngFn` iniettabile come in `rollWebSlingReward`.
+ *
+ * Ritorna `{ tier, pityTriggered }` invece del solo tier: il chiamante
+ * (reducer) non può altrimenti distinguere un Raro genuinamente estratto
+ * dal 4% da un Raro garantito dalla pity — un dettaglio che conta per il
+ * messaggio mostrato al Cadetto (mai un'etichetta "Pity" su un colpo di
+ * fortuna vero, sarebbe fuorviante).
+ */
+export function rollWebSlingRewardWithPity(pityCounter = 0, rngFn = Math.random) {
+  const rolled = rollWebSlingReward(rngFn);
+  if (!isHighTier(rolled) && pityCounter >= WEB_SLING_PITY_THRESHOLD) {
+    const guaranteed = WEB_SLING_TIERS.find((t) => t.id === 'RARE') || rolled;
+    return { tier: guaranteed, pityTriggered: true };
+  }
+  return { tier: rolled, pityTriggered: false };
+}
+
+export default { WEB_SLING_TIERS, canClaimWebSling, rollWebSlingReward, rollWebSlingRewardWithPity, isHighTier, WEB_SLING_PITY_THRESHOLD };

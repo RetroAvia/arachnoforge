@@ -86,7 +86,10 @@ export function createSfida({ nome, obiettivo, giorni, parentId = null, difficul
     lastReviewRating: null,
     reviewCount: 0,
     focusMinutes: 0,
-    blueprint: ''
+    blueprint: '',
+    // V31.3 — Bounty Board (Friction Analytics), vedi utils/friction.js.
+    tentativiSuccessi: 0,
+    tentativiFalliti: 0
   };
 }
 

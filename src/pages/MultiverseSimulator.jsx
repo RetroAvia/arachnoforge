@@ -55,6 +55,56 @@ function StatHero({ icon, label, value, suffix, accent, hint }) {
   );
 }
 
+/**
+ * V32.0 — Storico Media Ponderata: grafico a linee SVG "a mano" (nessuna
+ * nuova dipendenza npm, il sandbox non ha accesso al registry). Asse Y
+ * fisso 18-30 (range voti italiano) per una lettura immediata senza
+ * dover leggere gli assi; asse X = ordine cronologico dei punti
+ * registrati (un punto per ogni Materia che diventa "votata").
+ */
+function GradeHistoryChart({ history }) {
+  const W = 600;
+  const H = 200;
+  const PAD_X = 36;
+  const PAD_Y = 20;
+  const Y_MIN = 18;
+  const Y_MAX = 30;
+
+  const points = history.map((entry, i) => {
+    const x = history.length === 1
+      ? W / 2
+      : PAD_X + (i / (history.length - 1)) * (W - PAD_X * 2);
+    const clamped = Math.min(Y_MAX, Math.max(Y_MIN, entry.average));
+    const y = H - PAD_Y - ((clamped - Y_MIN) / (Y_MAX - Y_MIN)) * (H - PAD_Y * 2);
+    return { x, y, entry };
+  });
+
+  const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  const gridLines = [18, 21, 24, 27, 30];
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="Storico Media Ponderata">
+      {gridLines.map((v) => {
+        const y = H - PAD_Y - ((v - Y_MIN) / (Y_MAX - Y_MIN)) * (H - PAD_Y * 2);
+        return (
+          <g key={v}>
+            <line x1={PAD_X} y1={y} x2={W - PAD_X} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+            <text x={4} y={y + 4} fontSize="10" fill="rgba(148,163,184,0.7)" fontFamily="monospace">{v}</text>
+          </g>
+        );
+      })}
+      {points.length > 1 && (
+        <path d={path} fill="none" stroke="var(--color-secondary, #1D83F0)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+      )}
+      {points.map((p, i) => (
+        <circle key={i} cx={p.x} cy={p.y} r="4" fill="var(--color-secondary, #1D83F0)" stroke="#0b1220" strokeWidth="1.5">
+          <title>{`${p.entry.dateKey} — Media ${p.entry.average.toFixed(2)}`}</title>
+        </circle>
+      ))}
+    </svg>
+  );
+}
+
 const ACCENT = {
   secondary: {
     text: 'text-secondary',
@@ -76,6 +126,15 @@ export default function MultiverseSimulator() {
 
   const { average, totalCfu, gradedCount } = useMemo(() => computeWeightedAverage(materie), [materie]);
   const projection = useMemo(() => computeGraduationProjection(average), [average]);
+
+  // V32.0 — Storico Media Ponderata: ledger append-only popolato dal
+  // reducer (vedi ArachnoForgeContext, case UPDATE_MATERIA) a ogni prima
+  // "votazione" di una Materia. Filtrato difensivamente qui in aggiunta
+  // alla blindatura già presente in hydrateState.
+  const gradeHistory = useMemo(
+    () => (Array.isArray(state.gradeHistory) ? state.gradeHistory.filter((e) => e && Number.isFinite(e.average)) : []),
+    [state.gradeHistory]
+  );
 
   const gradedMaterie = useMemo(
     () => materie.filter((m) => m && m.examPassed && Number.isFinite(m.voto)).sort((a, b) => b.voto - a.voto),
@@ -160,6 +219,32 @@ export default function MultiverseSimulator() {
                 </span>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/* Storico Media Ponderata */}
+      <div className={CARD}>
+        <div className="relative flex items-center gap-2 mb-4">
+          <Icon name="chartBar" className="w-5 h-5 text-secondary" />
+          <span className={H2}>Storico Media Ponderata</span>
+          {gradeHistory.length > 0 && <span className={`${BADGE.blue} ml-auto`}>{gradeHistory.length}</span>}
+        </div>
+        {gradeHistory.length === 0 ? (
+          <EmptyState
+            variant="log"
+            compact
+            title="Karen: nessuno storico ancora"
+            subtitle="Ogni volta che registri il Voto di un nuovo esame superato, un punto viene aggiunto qui — traccia l'andamento della tua Media nel multiverso."
+          />
+        ) : (
+          <div className="relative">
+            <GradeHistoryChart history={gradeHistory} />
+            <p className="text-xs text-slate-500 mt-2">
+              {gradeHistory.length === 1
+                ? 'Un solo punto registrato — torna dopo il prossimo esame votato per vedere l’andamento.'
+                : `Da ${gradeHistory[0].average.toFixed(2)} a ${gradeHistory[gradeHistory.length - 1].average.toFixed(2)} su ${gradeHistory.length} esami votati.`}
+            </p>
           </div>
         )}
       </div>
