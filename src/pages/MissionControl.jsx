@@ -189,13 +189,38 @@ export default function MissionControl() {
   const previewDifficulty = selectedSfida ? selectedSfida.difficulty : DIFFICULTY.MEDIUM;
   const previewStaminaCost = computeFocusStaminaCost(state.settings.focusTime, previewDifficulty, derived.skillEffects.staminaCostMultiplier);
 
+  // V34.5 — "Timer pulito": le Materie già superate (esame passato,
+  // `examPassed`) non hanno più nulla da studiare, quindi spariscono dal
+  // picker del Timer — restano solo quelle in corso o ancora da dare.
+  // Le Materie "congelate" (propedeuticità mancante, vedi
+  // useKarenAutoRouter.js) NON vengono nascoste — sono comunque
+  // preparabili a mano — ma vengono segnalate con 🧊 + etichetta "Congelata"
+  // per non farle sembrare identiche a una Materia pienamente attiva.
+  const activeMaterie = useMemo(() => materie.filter((m) => !m.examPassed), [materie]);
+
   const materiaOptions = useMemo(
     () => [
       { value: '', label: 'Focus generico (nessuna materia)' },
-      ...materie.map((m) => ({ value: m.id, label: `${m.nome} (${m.cfu} CFU)` }))
+      ...activeMaterie.map((m) => {
+        const isFrozen = derived.karenQuotaByMateriaId.get(m.id)?.status === 'CONGELATA';
+        return {
+          value: m.id,
+          label: isFrozen ? `🧊 ${m.nome} (${m.cfu} CFU) · Congelata` : `${m.nome} (${m.cfu} CFU)`
+        };
+      })
     ],
-    [materie]
+    [activeMaterie, derived.karenQuotaByMateriaId]
   );
+
+  // Blindatura: se la Materia selezionata viene segnata come superata (o
+  // eliminata) mentre il Timer la puntava ancora, il picker torna a "Focus
+  // generico" invece di restare agganciato a un valore non più nell'elenco.
+  useEffect(() => {
+    if (selectedMateriaId && !activeMaterie.some((m) => m.id === selectedMateriaId)) {
+      setSelectedMateriaId('');
+      setSelectedSfidaId('');
+    }
+  }, [selectedMateriaId, activeMaterie]);
 
   const sfidaOptions = useMemo(
     () => [
