@@ -465,6 +465,48 @@ export default function MissionControl() {
         </div>
       )}
 
+      {/* V35.3 — Study Focus Engine ("Piano Argomenti del Giorno"): unica
+          superficie in cui K.A.R.E.N. nomina un argomento SPECIFICO (non
+          solo una materia) letto dal Web-Matrix reale, con la tecnica di
+          studio motivata sul suo contenuto — vedi directives.study_focus
+          (supabase/functions/karen-oracle/_logic.ts). Card indipendente
+          da mission_control/study_window: può comparire anche quando il
+          carico non viene ridotto (banda OTTIMALE), perché il piano
+          sull'argomento è utile ogni giorno, non solo nei giorni critici. */}
+      {karenDirectivesToday?.study_focus?.argomento_principale && (
+        <div className={`${CARD} flex items-start gap-3`}>
+          <div className="relative w-9 h-9 rounded-xl bg-secondary/15 border border-secondary/40 flex items-center justify-center text-secondary shrink-0">
+            <Icon name="target" className="w-5 h-5" />
+          </div>
+          <div className="relative flex-1 min-w-0">
+            <p className="text-xs tracking-widest text-slate-500 mb-1">PIANO ARGOMENTI DI OGGI</p>
+            <p className="text-sm font-semibold text-white">
+              {karenDirectivesToday.study_focus.argomento_principale.argomento}
+              <span className="text-slate-500 font-normal"> — {karenDirectivesToday.study_focus.argomento_principale.materia}</span>
+            </p>
+            {karenDirectivesToday.study_focus.argomento_principale.rationale && (
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">{karenDirectivesToday.study_focus.argomento_principale.rationale}</p>
+            )}
+            {karenDirectivesToday.study_focus.argomento_principale.metodo && (
+              <p className="text-sm text-secondary mt-2 leading-relaxed">{karenDirectivesToday.study_focus.argomento_principale.metodo}</p>
+            )}
+            {karenDirectivesToday.study_focus.ripassi_da_non_saltare?.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-white/10 space-y-2">
+                <p className="text-[11px] font-mono tracking-widest text-slate-500 flex items-center gap-1.5">
+                  <Icon name="book" className="w-3.5 h-3.5" />
+                  RIPASSI DA NON SALTARE
+                </p>
+                {karenDirectivesToday.study_focus.ripassi_da_non_saltare.map((r, idx) => (
+                  <p key={`${r.materia}-${r.argomento}-${idx}`} className="text-xs text-slate-400 leading-relaxed">
+                    <span className="text-slate-300 font-medium">{r.argomento}</span> ({r.materia}): {r.nota}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* K.A.R.E.N. QUANTUM ROUTER — Daily Quota HUD (V23.0, Modulo 1) e
           Daily Patrol Engine (V23.0, Modulo 2): entrambi sempre visibili
           in cima allo Stark-Web Terminal, prima del Tactical Timer. */}

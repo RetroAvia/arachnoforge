@@ -30,6 +30,8 @@ import {
   sanitizeDirectives,
   defaultDirectivesForBand,
   computeHistoricalStudyWindow,
+  selectStudyFocusCandidates,
+  EMPTY_STUDY_FOCUS,
   MAX_FORCE_REGENERATIONS_PER_DAY
 } from './_logic.ts';
 
@@ -312,4 +314,243 @@ Deno.test('MAX_FORCE_REGENERATIONS_PER_DAY — è un intero positivo ragionevole
   assertEquals(Number.isInteger(MAX_FORCE_REGENERATIONS_PER_DAY), true);
   assertEquals(MAX_FORCE_REGENERATIONS_PER_DAY > 0, true);
   assertEquals(MAX_FORCE_REGENERATIONS_PER_DAY <= 20, true);
+});
+
+// ---------------------------------------------------------------------
+// selectStudyFocusCandidates (Study Focus Engine, V35.3)
+// ---------------------------------------------------------------------
+function mkSfida(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'sf1',
+    nome: 'Argomento',
+    obiettivo: 'Obiettivo',
+    blueprint: '',
+    difficulty: 'MEDIUM',
+    status: 'PENDING',
+    parentId: null,
+    nextReviewDate: null,
+    lastReviewRating: null,
+    reviewCount: 0,
+    tentativiSuccessi: 0,
+    tentativiFalliti: 0,
+    ...overrides
+  };
+}
+
+function mkMateria(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'm1',
+    nome: 'Materia',
+    examDate: null,
+    examPassed: false,
+    perceivedDifficulty: 3,
+    sfide: [],
+    ...overrides
+  };
+}
+
+Deno.test('selectStudyFocusCandidates — materie non-array o vuoto -> EMPTY_STUDY_FOCUS', () => {
+  assertEquals(selectStudyFocusCandidates(undefined, '2026-09-11'), EMPTY_STUDY_FOCUS);
+  assertEquals(selectStudyFocusCandidates(null, '2026-09-11'), EMPTY_STUDY_FOCUS);
+  assertEquals(selectStudyFocusCandidates([], '2026-09-11'), EMPTY_STUDY_FOCUS);
+});
+
+Deno.test('selectStudyFocusCandidates — ignora le materie con esame già superato', () => {
+  const materie = [mkMateria({ id: 'm1', nome: 'Superata', examPassed: true, sfide: [mkSfida()] })];
+  const result = selectStudyFocusCandidates(materie, '2026-09-11');
+  assertEquals(result, EMPTY_STUDY_FOCUS);
+});
+
+Deno.test('selectStudyFocusCandidates — sceglie le 2 materie più urgenti per data esame, ignora le altre', () => {
+  const materie = [
+    mkMateria({ id: 'm1', nome: 'Lontana', examDate: '2026-12-01', sfide: [mkSfida({ id: 's1', nome: 'A' })] }),
+    mkMateria({ id: 'm2', nome: 'Vicina', examDate: '2026-09-15', sfide: [mkSfida({ id: 's2', nome: 'B' })] }),
+    mkMateria({ id: 'm3', nome: 'Media', examDate: '2026-10-01', sfide: [mkSfida({ id: 's3', nome: 'C' })] })
+  ];
+  const result = selectStudyFocusCandidates(materie, '2026-09-11');
+  assertEquals(result.materie_in_focus, ['Vicina', 'Media']);
+  assertEquals(result.argomenti_disponibili.map((c) => c.materia), ['Vicina', 'Media']);
+});
+
+Deno.test('selectStudyFocusCandidates — un nodo PENDING con figli incompleti NON è disponibile (Boss bloccato)', () => {
+  const materie = [
+    mkMateria({
+      examDate: '2026-09-15',
+      sfide: [
+        mkSfida({ id: 'boss', nome: 'Modulo', status: 'PENDING' }),
+        mkSfida({ id: 'figlio1', nome: 'Sotto-argomento', parentId: 'boss', status: 'PENDING' })
+      ]
+    })
+  ];
+  const result = selectStudyFocusCandidates(materie, '2026-09-11');
+  // Solo il figlio (foglia, nessun sotto-figlio) è disponibile — il Boss resta bloccato.
+  assertEquals(result.argomenti_disponibili.length, 1);
+  assertEquals(result.argomenti_disponibili[0].argomento, 'Sotto-argomento');
+});
+
+Deno.test('selectStudyFocusCandidates — un nodo PENDING con TUTTI i figli COMPLETED è disponibile (Boss sbloccato)', () => {
+  const materie = [
+    mkMateria({
+      examDate: '2026-09-15',
+      sfide: [
+        mkSfida({ id: 'boss', nome: 'Modulo', status: 'PENDING' }),
+        mkSfida({ id: 'figlio1', nome: 'Sotto-argomento', parentId: 'boss', status: 'COMPLETED', nextReviewDate: '2099-01-01' })
+      ]
+    })
+  ];
+  const result = selectStudyFocusCandidates(materie, '2026-09-11');
+  assertEquals(result.argomenti_disponibili.map((c) => c.argomento), ['Modulo']);
+});
+
+Deno.test('selectStudyFocusCandidates — un nodo COMPLETED non è mai fra i disponibili', () => {
+  const materie = [
+    mkMateria({ examDate: '2026-09-15', sfide: [mkSfida({ status: 'COMPLETED', nextReviewDate: '2099-01-01' })] })
+  ];
+  const result = selectStudyFocusCandidates(materie, '2026-09-11');
+  assertEquals(result.argomenti_disponibili.length, 0);
+});
+
+Deno.test('selectStudyFocusCandidates — ripasso scaduto (nextReviewDate <= oggi) incluso, futuro escluso', () => {
+  const materie = [
+    mkMateria({
+      examDate: '2026-09-15',
+      sfide: [
+        mkSfida({ id: 's1', nome: 'Scaduto', status: 'COMPLETED', nextReviewDate: '2026-09-01' }),
+        mkSfida({ id: 's2', nome: 'Futuro', status: 'COMPLETED', nextReviewDate: '2026-12-01' }),
+        mkSfida({ id: 's3', nome: 'OggiStesso', status: 'COMPLETED', nextReviewDate: '2026-09-11' })
+      ]
+    })
+  ];
+  const result = selectStudyFocusCandidates(materie, '2026-09-11');
+  const nomi = result.ripassi_scaduti.map((r) => r.argomento);
+  assertEquals(nomi.includes('Scaduto'), true);
+  assertEquals(nomi.includes('OggiStesso'), true);
+  assertEquals(nomi.includes('Futuro'), false);
+});
+
+Deno.test('selectStudyFocusCandidates — i ripassi scaduti sono raccolti da TUTTE le materie, anche quelle non in focus', () => {
+  const materie = [
+    mkMateria({ id: 'm1', nome: 'Vicina', examDate: '2026-09-15', sfide: [mkSfida({ id: 's1' })] }),
+    mkMateria({ id: 'm2', nome: 'Media', examDate: '2026-10-01', sfide: [mkSfida({ id: 's2' })] }),
+    // Terza materia, esclusa da materie_in_focus (solo le prime 2 più urgenti lo sono)...
+    mkMateria({
+      id: 'm3',
+      nome: 'Lontana',
+      examDate: '2026-12-01',
+      sfide: [mkSfida({ id: 's3', nome: 'RipassoLontano', status: 'COMPLETED', nextReviewDate: '2026-09-01' })]
+    })
+  ];
+  const result = selectStudyFocusCandidates(materie, '2026-09-11');
+  assertEquals(result.materie_in_focus.includes('Lontana'), false);
+  // ...ma il suo ripasso scaduto compare comunque nella lista globale.
+  assertEquals(result.ripassi_scaduti.some((r) => r.argomento === 'RipassoLontano'), true);
+});
+
+Deno.test('selectStudyFocusCandidates — i ripassi più scaduti vengono prima', () => {
+  const materie = [
+    mkMateria({
+      examDate: '2026-09-15',
+      sfide: [
+        mkSfida({ id: 's1', nome: 'PocoScaduto', status: 'COMPLETED', nextReviewDate: '2026-09-10' }),
+        mkSfida({ id: 's2', nome: 'MoltoScaduto', status: 'COMPLETED', nextReviewDate: '2026-08-01' })
+      ]
+    })
+  ];
+  const result = selectStudyFocusCandidates(materie, '2026-09-11');
+  assertEquals(result.ripassi_scaduti[0].argomento, 'MoltoScaduto');
+});
+
+// ---------------------------------------------------------------------
+// defaultDirectivesForBand — study_focus
+// ---------------------------------------------------------------------
+Deno.test('defaultDirectivesForBand — study_focus.argomento_principale null senza candidati', () => {
+  const d = defaultDirectivesForBand('OTTIMALE', null, EMPTY_STUDY_FOCUS);
+  assertEquals(d.study_focus.argomento_principale, null);
+  assertEquals(d.study_focus.ripassi_da_non_saltare, []);
+});
+
+Deno.test('defaultDirectivesForBand — study_focus sceglie il primo argomento disponibile come principale', () => {
+  const studyFocus = {
+    materie_in_focus: ['Analisi 1'],
+    argomenti_disponibili: [
+      { materia: 'Analisi 1', argomento: 'Limiti', obiettivo: '', blueprint: '', difficulty: 'HARD', tipo: 'DISPONIBILE' as const }
+    ],
+    ripassi_scaduti: []
+  };
+  const d = defaultDirectivesForBand('OTTIMALE', null, studyFocus);
+  assertEquals(d.study_focus.argomento_principale?.materia, 'Analisi 1');
+  assertEquals(d.study_focus.argomento_principale?.argomento, 'Limiti');
+});
+
+Deno.test('defaultDirectivesForBand — study_focus ricade sul ripasso più scaduto se non ci sono argomenti nuovi', () => {
+  const studyFocus = {
+    materie_in_focus: ['Fisica'],
+    argomenti_disponibili: [],
+    ripassi_scaduti: [
+      { materia: 'Fisica', argomento: 'Cinematica', obiettivo: '', blueprint: '', difficulty: 'MEDIUM', tipo: 'RIPASSO_SCADUTO' as const, giorni_ripasso_scaduto: 5 }
+    ]
+  };
+  const d = defaultDirectivesForBand('OTTIMALE', null, studyFocus);
+  assertEquals(d.study_focus.argomento_principale?.argomento, 'Cinematica');
+  // Il ripasso scelto come principale non deve duplicarsi nella lista ripassi.
+  assertEquals(d.study_focus.ripassi_da_non_saltare.length, 0);
+});
+
+// ---------------------------------------------------------------------
+// sanitizeDirectives — study_focus
+// ---------------------------------------------------------------------
+Deno.test('sanitizeDirectives — study_focus valido passa così com\'è (con clamp lunghezze)', () => {
+  const raw = {
+    mission_control: { load_adjustment_pct: -10, rationale: 'ok' },
+    focus_timer: { focus_minutes: 30, break_minutes: 5, preset_label: 'X', rationale: 'ok' },
+    study_window: { start_hour: 10, end_hour: 13, label: 'L', rationale: 'ok' },
+    study_focus: {
+      argomento_principale: { materia: 'Analisi 1', argomento: 'Limiti', metodo: 'Tecnica Feynman.', rationale: 'Urgente.' },
+      ripassi_da_non_saltare: [{ materia: 'Fisica', argomento: 'Cinematica', nota: 'Richiamo attivo.' }]
+    }
+  };
+  const d = sanitizeDirectives(raw, 'OTTIMALE');
+  assertEquals(d.study_focus.argomento_principale?.argomento, 'Limiti');
+  assertEquals(d.study_focus.ripassi_da_non_saltare.length, 1);
+});
+
+Deno.test('sanitizeDirectives — un argomento_principale nullo di Claude è un\'anomalia SE il paniere aveva candidati (ricade sul fallback)', () => {
+  const studyFocus = {
+    materie_in_focus: ['Analisi 1'],
+    argomenti_disponibili: [
+      { materia: 'Analisi 1', argomento: 'Limiti', obiettivo: '', blueprint: '', difficulty: 'HARD', tipo: 'DISPONIBILE' as const }
+    ],
+    ripassi_scaduti: []
+  };
+  const raw = {
+    mission_control: { load_adjustment_pct: -10, rationale: 'ok' },
+    focus_timer: { focus_minutes: 30, break_minutes: 5, preset_label: 'X', rationale: 'ok' },
+    study_window: { start_hour: 10, end_hour: 13, label: 'L', rationale: 'ok' },
+    study_focus: { argomento_principale: null, ripassi_da_non_saltare: [] }
+  };
+  const d = sanitizeDirectives(raw, 'OTTIMALE', null, studyFocus);
+  // Il fallback per QUESTO studyFocus sceglie 'Limiti' come principale — mai null quando esisteva un candidato reale.
+  assertEquals(d.study_focus.argomento_principale?.argomento, 'Limiti');
+});
+
+Deno.test('sanitizeDirectives — un argomento_principale nullo di Claude è ACCETTATO se il paniere era vuoto', () => {
+  const raw = {
+    mission_control: { load_adjustment_pct: -10, rationale: 'ok' },
+    focus_timer: { focus_minutes: 30, break_minutes: 5, preset_label: 'X', rationale: 'ok' },
+    study_window: { start_hour: 10, end_hour: 13, label: 'L', rationale: 'ok' },
+    study_focus: { argomento_principale: null, ripassi_da_non_saltare: [] }
+  };
+  const d = sanitizeDirectives(raw, 'OTTIMALE', null, EMPTY_STUDY_FOCUS);
+  assertEquals(d.study_focus.argomento_principale, null);
+});
+
+Deno.test('sanitizeDirectives — study_focus mancante/malformato ricade sul default della banda', () => {
+  const raw = {
+    mission_control: { load_adjustment_pct: -10, rationale: 'ok' },
+    focus_timer: { focus_minutes: 30, break_minutes: 5, preset_label: 'X', rationale: 'ok' },
+    study_window: { start_hour: 10, end_hour: 13, label: 'L', rationale: 'ok' }
+    // study_focus assente
+  };
+  const d = sanitizeDirectives(raw, 'CRITICO');
+  assertEquals(d.study_focus, defaultDirectivesForBand('CRITICO').study_focus);
 });

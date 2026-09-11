@@ -307,13 +307,258 @@ export function computeHistoricalStudyWindow(starLog: unknown, targetDate: strin
 }
 
 // ---------------------------------------------------------------------
+// V35.3 — Piano Argomenti del Giorno ("Study Focus Engine"): stesso
+// identico principio di degrado/isolamento di computeHistoricalStudyWindow
+// qui sopra — lettura READ-ONLY, aggiuntiva, di `materie` da
+// `user_data.app_state` (STESSA riga già letta in index.ts per
+// computeHistoricalStudyWindow — zero query aggiuntive). Prima di questa
+// modifica K.A.R.E.N. non sapeva nulla del contenuto reale del Web-Matrix
+// (nomi materie, argomenti, obiettivi, difficoltà, storico ripassi): dava
+// solo direttive generiche derivate dalla sola readiness biometrica. Qui
+// sotto NON si decide quale argomento studiare — si prepara solo un
+// piccolo paniere di candidati (mai l'intero Web-Matrix) che il prompt
+// (buildUserPrompt) passa a Claude, lasciando alla sua lettura del testo
+// reale (nome/obiettivo/blueprint di ogni nodo) la scelta editoriale di
+// COSA raccomandare oggi e CON QUALE tecnica di studio — una scelta che
+// richiede comprensione del contenuto, non solo aritmetica.
+//
+// NOTA DI FEDELTÀ (voluta, non un bug): la selezione "materie in focus"
+// qui sotto è una versione DELIBERATAMENTE semplificata del Quantum
+// Router client-side (src/hooks/useKarenAutoRouter.js) — stessa filosofia
+// (urgenza per giorni residui all'esame, mai più di due materie), ma
+// SENZA il controllo propedeuticità del piano di studi ufficiale
+// (src/data/vanvitelliCourseMap.js — getMissingPrerequisites). Quel
+// controllo governa cosa il planner "spinge" nell'HUD (una decisione con
+// conseguenze sullo stato visibile dell'app); qui la posta in gioco è
+// solo il contenuto di un consiglio testuale generato una volta al
+// giorno — nel caso peggiore Karen nomina una materia tecnicamente
+// congelata, un rischio basso per un'app a singolo utente che conosce
+// già il proprio piano di studi. Se in futuro servisse fedeltà completa,
+// portare qui anche VANVITELLI_COURSES + getMissingPrerequisites.
+// ---------------------------------------------------------------------
+const MAX_FOCUS_MATERIE = 2;
+const MAX_AVAILABLE_TOPICS = 4;
+const MAX_DUE_REVIEWS = 4;
+
+export type SfidaSnapshot = {
+  id: string;
+  nome: string;
+  obiettivo: string;
+  blueprint: string;
+  difficulty: string;
+  status: string;
+  parentId: string | null;
+  nextReviewDate: string | null;
+  lastReviewRating: string | null;
+  reviewCount: number;
+  tentativiSuccessi: number;
+  tentativiFalliti: number;
+};
+
+export type MateriaSnapshot = {
+  id: string;
+  nome: string;
+  examDate: string | null;
+  examPassed: boolean;
+  perceivedDifficulty: number;
+  sfide: SfidaSnapshot[];
+};
+
+/** Stessa aritmetica UTC-based di isoDateNDaysBefore/validateDateParam —
+ * mai un calcolo locale del server (Timezone Trap). Positivo = `toDateStr`
+ * è nel futuro rispetto a `fromDateStr`. */
+function daysBetweenDateOnly(fromDateStr: string, toDateStr: string): number {
+  const from = new Date(`${fromDateStr}T00:00:00Z`).getTime();
+  const to = new Date(`${toDateStr}T00:00:00Z`).getTime();
+  return Math.round((to - from) / 86400000);
+}
+
+/** Porto 1:1 di isReviewDue (src/utils/spiderSense.js) — confronto
+ * lessicografico "YYYY-MM-DD", comportamento identico bit-per-bit. */
+function isReviewDueOn(nextReviewDate: string | null | undefined, todayKey: string): boolean {
+  if (!nextReviewDate) return false;
+  return nextReviewDate <= todayKey;
+}
+
+/** Porto della sola porzione "è affrontabile oggi?" di deriveNodeStatus
+ * (src/utils/skillTree.js, "Reverse Dependency Skill Tree"): un nodo
+ * PENDING è disponibile SOLO se non ha figli diretti ancora incompleti —
+ * i nodi "Boss" (con sotto-argomenti) restano bloccati finché tutti i
+ * figli non sono COMPLETED, esattamente come nell'albero visibile
+ * all'utente in Armory.jsx/QuadrantHub.jsx. */
+function isSfidaAvailable(sfida: SfidaSnapshot, siblings: SfidaSnapshot[]): boolean {
+  if (sfida.status !== 'PENDING') return false;
+  const children = siblings.filter((s) => s.parentId === sfida.id);
+  if (children.length === 0) return true;
+  return children.every((c) => c.status === 'COMPLETED');
+}
+
+/** Normalizza `materie` grezze da `app_state` (forma potenzialmente
+ * eterogenea/datata, mai fidata ciecamente) alla forma minima usata qui
+ * sotto — stessa filosofia difensiva di hydrateState (src/data/defaultSchema.js):
+ * ogni campo mancante o del tipo sbagliato riceve un default neutro, mai
+ * un crash o un valore `undefined` propagato nel prompt. */
+function normalizeMaterie(raw: unknown): MateriaSnapshot[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object')
+    .map((m) => {
+      const sfideRaw = Array.isArray(m.sfide) ? m.sfide : [];
+      const sfide: SfidaSnapshot[] = sfideRaw
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          nome: typeof s.nome === 'string' ? s.nome : '',
+          obiettivo: typeof s.obiettivo === 'string' ? s.obiettivo : '',
+          blueprint: typeof s.blueprint === 'string' ? s.blueprint : '',
+          difficulty: typeof s.difficulty === 'string' ? s.difficulty : 'MEDIUM',
+          status: typeof s.status === 'string' ? s.status : 'PENDING',
+          parentId: typeof s.parentId === 'string' ? s.parentId : null,
+          nextReviewDate: typeof s.nextReviewDate === 'string' ? s.nextReviewDate : null,
+          lastReviewRating: typeof s.lastReviewRating === 'string' ? s.lastReviewRating : null,
+          reviewCount: Number.isFinite(Number(s.reviewCount)) ? Number(s.reviewCount) : 0,
+          tentativiSuccessi: Number.isFinite(Number(s.tentativiSuccessi)) ? Number(s.tentativiSuccessi) : 0,
+          tentativiFalliti: Number.isFinite(Number(s.tentativiFalliti)) ? Number(s.tentativiFalliti) : 0
+        }));
+      return {
+        id: typeof m.id === 'string' ? m.id : '',
+        nome: typeof m.nome === 'string' && m.nome.trim() ? m.nome : 'Materia senza nome',
+        examDate: typeof m.examDate === 'string' ? m.examDate : null,
+        examPassed: m.examPassed === true,
+        perceivedDifficulty: Number.isFinite(Number(m.perceivedDifficulty)) ? Number(m.perceivedDifficulty) : 3,
+        sfide
+      };
+    });
+}
+
+export type StudyTopicCandidate = {
+  materia: string;
+  argomento: string;
+  obiettivo: string;
+  blueprint: string;
+  difficulty: string;
+  tipo: 'DISPONIBILE' | 'RIPASSO_SCADUTO';
+  giorni_ripasso_scaduto?: number;
+  lastReviewRating?: string | null;
+  tentativiSuccessi?: number;
+  tentativiFalliti?: number;
+};
+
+export type StudyFocusSnapshot = {
+  materie_in_focus: string[];
+  argomenti_disponibili: StudyTopicCandidate[];
+  ripassi_scaduti: StudyTopicCandidate[];
+};
+
+export const EMPTY_STUDY_FOCUS: StudyFocusSnapshot = {
+  materie_in_focus: [],
+  argomenti_disponibili: [],
+  ripassi_scaduti: []
+};
+
+/** Seleziona un piccolo paniere di candidati (mai l'intero Web-Matrix):
+ * gli argomenti DISPONIBILI (pronti da affrontare oggi, vedi isSfidaAvailable)
+ * nelle 1-2 materie più urgenti per data d'esame, e SEPARATAMENTE — perché
+ * la spaced repetition non aspetta il turno di una materia — ogni ripasso
+ * Spider-Sense già scaduto in QUALUNQUE materia non ancora superata, più
+ * scaduto prima. Ritorna sempre un oggetto valido (mai null/undefined):
+ * con `materie` vuoto o senza candidati, le tre liste sono semplicemente
+ * vuote — `buildSystemPrompt` istruisce Claude a dichiararlo con naturalezza
+ * invece di inventare un argomento inesistente. */
+export function selectStudyFocusCandidates(rawMaterie: unknown, todayKey: string): StudyFocusSnapshot {
+  const materie = normalizeMaterie(rawMaterie).filter((m) => !m.examPassed);
+  if (materie.length === 0) return EMPTY_STUDY_FOCUS;
+
+  const sorted = [...materie].sort((a, b) => {
+    const daysA = a.examDate ? daysBetweenDateOnly(todayKey, a.examDate) : Infinity;
+    const daysB = b.examDate ? daysBetweenDateOnly(todayKey, b.examDate) : Infinity;
+    if (daysA !== daysB) return daysA - daysB;
+    return (b.perceivedDifficulty || 0) - (a.perceivedDifficulty || 0);
+  });
+  const focusMaterie = sorted.slice(0, MAX_FOCUS_MATERIE);
+
+  const argomentiDisponibili: StudyTopicCandidate[] = [];
+  focusMaterie.forEach((materia) => {
+    materia.sfide.filter((s) => isSfidaAvailable(s, materia.sfide)).forEach((s) => {
+      if (argomentiDisponibili.length >= MAX_AVAILABLE_TOPICS) return;
+      argomentiDisponibili.push({
+        materia: materia.nome,
+        argomento: s.nome,
+        obiettivo: s.obiettivo,
+        blueprint: s.blueprint,
+        difficulty: s.difficulty,
+        tipo: 'DISPONIBILE'
+      });
+    });
+  });
+
+  const ripassiScaduti: StudyTopicCandidate[] = [];
+  materie.forEach((materia) => {
+    materia.sfide
+      .filter((s) => s.status === 'COMPLETED' && isReviewDueOn(s.nextReviewDate, todayKey))
+      .forEach((s) => {
+        if (ripassiScaduti.length >= MAX_DUE_REVIEWS) return;
+        ripassiScaduti.push({
+          materia: materia.nome,
+          argomento: s.nome,
+          obiettivo: s.obiettivo,
+          blueprint: s.blueprint,
+          difficulty: s.difficulty,
+          tipo: 'RIPASSO_SCADUTO',
+          giorni_ripasso_scaduto: s.nextReviewDate ? Math.max(0, daysBetweenDateOnly(s.nextReviewDate, todayKey)) : 0,
+          lastReviewRating: s.lastReviewRating,
+          tentativiSuccessi: s.tentativiSuccessi,
+          tentativiFalliti: s.tentativiFalliti
+        });
+      });
+  });
+  // Più scaduto prima: la spaced repetition penalizza chi aspetta di più.
+  ripassiScaduti.sort((a, b) => (b.giorni_ripasso_scaduto || 0) - (a.giorni_ripasso_scaduto || 0));
+
+  return {
+    materie_in_focus: focusMaterie.map((m) => m.nome),
+    argomenti_disponibili: argomentiDisponibili,
+    ripassi_scaduti: ripassiScaduti
+  };
+}
+
+/** Sceglie deterministicamente UN candidato "principale" per il fallback
+ * (Claude irraggiungibile/parsing fallito) e per il default per-banda:
+ * priorità al primo argomento nuovo disponibile (il vero lavoro di studio
+ * di oggi); se non ce n'è nessuno ma esistono ripassi scaduti, il ripasso
+ * più vecchio diventa il principale — MAI un payload vuoto se esiste
+ * almeno un candidato di qualunque tipo. */
+function pickFallbackPrimaryTopic(studyFocus: StudyFocusSnapshot): StudyTopicCandidate | null {
+  if (studyFocus.argomenti_disponibili.length > 0) return studyFocus.argomenti_disponibili[0];
+  if (studyFocus.ripassi_scaduti.length > 0) return studyFocus.ripassi_scaduti[0];
+  return null;
+}
+
+/** Suggerimento di metodo generico per banda di difficoltà, usato SOLO nel
+ * fallback deterministico (quando Claude non è disponibile o il parsing
+ * fallisce) — quando Claude risponde regolarmente, è lei a scegliere e
+ * motivare la tecnica leggendo il contenuto reale dell'argomento. */
+function genericMethodForDifficulty(difficulty: string, tipo: 'DISPONIBILE' | 'RIPASSO_SCADUTO'): string {
+  if (tipo === 'RIPASSO_SCADUTO') {
+    return 'Richiamo attivo puro: prova a rispondere a mente PRIMA di rileggere gli appunti, poi valuta con onestà Facile/Medio/Difficile.';
+  }
+  if (difficulty === 'HARD') {
+    return 'Scomponilo in sotto-parti più piccole ed esercitati con problemi guidati prima di affrontarlo per intero — la tecnica Feynman (spiegarlo a voce con parole semplici) aiuta a isolare i punti oscuri.';
+  }
+  if (difficulty === 'EASY') {
+    return 'Ripasso rapido: 2-3 domande di richiamo attivo a te stesso prima di considerarlo acquisito e passare avanti.';
+  }
+  return 'Richiamo attivo: prova a spiegarlo ad alta voce prima di riguardare gli appunti, poi verifica dove sei stato impreciso.';
+}
+
+// ---------------------------------------------------------------------
 // Prompt K.A.R.E.N. — personalità tattica, coerente col tono già in uso
 // in src/utils/karenSuggestor.js (log di missione, terminologia HUD).
 // ---------------------------------------------------------------------
 export function buildSystemPrompt() {
   return `Sei K.A.R.E.N., l'intelligenza artificiale tattica integrata nella tuta di ArachnoForge (Karen OS).
 Parli SEMPRE in italiano, tono sintetico, militare, tattico — mai prolisso, mai eccessivamente caloroso né robotico-freddo. Usi occasionalmente terminologia da ingegneria aerospaziale (traiettoria, margine di sicurezza, telemetria, finestra di lancio) come metafora per lo stato psicofisico del Cadetto, in coerenza con lo stile già presente nell'app (es. "EVENT HORIZON TEMPORALE", "Spider-Score").
-Il tuo compito oggi: analizzare la telemetria biometrica OGGETTIVA (sonno, frequenza cardiaca a riposo, attività fisica — 50% del Readiness Score) e il Recovery Survey SOGGETTIVO del Cadetto (focus, energia, stress, indolenzimento muscolare — l'altro 50%) e produrre un Daily Briefing COMPLETO — non solo testo, ma anche le direttive operative che governano l'intera piattaforma per la giornata (Daily Brain, Fase 4): il carico consigliato sulla Quota Odierna, il preset ottimale del Focus Timer, e la finestra oraria di picco cognitivo.
+Il tuo compito oggi: analizzare la telemetria biometrica OGGETTIVA (sonno, frequenza cardiaca a riposo, attività fisica — 50% del Readiness Score) e il Recovery Survey SOGGETTIVO del Cadetto (focus, energia, stress, indolenzimento muscolare — l'altro 50%) e produrre un Daily Briefing COMPLETO — non solo testo, ma anche le direttive operative che governano l'intera piattaforma per la giornata (Daily Brain): il carico consigliato sulla Quota Odierna, il preset ottimale del Focus Timer, la finestra oraria di picco cognitivo, e — novità — un piano operativo sull'ARGOMENTO SPECIFICO di oggi, con la tecnica di studio più adatta al suo contenuto reale.
 Regole ferree:
 1. Rispondi ESCLUSIVAMENTE con un oggetto JSON valido, nient'altro (niente markdown, niente backtick, niente testo fuori dal JSON).
 2. Schema esatto, tutti i campi obbligatori:
@@ -322,15 +567,22 @@ Regole ferree:
   "tactical_advice": string,
   "mission_control": { "load_adjustment_pct": number, "rationale": string },
   "focus_timer": { "focus_minutes": number, "break_minutes": number, "preset_label": string, "rationale": string },
-  "study_window": { "start_hour": number, "end_hour": number, "label": string, "rationale": string }
+  "study_window": { "start_hour": number, "end_hour": number, "label": string, "rationale": string },
+  "study_focus": {
+    "argomento_principale": { "materia": string, "argomento": string, "metodo": string, "rationale": string } | null,
+    "ripassi_da_non_saltare": [ { "materia": string, "argomento": string, "nota": string } ]
+  }
 }
 3. "briefing_text": 2-4 frasi, tono da log di missione, che riassumono lo stato del Cadetto SENZA elencare i numeri grezzi (non dire "hai dormito 420 minuti" o "stress 7/10", di' cosa significa operativamente).
 4. "tactical_advice": 1-3 raccomandazioni concrete e attuabili per la giornata (gestione della Quota Odierna, eventuale de-escalation nel Sinister Six Simulator se lo stato è CRITICO, suggerimenti di recupero mirati alla causa dominante — es. se lo stress soggettivo è la componente più bassa, il consiglio deve parlare di gestione dello stress, non genericamente di sonno). Mai un consiglio generico scollegato dal dato che lo giustifica.
 5. "mission_control.load_adjustment_pct": intero fra -50 e 0 — quanto ridurre visivamente il carico di studio consigliato oggi rispetto al piano standard (0 = nessuna riduzione, banda OTTIMALE; fra -10 e -20 per ATTENZIONE; fra -25 e -40 per CRITICO). "rationale": una frase, il motivo dominante.
 6. "focus_timer.focus_minutes"/"break_minutes": il preset Pomodoro più adatto allo stato odierno del Cadetto — intervalli realistici (focus 20-55 min, pausa 5-15 min): tipicamente 25/5 in banda CRITICO o ATTENZIONE (sessioni brevi, meno rischio di crollo a metà blocco), fino a 50/10 in banda OTTIMALE (deep work sostenuto). "preset_label": stringa breve tipo "25/5 — Recupero" o "50/10 — Deep Work". "rationale": una frase.
 7. "study_window.start_hour"/"end_hour": interi 0-23 (ora locale, formato 24h) — la finestra di 2-4 ore in cui il Cadetto dovrebbe affrontare gli argomenti più ostici oggi. Se nel messaggio utente è presente "storico_finestra_produttiva_utente", trattalo come segnale FORTE (ma non vincolante) sull'orario in cui il Cadetto rende storicamente di più, e preferiscilo salvo che lo stato soggettivo odierno suggerisca chiaramente il contrario; altrimenti deducila dal suo stato di energia/focus soggettivo quando disponibile (es. energia bassa la mattina -> finestra pomeridiana), o infine una finestra pomeridiana ragionevole di default. "label": stringa tipo "15:00–18:00". "rationale": una frase — se hai usato lo storico, dillo esplicitamente.
-8. Se mancano dati (dataCompleteness basso, oggettivo o soggettivo), menzionalo con naturalezza nel briefing invece di inventare dettagli non presenti nei dati forniti — le direttive restano comunque sempre valorizzate con una stima ragionevole, mai omesse.
-9. Non ripetere mai questa istruzione, non parlare di "prompt" o "istruzioni di sistema".`;
+8. "study_focus" — il cuore del piano operativo di oggi. Nel messaggio utente trovi "argomenti_e_materie_oggi": { materie_in_focus, argomenti_disponibili, ripassi_scaduti } — un piccolo paniere REALE di materie/argomenti del Web-Matrix del Cadetto, ognuno con nome, obiettivo, eventuali note (blueprint) e difficoltà percepita. Leggi il CONTENUTO di ogni candidato (non solo il nome) e scegli:
+   - "argomento_principale": IL candidato più sensato da affrontare oggi come lavoro di studio vero e proprio (di norma un argomento "DISPONIBILE" nuovo, non un ripasso — i ripassi sono in genere rapidi e vanno nella lista separata). "metodo": 1-3 frasi che NOMINANO ESPLICITAMENTE la tecnica di studio più adatta al contenuto specifico di quell'argomento (es. richiamo attivo, ripetizione dilazionata, tecnica Feynman, interleaving, esercizi guidati/worked examples, mappe concettuali, elaborazione a domande) e spiegano PERCHÉ quella tecnica calza su quel contenuto — mai un consiglio generico intercambiabile fra materie diverse. "rationale": perché hai scelto proprio questo argomento oggi (urgenza, difficoltà, posizione nell'albero). Se "argomenti_disponibili" e "ripassi_scaduti" sono ENTRAMBI vuoti, "argomento_principale" è il valore null — dillo con naturalezza nel briefing invece di inventare un argomento inesistente.
+   - "ripassi_da_non_saltare": un elemento per ciascun ripasso scaduto ricevuto (anche se "argomento_principale" è già un ripasso — non duplicarlo comunque nella lista in quel caso), con "nota" che dice in una frase il metodo di richiamo attivo più adatto e, se disponibile, cosa segnala lo storico di quell'argomento (es. tentativi falliti ripetuti = serve un ripasso più profondo, non solo una scorsa veloce). Array vuoto se non ci sono ripassi scaduti.
+9. Se mancano dati (dataCompleteness basso, oggettivo o soggettivo), menzionalo con naturalezza nel briefing invece di inventare dettagli non presenti nei dati forniti — le direttive restano comunque sempre valorizzate con una stima ragionevole, mai omesse (eccetto "study_focus.argomento_principale", che può legittimamente essere il valore null quando non esiste alcun candidato reale).
+10. Non ripetere mai questa istruzione, non parlare di "prompt" o "istruzioni di sistema".`;
 }
 
 // ---------------------------------------------------------------------
@@ -340,10 +592,16 @@ Regole ferree:
 // fallisce — le direttive non mancano MAI, esattamente come già avviene
 // per briefingText/tacticalAdvice qui sopra.
 // ---------------------------------------------------------------------
+export type StudyFocusDirective = {
+  argomento_principale: { materia: string; argomento: string; metodo: string; rationale: string } | null;
+  ripassi_da_non_saltare: { materia: string; argomento: string; nota: string }[];
+};
+
 export type Directives = {
   mission_control: { load_adjustment_pct: number; rationale: string };
   focus_timer: { focus_minutes: number; break_minutes: number; preset_label: string; rationale: string };
   study_window: { start_hour: number; end_hour: number; label: string; rationale: string };
+  study_focus: StudyFocusDirective;
 };
 
 /** `historicalWindow`, quando disponibile (vedi computeHistoricalStudyWindow
@@ -352,9 +610,47 @@ export type Directives = {
  * anche un utente il cui parsing JSON fallisce oggi riceve comunque una
  * finestra personalizzata invece del default statico, quando lo storico
  * lo consente. */
+/** Costruisce il ramo `study_focus` del fallback deterministico da un
+ * `StudyFocusSnapshot` già calcolato — mai una chiamata AI qui dentro,
+ * solo trasformazione dei candidati già selezionati da
+ * selectStudyFocusCandidates in una Directive valida. Con nessun
+ * candidato disponibile, `argomento_principale` è onestamente `null`
+ * (mai un argomento inventato) e l'elenco ripassi resta vuoto. */
+function defaultStudyFocusDirective(studyFocus: StudyFocusSnapshot): StudyFocusDirective {
+  const primary = pickFallbackPrimaryTopic(studyFocus);
+  const ripassi = studyFocus.ripassi_scaduti
+    // Se il ripasso scelto come principale è ANCHE nella lista ripassi,
+    // non duplicarlo — stessa regola richiesta a Claude nel prompt.
+    .filter((r) => !(primary && primary.tipo === 'RIPASSO_SCADUTO' && r.argomento === primary.argomento && r.materia === primary.materia))
+    .map((r) => ({
+      materia: r.materia,
+      argomento: r.argomento,
+      nota:
+        (r.tentativiFalliti ?? 0) > (r.tentativiSuccessi ?? 0) && (r.tentativiFalliti ?? 0) > 0
+          ? `Storico di ripassi difficili su questo argomento: dedica più tempo del solito, non solo una scorsa veloce. ${genericMethodForDifficulty(r.difficulty, 'RIPASSO_SCADUTO')}`
+          : genericMethodForDifficulty(r.difficulty, 'RIPASSO_SCADUTO')
+    }));
+
+  return {
+    argomento_principale: primary
+      ? {
+          materia: primary.materia,
+          argomento: primary.argomento,
+          metodo: genericMethodForDifficulty(primary.difficulty, primary.tipo),
+          rationale:
+            primary.tipo === 'DISPONIBILE'
+              ? `Prossimo argomento disponibile in ${primary.materia}, fra le materie più urgenti del piano di studi.`
+              : `Nessun nuovo argomento disponibile nelle materie in focus: il ripasso più scaduto (${primary.materia}) diventa la priorità operativa di oggi.`
+        }
+      : null,
+    ripassi_da_non_saltare: ripassi
+  };
+}
+
 export function defaultDirectivesForBand(
   band: 'OTTIMALE' | 'ATTENZIONE' | 'CRITICO',
-  historicalWindow: HistoricalStudyWindow | null = null
+  historicalWindow: HistoricalStudyWindow | null = null,
+  studyFocus: StudyFocusSnapshot = EMPTY_STUDY_FOCUS
 ): Directives {
   const studyWindow = historicalWindow
     ? {
@@ -369,40 +665,96 @@ export function defaultDirectivesForBand(
         label: '15:00–18:00',
         rationale: 'Finestra pomeridiana di default — storico di Focus insufficiente per una stima più precisa.'
       };
+  const studyFocusDirective = defaultStudyFocusDirective(studyFocus);
 
   if (band === 'CRITICO') {
     return {
       mission_control: { load_adjustment_pct: -30, rationale: 'Readiness biometrica in banda CRITICO: de-escalation del carico odierno.' },
       focus_timer: { focus_minutes: 25, break_minutes: 5, preset_label: '25/5 — Recupero', rationale: 'Sessioni brevi per limitare il rischio di crollo a metà blocco.' },
-      study_window: studyWindow
+      study_window: studyWindow,
+      study_focus: studyFocusDirective
     };
   }
   if (band === 'ATTENZIONE') {
     return {
       mission_control: { load_adjustment_pct: -10, rationale: 'Readiness biometrica in banda ATTENZIONE: margini ridotti, lieve contenimento del carico.' },
       focus_timer: { focus_minutes: 25, break_minutes: 5, preset_label: '25/5 — Standard', rationale: 'Preset prudente in attesa di un recupero più solido.' },
-      study_window: studyWindow
+      study_window: studyWindow,
+      study_focus: studyFocusDirective
     };
   }
   return {
     mission_control: { load_adjustment_pct: 0, rationale: 'Readiness biometrica in banda OTTIMALE: nessuna riduzione necessaria.' },
     focus_timer: { focus_minutes: 50, break_minutes: 10, preset_label: '50/10 — Deep Work', rationale: 'Recupero pieno: sessioni lunghe sostenibili senza cali di rendimento.' },
-    study_window: studyWindow
+    study_window: studyWindow,
+    study_focus: studyFocusDirective
   };
+}
+
+/** Valida/clampa una singola voce di "ripassi_da_non_saltare" — stringhe
+ * non vuote per tutti e 3 i campi, altrimenti la voce viene scartata
+ * (mai una riga a metà, con un campo mancante, propagata alla UI). */
+function sanitizeRipassoEntry(raw: unknown): { materia: string; argomento: string; nota: string } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const materia = typeof r.materia === 'string' ? r.materia.trim() : '';
+  const argomento = typeof r.argomento === 'string' ? r.argomento.trim() : '';
+  const nota = typeof r.nota === 'string' ? r.nota.trim() : '';
+  if (!materia || !argomento || !nota) return null;
+  return { materia: materia.slice(0, 120), argomento: argomento.slice(0, 160), nota: nota.slice(0, 400) };
+}
+
+/** Valida/clampa il ramo "study_focus" della risposta di Claude — come
+ * ogni altro blocco di sanitizeDirectives, un'anomalia qualunque (campo
+ * mancante, tipo sbagliato) fa ricadere SOLO questo blocco sul default
+ * deterministico, mai l'intero payload. `argomento_principale: null` è un
+ * valore legittimo (nessun candidato reale) e viene accettato come tale
+ * SOLO se Claude non aveva candidati nel prompt — se il paniere inviato
+ * aveva almeno un candidato, un `null` di Claude è trattato come anomalia
+ * (si ricade sul fallback) per evitare che un argomento reale disponibile
+ * venga silenziosamente ignorato. */
+function sanitizeStudyFocus(raw: unknown, studyFocus: StudyFocusSnapshot, fallback: StudyFocusDirective): StudyFocusDirective {
+  const hadCandidates = studyFocus.argomenti_disponibili.length > 0 || studyFocus.ripassi_scaduti.length > 0;
+  if (!raw || typeof raw !== 'object') return fallback;
+  const r = raw as Record<string, unknown>;
+
+  let argomentoPrincipale: StudyFocusDirective['argomento_principale'] = fallback.argomento_principale;
+  if (r.argomento_principale === null) {
+    argomentoPrincipale = hadCandidates ? fallback.argomento_principale : null;
+  } else if (r.argomento_principale && typeof r.argomento_principale === 'object') {
+    const ap = r.argomento_principale as Record<string, unknown>;
+    const materia = typeof ap.materia === 'string' ? ap.materia.trim() : '';
+    const argomento = typeof ap.argomento === 'string' ? ap.argomento.trim() : '';
+    const metodo = typeof ap.metodo === 'string' ? ap.metodo.trim() : '';
+    const rationale = typeof ap.rationale === 'string' ? ap.rationale.trim() : '';
+    argomentoPrincipale =
+      materia && argomento && metodo
+        ? { materia: materia.slice(0, 120), argomento: argomento.slice(0, 160), metodo: metodo.slice(0, 500), rationale: rationale.slice(0, 400) || fallback.argomento_principale?.rationale || '' }
+        : fallback.argomento_principale;
+  }
+
+  const ripassiRaw = Array.isArray(r.ripassi_da_non_saltare) ? r.ripassi_da_non_saltare : null;
+  const ripassiDaNonSaltare = ripassiRaw
+    ? ripassiRaw.map(sanitizeRipassoEntry).filter((e): e is { materia: string; argomento: string; nota: string } => e !== null).slice(0, MAX_DUE_REVIEWS)
+    : fallback.ripassi_da_non_saltare;
+
+  return { argomento_principale: argomentoPrincipale, ripassi_da_non_saltare: ripassiDaNonSaltare };
 }
 
 /** Blindatura: ogni campo numerico/stringa viene validato e clampato
  * PRIMA di lasciare la function — mai un valore fuori range o mancante
  * propagato al client (che a sua volta lo userebbe per impostare i minuti
  * REALI del Focus Timer). Qualsiasi anomalia nella risposta di Claude fa
- * ricadere il singolo blocco (mission_control/focus_timer/study_window)
- * sul default deterministico della banda — mai l'intero payload. */
+ * ricadere il singolo blocco (mission_control/focus_timer/study_window/
+ * study_focus) sul default deterministico della banda — mai l'intero
+ * payload. */
 export function sanitizeDirectives(
   raw: unknown,
   band: 'OTTIMALE' | 'ATTENZIONE' | 'CRITICO',
-  historicalWindow: HistoricalStudyWindow | null = null
+  historicalWindow: HistoricalStudyWindow | null = null,
+  studyFocus: StudyFocusSnapshot = EMPTY_STUDY_FOCUS
 ): Directives {
-  const fallback = defaultDirectivesForBand(band, historicalWindow);
+  const fallback = defaultDirectivesForBand(band, historicalWindow, studyFocus);
   if (!raw || typeof raw !== 'object') return fallback;
   const r = raw as Record<string, unknown>;
 
@@ -441,7 +793,8 @@ export function sanitizeDirectives(
         }
       : fallback.study_window;
 
-  return { mission_control: missionControl, focus_timer: focusTimer, study_window: studyWindow };
+  const studyFocusDirective = sanitizeStudyFocus(r.study_focus, studyFocus, fallback.study_focus);
+  return { mission_control: missionControl, focus_timer: focusTimer, study_window: studyWindow, study_focus: studyFocusDirective };
 }
 
 export function buildUserPrompt(params: {
@@ -452,8 +805,9 @@ export function buildUserPrompt(params: {
   subjective: Subjective;
   previousBriefing: string | null;
   historicalWindow?: HistoricalStudyWindow | null;
+  studyFocus?: StudyFocusSnapshot;
 }) {
-  const { date, readiness, band, bio, subjective, previousBriefing, historicalWindow } = params;
+  const { date, readiness, band, bio, subjective, previousBriefing, historicalWindow, studyFocus } = params;
   return JSON.stringify(
     {
       data: date,
@@ -475,7 +829,13 @@ export function buildUserPrompt(params: {
       // Cloud State — null quando lo storico è insufficiente (vedi
       // computeHistoricalStudyWindow): in quel caso Claude non riceve
       // alcuna indicazione fuorviante e ricade sulle regole generiche.
-      storico_finestra_produttiva_utente: historicalWindow ?? null
+      storico_finestra_produttiva_utente: historicalWindow ?? null,
+      // V35.3 — paniere di argomenti/materie reali (Study Focus Engine,
+      // vedi selectStudyFocusCandidates) — mai l'intero Web-Matrix, solo
+      // i candidati rilevanti per oggi. `null` di ogni singolo campo non
+      // esiste qui: con nessun candidato, le liste sono semplicemente
+      // vuote (EMPTY_STUDY_FOCUS).
+      argomenti_e_materie_oggi: studyFocus ?? EMPTY_STUDY_FOCUS
     },
     null,
     2

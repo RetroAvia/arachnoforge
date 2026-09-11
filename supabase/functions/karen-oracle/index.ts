@@ -5,7 +5,7 @@
 // Deploy:  supabase functions deploy karen-oracle
 // Secrets:
 //   supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
-//   supabase secrets set ANTHROPIC_MODEL=claude-3-5-haiku-latest   (opzionale — default già Haiku)
+//   supabase secrets set ANTHROPIC_MODEL=claude-sonnet-5   (opzionale — default già Sonnet)
 //
 // NOVITÀ v2 (Fase 3):
 //   1. Readiness Score ribilanciato 50/50 — Biometria oggettiva (sonno,
@@ -51,6 +51,21 @@
 //      user_data da questa function) e degrada con grazia a `null` se
 //      lo storico manca o è insufficiente.
 //
+// NOVITÀ v5 (Study Focus Engine — "capire materia e argomento"):
+//   1. `user_data.app_state.materie` (STESSA riga già letta per il punto
+//      3 sopra, zero query aggiuntive) alimenta selectStudyFocusCandidates
+//      (./_logic.ts): un piccolo paniere di argomenti/materie REALI del
+//      Web-Matrix (nome, obiettivo, note, difficoltà) entra nel prompt,
+//      cosi' Claude può leggere il CONTENUTO effettivo di ciò che il
+//      Cadetto sta per studiare e scegliere l'argomento e la tecnica di
+//      studio più adatta, non solo dare direttive generiche su readiness
+//      biometrica. Nuovo campo `directives.study_focus` (stesso ciclo
+//      cache/1-chiamata-al-giorno, zero costo AI aggiuntivo, mai un
+//      payload mancante — vedi commenti in _logic.ts).
+//   2. Modello tornato a Sonnet (era Haiku dalla V35.0): con un solo
+//      utente e una chiamata/giorno il costo è comunque trascurabile — si
+//      privilegia la qualità del piano pedagogico.
+//
 // Chiamata (dal frontend, useSuitTelemetry.triggerOracleScan):
 //   supabase.functions.invoke('karen-oracle', { body: { date: todayStr, force: false } });
 // =====================================================================
@@ -65,6 +80,7 @@ import {
   sanitizeDirectives,
   buildUserPrompt,
   computeHistoricalStudyWindow,
+  selectStudyFocusCandidates,
   HR_BASELINE_WINDOW_DAYS,
   HR_BASELINE_MIN_SAMPLES,
   MAX_FORCE_REGENERATIONS_PER_DAY,
@@ -78,11 +94,12 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY')!;
-// V35.0 — Daily Brain: default passato da Sonnet a Haiku — 1 sola
-// chiamata/utente/giorno, payload contenuto (max_tokens 700), ben dentro
-// il budget ~5€ indicato dalla Direttiva Suprema. Override via env-var
-// resta possibile per chi preferisse comunque Sonnet.
-const ANTHROPIC_MODEL = Deno.env.get('ANTHROPIC_MODEL') ?? 'claude-3-5-haiku-latest';
+// V35.3 — App a singolo utente: 1 sola chiamata/utente/giorno rende il
+// costo trascurabile con QUALUNQUE modello — tornato a Sonnet (il default
+// originale pre-V35.0) per privilegiare la qualità del piano pedagogico
+// (Study Focus Engine) invece del risparmio, che qui non ha impatto reale
+// sul budget. Override via env-var resta comunque possibile.
+const ANTHROPIC_MODEL = Deno.env.get('ANTHROPIC_MODEL') ?? 'claude-sonnet-5';
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 
 const CORS_HEADERS = {
@@ -262,10 +279,12 @@ Deno.serve(async (req: Request) => {
     // Lettura SOLA-LETTURA, a senso unico, di app_state.starLog — degrada
     // a `null` con grazia se assente/vuoto/insufficiente (vedi commento
     // esteso su computeHistoricalStudyWindow in _logic.ts).
-    const historicalWindow = computeHistoricalStudyWindow(
-      (userData?.app_state as Record<string, unknown> | null | undefined)?.starLog,
-      targetDate
-    );
+    const appState = userData?.app_state as Record<string, unknown> | null | undefined;
+    const historicalWindow = computeHistoricalStudyWindow(appState?.starLog, targetDate);
+    // V35.3 — Study Focus Engine: STESSA riga app_state qui sopra, nessuna
+    // query aggiuntiva. Degrada con grazia a liste vuote se `materie`
+    // manca/è vuoto (vedi selectStudyFocusCandidates in _logic.ts).
+    const studyFocus = selectStudyFocusCandidates(appState?.materie, targetDate);
 
     // -- 6. Chiamata a Claude (via Supabase Edge Function — MAI dal client) --
     const anthropicRes = await fetch(ANTHROPIC_API_URL, {
@@ -277,7 +296,11 @@ Deno.serve(async (req: Request) => {
       },
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
-        max_tokens: 700,
+        // V35.3 — 700 -> 1000: lo schema ha un nuovo blocco study_focus
+        // (argomento_principale + fino a MAX_DUE_REVIEWS ripassi, ognuno
+        // con una motivazione testuale) — margine per non troncare la
+        // risposta JSON di Claude a metà.
+        max_tokens: 1000,
         system: buildSystemPrompt(),
         messages: [
           {
@@ -289,7 +312,8 @@ Deno.serve(async (req: Request) => {
               bio: bioToday ?? null,
               subjective: subjectiveToday ?? null,
               previousBriefing: yesterdayBriefing?.briefing_text ?? null,
-              historicalWindow
+              historicalWindow,
+              studyFocus
             })
           }
         ]
@@ -330,7 +354,7 @@ Deno.serve(async (req: Request) => {
       briefingText = String(parsed.briefing_text ?? '').trim();
       tacticalAdvice = String(parsed.tactical_advice ?? '').trim();
       if (!briefingText || !tacticalAdvice) throw new Error('Campi mancanti nel JSON di Claude.');
-      directives = sanitizeDirectives(parsed, band, historicalWindow);
+      directives = sanitizeDirectives(parsed, band, historicalWindow, studyFocus);
     } catch (parseErr) {
       console.error('Parsing risposta Claude fallito:', parseErr, rawText);
       // Fallback deterministico — l'app non deve mai restare senza
@@ -342,7 +366,7 @@ Deno.serve(async (req: Request) => {
         band === 'CRITICO'
           ? 'Riduci il carico di Focus odierno e privilegia recupero attivo: la Quota Odierna può attendere qualche ora in più.'
           : 'Procedi con la Quota Odierna pianificata, monitorando eventuali segnali di affaticamento.';
-      directives = defaultDirectivesForBand(band, historicalWindow);
+      directives = defaultDirectivesForBand(band, historicalWindow, studyFocus);
     }
 
     // -- 7. Persistenza (upsert — un solo briefing per utente/giorno).
