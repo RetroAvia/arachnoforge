@@ -6,14 +6,18 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import { NODE_STATUS, deriveNodeStatus } from '../utils/skillTree.js';
 import { formatDateHuman } from '../utils/dateUtils.js';
 import { TIER, TIER_META } from '../data/trophies.js';
-import { SKILL_DEFS, SKILL_PATH, SKILL_PATH_META, SKILL_TIER, canUnlockSkill } from '../data/techTree.js';
+import { SKILL_DEFS, SKILL_PATH, SKILL_PATH_META, SKILL_TIER_ORDER, canUnlockSkill } from '../data/techTree.js';
 import { CARD, H1, H2, BTN_PRIMARY, BTN_SECONDARY, BTN_AMBER, BTN_GHOST, INPUT, BADGE } from '../utils/designSystem.js';
 
-const TIER_ORDER = [TIER.NEIGHBORHOOD, TIER.AVENGER, TIER.MULTIVERSE];
+// V35.0 — "Sala Trofei" ora ha 4 tier (Bronzo/Argento/Oro/Vibranio, vedi
+// data/trophies.js) e la Skill Tree 5 tier per corsia (vedi
+// data/techTree.js — SKILL_TIER_ORDER, single source of truth: importato
+// direttamente invece di un array locale hardcoded, cosi' un'ulteriore
+// espansione futura della griglia richiede di toccare SOLO techTree.js).
+const TIER_ORDER = [TIER.NEIGHBORHOOD, TIER.AVENGER, TIER.MULTIVERSE, TIER.VIBRANIUM];
 const DRAWER_TRANSITION_MS = 300;
 
 const PATH_ORDER = [SKILL_PATH.DEFENSE, SKILL_PATH.EFFICIENCY, SKILL_PATH.AGGRESSION];
-const SKILL_TIER_ORDER = [SKILL_TIER.T1, SKILL_TIER.T2, SKILL_TIER.T3];
 
 const ARMORY_TABS = [
   { id: 'lab', label: 'Blueprints, Shop & Trofei', icon: 'flask' },
@@ -169,14 +173,23 @@ export default function Armory() {
 
       {/* Tab switcher — V25.0: la Suit Lab ospita ora anche il Mini Skill
           Tree (Pillar 3), separato in una scheda dedicata per non
-          affollare la pagina originale di Blueprints/Shop/Trofei. */}
-      <div className="flex items-center gap-2 border-b border-secondary/15 pb-0 overflow-x-auto af-scroll">
+          affollare la pagina originale di Blueprints/Shop/Trofei.
+          V35.2 — Accessibilita': semantica ARIA tabs esplicita
+          (role="tablist"/"tab"/"tabpanel", aria-selected, aria-controls)
+          cosi' uno screen reader annuncia "scheda 1 di 2, selezionata"
+          invece di un generico gruppo di pulsanti — nessun cambio visivo. */}
+      <div className="flex items-center gap-2 border-b border-secondary/15 pb-0 overflow-x-auto af-scroll" role="tablist" aria-label="Sezioni Suit Lab">
         {ARMORY_TABS.map((tab) => {
           const active = activeTab === tab.id;
           return (
             <button
               key={tab.id}
               type="button"
+              id={`armory-tab-${tab.id}`}
+              role="tab"
+              aria-selected={active}
+              aria-controls={`armory-tabpanel-${tab.id}`}
+              tabIndex={active ? 0 : -1}
               onClick={() => setActiveTab(tab.id)}
               className={`relative flex items-center gap-2 px-4 py-3 text-sm font-semibold tracking-wide transition-all duration-300 border-b-2 -mb-px shrink-0 whitespace-nowrap ${
                 active ? 'text-white border-primary' : 'text-slate-500 border-transparent hover:text-slate-300'
@@ -193,7 +206,7 @@ export default function Armory() {
       </div>
 
       {activeTab === 'lab' && (
-      <>
+      <div role="tabpanel" id="armory-tabpanel-lab" aria-labelledby="armory-tab-lab" className="space-y-9">
       <section>
         <h2 className={`${H2} mb-4 flex items-center gap-2`}>
           <Icon name="book" className="w-5 h-5 text-secondary" />
@@ -362,11 +375,11 @@ export default function Armory() {
           })}
         </div>
       </section>
-      </>
+      </div>
       )}
 
       {activeTab === 'skilltree' && (
-      <section className="space-y-6">
+      <section role="tabpanel" id="armory-tabpanel-skilltree" aria-labelledby="armory-tab-skilltree" className="space-y-6">
         <div className={`${CARD} flex items-center justify-between flex-wrap gap-4`}>
           <div className="relative flex items-center gap-3">
             <div className="w-11 h-11 rounded-xl bg-accent/15 border border-accent/40 flex items-center justify-center text-accent shrink-0">
@@ -378,7 +391,7 @@ export default function Armory() {
             </div>
           </div>
           <p className="relative text-xs text-slate-500 max-w-sm leading-relaxed">
-            Karen: 1 Tech Token per ogni Livello superato. Investili in abilità passive permanenti — nessun potenziamento va mai riattivato manualmente.
+            Karen: 1 Tech Token per ogni Livello superato, più un bonus una tantum ad ogni traguardo di streak (7/14/30/60/100 giorni). Investili in abilità passive permanenti — nessun potenziamento va mai riattivato manualmente.
           </p>
         </div>
 

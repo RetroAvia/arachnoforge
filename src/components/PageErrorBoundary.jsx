@@ -1,6 +1,7 @@
 import React from 'react';
 import { Icon } from './Icons.jsx';
 import { CARD_ALERT, BTN_PRIMARY } from '../utils/designSystem.js';
+import { reportClientError } from '../utils/errorReporter.js';
 
 /**
  * Rete di sicurezza a livello di pagina. Senza un Error Boundary, un
@@ -28,6 +29,14 @@ export default class PageErrorBoundary extends React.Component {
   componentDidCatch(error, info) {
     // eslint-disable-next-line no-console
     console.error('ArachnoForge — errore di rendering intercettato dal Web-Shooter:', error, info?.componentStack);
+    // V35.2 — Osservabilità di base: fire-and-forget, non altera in alcun
+    // modo il comportamento di recupero esistente sopra/sotto questa riga.
+    reportClientError({
+      message: error?.message || String(error),
+      stack: error?.stack,
+      componentStack: info?.componentStack,
+      source: 'react-error-boundary'
+    });
   }
 
   render() {

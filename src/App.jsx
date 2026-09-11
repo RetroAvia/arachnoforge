@@ -1,5 +1,7 @@
 import React, { useEffect, Suspense, lazy } from 'react';
 import { ArachnoForgeProvider, useArachnoForge } from './context/ArachnoForgeContext.jsx';
+import { KarenBrainProvider, useKarenBrain } from './context/KarenBrainContext.jsx';
+import { readinessBand } from './services/karenEngine/useSuitTelemetry.js';
 import { useAuthContext } from './context/AuthContext.jsx';
 import { useArachnoForgeRouter, ROUTES } from './hooks/useArachnoForgeRouter.js';
 import Sidebar from './components/Sidebar.jsx';
@@ -25,6 +27,7 @@ const StarLog = lazy(() => import('./pages/StarLog.jsx'));
 const Armory = lazy(() => import('./pages/Armory.jsx'));
 const CoreConfig = lazy(() => import('./pages/CoreConfig.jsx'));
 const MultiverseSimulator = lazy(() => import('./pages/MultiverseSimulator.jsx'));
+const SuitTelemetryView = lazy(() => import('./modules/suit-telemetry/SuitTelemetryView.jsx'));
 
 function PageSwitch({ currentPage }) {
   switch (currentPage) {
@@ -38,6 +41,8 @@ function PageSwitch({ currentPage }) {
       return <Armory />;
     case ROUTES.MULTIVERSE_SIMULATOR:
       return <MultiverseSimulator />;
+    case ROUTES.SUIT_TELEMETRY:
+      return <SuitTelemetryView />;
     case ROUTES.CORE_CONFIG:
       return <CoreConfig />;
     case ROUTES.MISSION_CONTROL:
@@ -56,6 +61,31 @@ function PageLoadingFallback() {
       <span className="w-10 h-10 rounded-full border-[3px] border-secondary/25 border-t-secondary animate-spin" />
     </div>
   );
+}
+
+/**
+ * V35.0 — K.A.R.E.N. Daily Brain: componente-ponte SENZA UI propria fra
+ * KarenBrainContext (telemetria biometrica, compartimenti stagni) e
+ * ArachnoForgeContext (Cloud State) — l'UNICO punto in cui i due mondi si
+ * toccano, e solo per il bookkeeping della Sala Trofei ("Aderenza alla
+ * Readiness Biometrica"): un dispatch silenzioso al giorno quando il
+ * briefing odierno diventa disponibile, dedup lato reducer
+ * (lastReadinessLogDateKey). Nessuna tabella biometrica viene letta o
+ * scritta da ArachnoForgeContext, nessun campo di `user_data` viene letto
+ * o scritto da KarenBrainContext — l'isolamento resta strutturale, il
+ * ponte vive qui, nella UI.
+ */
+function KarenTrophyBridge() {
+  const { briefing, todayStr } = useKarenBrain();
+  const { actions } = useArachnoForge();
+
+  useEffect(() => {
+    if (!briefing || briefing.date !== todayStr) return;
+    actions.logReadinessSnapshot(todayStr, readinessBand(briefing.readiness_score));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [briefing, todayStr]);
+
+  return null;
 }
 
 function Shell() {
@@ -112,6 +142,7 @@ function Shell() {
       >
         {showInterference && <div className="af-interference" />}
         <div className="max-w-[1400px] mx-auto pt-10 md:pt-0">
+          <KarenTrophyBridge />
           <MaxCarnageBanner />
           <PageErrorBoundary key={currentPage} onRecover={() => navigate(ROUTES.MISSION_CONTROL)}>
             <Suspense fallback={<PageLoadingFallback />}>
@@ -151,9 +182,18 @@ export default function App() {
     return <NexusGate />;
   }
 
+  // V35.0 — K.A.R.E.N. Daily Brain: KarenBrainProvider monta come
+  // ANTENATO di ArachnoForgeProvider (non il contrario) perché
+  // ArachnoForgeContext.jsx legge `useKarenBrain()` per calcolare gli
+  // "effective" minuti del Focus Timer Adattivo. Stesso `key` di
+  // ArachnoForgeProvider: un cambio utente smonta e rimonta ENTRAMBI i
+  // Provider, cosi' nessuno stato/telemetria del profilo precedente può
+  // mai "trapelare" nella sessione successiva.
   return (
-    <ArachnoForgeProvider key={session ? session.user.id : 'guest-local'}>
-      <Shell />
-    </ArachnoForgeProvider>
+    <KarenBrainProvider key={session ? session.user.id : 'guest-local'}>
+      <ArachnoForgeProvider key={session ? session.user.id : 'guest-local'}>
+        <Shell />
+      </ArachnoForgeProvider>
+    </KarenBrainProvider>
   );
 }

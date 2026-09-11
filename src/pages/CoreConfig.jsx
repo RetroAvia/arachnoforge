@@ -462,6 +462,29 @@ export default function CoreConfig() {
             />
           </div>
         </div>
+
+        {/* V35.0 — Focus Timer Adattivo: quando attivo, K.A.R.E.N. può
+            sovrascrivere Focus/Pausa Breve qui sopra (mai la Pausa Lunga,
+            volutamente esclusa dall'automazione) in base alla banda di
+            readiness biometrica del giorno — mai un override silenzioso e
+            non disattivabile, l'utente resta sempre padrone del proprio
+            timer. */}
+        <div className="relative flex items-center justify-between gap-4 pt-4 border-t border-white/5">
+          <div>
+            <p className="text-base text-slate-200 font-semibold flex items-center gap-2">
+              <Icon name="chip" className="w-4 h-4 text-secondary" />
+              Focus Timer Adattivo K.A.R.E.N.
+            </p>
+            <p className="text-sm text-slate-500 leading-relaxed mt-1">
+              Karen ricalibra Focus e Pausa Breve in base alla tua readiness biometrica del giorno (es. 25/5 in banda CRITICO, 50/10 in banda OTTIMALE). I valori sopra restano il default quando disattivo o senza telemetria disponibile.
+            </p>
+          </div>
+          <TechSwitch
+            checked={state.settings.karenAdaptiveTimer !== false}
+            onChange={() => actions.updateSettings({ karenAdaptiveTimer: state.settings.karenAdaptiveTimer === false })}
+            ariaLabel="Focus Timer Adattivo K.A.R.E.N."
+          />
+        </div>
       </section>
 
       <section className={`${CARD} space-y-4`}>

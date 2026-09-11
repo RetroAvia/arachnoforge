@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useTimerEngine, TIMER_STATUS } from './useTimerEngine.js';
 import { BLOOD_PACT_PENALTY, FOCUS_QUALITY, DEFAULT_FOCUS_QUALITY } from '../utils/xpEngine.js';
+import { saveFocusCheckpoint, loadFocusCheckpoint, clearFocusCheckpoint } from '../utils/focusRecovery.js';
 
 /**
  * useFocusTimer — "Il Cervello" del Tactical Timer.
@@ -20,8 +21,19 @@ import { BLOOD_PACT_PENALTY, FOCUS_QUALITY, DEFAULT_FOCUS_QUALITY } from '../uti
  * (Termina Sessione / Avvia Pausa), passando per il Tactical Debriefing.
  * `overdrive()` concatena un nuovo blocco sullo stesso "conto" senza mai
  * toccare il reducer nel frattempo.
+ *
+ * V35.0 — "Sessione Blindata" (fix persistenza): `pendingFocus` vive SOLO
+ * in memoria React finché non si passa dal Debriefing — se la scheda si
+ * chiude, si ricarica o crasha prima di allora, quei minuti erano persi
+ * per sempre. Ora ogni variazione di `pendingFocus` scrive un checkpoint
+ * sincrono su LocalStorage (utils/focusRecovery.js) e al boot successivo
+ * (mount di questo hook, cioè una volta per sessione — mai ripetuto
+ * durante la normale navigazione SPA) un checkpoint orfano viene
+ * recuperato e fatto confluire nella STESSA action FOCUS_COMPLETED già
+ * collaudata: zero nuovo canale di scrittura remota, il recupero
+ * converge sulla pipeline Cloud Sync esistente.
  */
-export function useFocusTimer({ focusTime, shortBreakTime, longBreakTime, dispatch, audio, pushToast }) {
+export function useFocusTimer({ focusTime, shortBreakTime, longBreakTime, dispatch, audio, pushToast, userId }) {
   const [activeFocusMateriaId, setActiveFocusMateriaId] = useState(null);
   const [activeFocusSfidaId, setActiveFocusSfidaId] = useState(null);
   const [pendingFocus, setPendingFocus] = useState({
@@ -35,6 +47,84 @@ export function useFocusTimer({ focusTime, shortBreakTime, longBreakTime, dispat
   useEffect(() => {
     activeFocusRef.current = { materiaId: activeFocusMateriaId, sfidaId: activeFocusSfidaId };
   }, [activeFocusMateriaId, activeFocusSfidaId]);
+
+  // V35.0 — Recovery-on-boot: gira UNA sola volta al mount dell'hook (il
+  // guard `recoveryDoneRef` assorbe anche il doppio-invoke di
+  // React.StrictMode in sviluppo). Se un checkpoint orfano esiste per
+  // l'utente corrente, lo si dispatcha come una FOCUS_COMPLETED con
+  // qualità neutra (nessun Tactical Debriefing possibile a posteriori —
+  // la sessione originale non c'è più per essere valutata) e un flag
+  // `recovered` che il reducer usa SOLO per aggiungere una riga di
+  // Combat Log distinta, mai per alterare XP/Stamina/StarLog (identica
+  // pipeline di un FOCUS_COMPLETED normale).
+  const recoveryDoneRef = useRef(false);
+  useEffect(() => {
+    if (recoveryDoneRef.current) return;
+    recoveryDoneRef.current = true;
+    const checkpoint = loadFocusCheckpoint(userId);
+    if (!checkpoint) return;
+    dispatch({
+      type: 'FOCUS_COMPLETED',
+      payload: {
+        wasOverdrive: !!checkpoint.overdriveOccurred,
+        materiaId: checkpoint.materiaId || null,
+        sfidaId: checkpoint.sfidaId || null,
+        focusMinutes: checkpoint.totalMinutes,
+        quality: DEFAULT_FOCUS_QUALITY,
+        recovered: true
+      }
+    });
+    clearFocusCheckpoint(userId);
+    pushToast(`K.A.R.E.N. — Sessione Focus recuperata dopo chiusura imprevista: +${checkpoint.totalMinutes} min registrati.`, 'info');
+    audio.playSuccessChime();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  // V35.0 — Checkpoint sincrono: scrive (MAI cancella) ad ogni blocco
+  // accumulato — la cancellazione è sempre esplicita, nei punti in cui
+  // `pendingFocus` viene intenzionalmente risolto (endFocusSession,
+  // interruptFocus), cosi' non esiste una finestra in cui questo effetto
+  // potrebbe cancellare un checkpoint che il boot successivo deve ancora
+  // leggere.
+  useEffect(() => {
+    if (pendingFocus.totalMinutes > 0) {
+      saveFocusCheckpoint(userId, {
+        totalMinutes: pendingFocus.totalMinutes,
+        overdriveOccurred: pendingFocus.overdriveOccurred,
+        materiaId: pendingFocus.materiaId,
+        sfidaId: pendingFocus.sfidaId
+      });
+    }
+  }, [pendingFocus, userId]);
+
+  // V35.0 — Belt-and-braces: `beforeunload`/`pagehide` forzano un ultimo
+  // flush sincrono del checkpoint corrente. Ridondante rispetto
+  // all'effetto sopra nel caso comune (React ha già scritto), ma copre
+  // il caso limite di una chiusura scheda cosi' rapida da precedere il
+  // commit dell'effetto — `pagehide` copre anche iOS Safari, che non
+  // garantisce sempre `beforeunload`.
+  const pendingFocusRef = useRef(pendingFocus);
+  useEffect(() => {
+    pendingFocusRef.current = pendingFocus;
+  }, [pendingFocus]);
+  useEffect(() => {
+    const flush = () => {
+      if (pendingFocusRef.current.totalMinutes > 0) {
+        saveFocusCheckpoint(userId, {
+          totalMinutes: pendingFocusRef.current.totalMinutes,
+          overdriveOccurred: pendingFocusRef.current.overdriveOccurred,
+          materiaId: pendingFocusRef.current.materiaId,
+          sfidaId: pendingFocusRef.current.sfidaId
+        });
+      }
+    };
+    window.addEventListener('beforeunload', flush);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('beforeunload', flush);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, [userId]);
 
   // Focus Reminder — "rintocco tibetano" ogni 30 minuti ESATTI di Focus
   // ininterrotto (accumulo su tutta la catena Focus + Overdrive concatenati,
@@ -103,10 +193,11 @@ export function useFocusTimer({ focusTime, shortBreakTime, longBreakTime, dispat
       // precedenti non ancora salvati.
       setPendingFocus({ totalMinutes: 0, overdriveOccurred: false, materiaId: null, sfidaId: null });
       reminderThresholdRef.current = 0;
+      clearFocusCheckpoint(userId);
       dispatch({ type: 'BLOOD_PACT_INTERRUPT' });
       pushToast(`BLOOD PACT — -${BLOOD_PACT_PENALTY} XP`, 'danger');
     }
-  }, [timerStop, dispatch, pushToast]);
+  }, [timerStop, dispatch, pushToast, userId]);
 
   const overdrive = useCallback(() => {
     timerStop();
@@ -140,12 +231,14 @@ export function useFocusTimer({ focusTime, shortBreakTime, longBreakTime, dispat
       }
       setPendingFocus({ totalMinutes: 0, overdriveOccurred: false, materiaId: null, sfidaId: null });
       reminderThresholdRef.current = 0;
+      clearFocusCheckpoint(userId);
       return true;
     }
     setPendingFocus({ totalMinutes: 0, overdriveOccurred: false, materiaId: null, sfidaId: null });
     reminderThresholdRef.current = 0;
+    clearFocusCheckpoint(userId);
     return false;
-  }, [pendingFocus, dispatch, audio, pushToast]);
+  }, [pendingFocus, dispatch, audio, pushToast, userId]);
 
   return {
     status: rawTimer.status,
@@ -162,7 +255,14 @@ export function useFocusTimer({ focusTime, shortBreakTime, longBreakTime, dispat
     pendingFocusMinutes: pendingFocus.totalMinutes,
     pendingFocusOverdrive: pendingFocus.overdriveOccurred,
     activeFocusMateriaId,
-    activeFocusSfidaId
+    activeFocusSfidaId,
+    // V35.0 — sostituisce la logica fragile locale (`awaitingPostFocus`,
+    // ex MissionControl.jsx) basata su un edge-trigger che si perdeva ad
+    // ogni smontaggio/rimontaggio della pagina: `awaitingDebrief` è
+    // derivato direttamente da `pendingFocus`, quindi resta corretto
+    // indipendentemente da quale pagina era montata quando il blocco è
+    // scaduto.
+    awaitingDebrief: pendingFocus.totalMinutes > 0
   };
 }
 

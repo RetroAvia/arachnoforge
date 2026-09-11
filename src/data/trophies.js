@@ -13,7 +13,13 @@ import { VANVITELLI_COURSES } from './vanvitelliCourseMap.js';
 export const TIER = {
   NEIGHBORHOOD: 'NEIGHBORHOOD',
   AVENGER: 'AVENGER',
-  MULTIVERSE: 'MULTIVERSE'
+  MULTIVERSE: 'MULTIVERSE',
+  // V35.0 — "Potenziamento Sala Trofei": quarto tier, il più alto in
+  // assoluto — riservato ai traguardi lifetime più rari (telemetria
+  // biometrica sostenuta nel tempo, streak/volumi estremi). Palette
+  // distinta (violetto/platino) per non confondersi visivamente col
+  // rosso/ambra già usato da MULTIVERSE.
+  VIBRANIUM: 'VIBRANIUM'
 };
 
 export const TIER_META = {
@@ -37,6 +43,13 @@ export const TIER_META = {
     border: 'border-af-attack/60',
     bg: 'bg-af-attack/10',
     glow: 'shadow-[0_0_16px_rgba(226,54,54,0.5),0_0_10px_rgba(251,191,36,0.3)]'
+  },
+  VIBRANIUM: {
+    label: 'Vibranium',
+    color: 'text-violet-300',
+    border: 'border-violet-400/60',
+    bg: 'bg-violet-500/10',
+    glow: 'shadow-[0_0_18px_rgba(167,139,250,0.55),0_0_10px_rgba(255,255,255,0.35)]'
   }
 };
 
@@ -122,6 +135,55 @@ export const TROPHY_DEFINITIONS = [
     descrizione: 'Completa una sessione di Focus fra le 4:00 e le 6:00 del mattino.',
     condizione: (state) => (state.starLog || []).some((e) => e.type === 'FOCUS_SESSION' && e.hour >= 4 && e.hour < 6),
     iconPath: 'M12 3v3 M4.5 12H2 M22 12h-2.5 M5.6 5.6l1.8 1.8 M16.6 7.4l1.8-1.8 M5 20h14 M8 20a4 4 0 0 1 8 0'
+  },
+  // V35.0 — famiglia "Nodi Hard" (Bronzo): primo contatto con la difficoltà
+  // elevata del Web-Matrix — apre la progressione che culmina in
+  // `steel_nerves_hard10` (Argento) e nei nuovi tier Oro/Vibranio.
+  {
+    id: 'nodi_hard_bronzo',
+    nome: 'Primo Contatto Hard',
+    tier: TIER.NEIGHBORHOOD,
+    secret: false,
+    descrizione: 'Completa 3 nodi di difficoltà Hard.',
+    condizione: (state) => (state.profile.hardNodesCompleted || 0) >= 3,
+    iconPath: 'M3 20 9 10l3 4 3-5 6 11H3Z'
+  },
+  // V35.0 — famiglia "Monte Ore Focus" (Bronzo): prime 2 ore accumulate,
+  // apre la progressione verso `peter_parker_mind_6h` (Argento) e i nuovi
+  // tier Oro/Vibranio.
+  {
+    id: 'monte_ore_bronzo',
+    nome: 'Scintilla Costante',
+    tier: TIER.NEIGHBORHOOD,
+    secret: false,
+    descrizione: 'Accumula 2 ore totali di Focus registrate.',
+    condizione: (state) => totalFocusMinutes(state) >= 120,
+    iconPath: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M12 7v5l3.5 2'
+  },
+  // V35.0 — famiglia "Aderenza Telemetria K.A.R.E.N." (Bronzo): primi 3
+  // giorni di log biometrico/soggettivo registrati — collega la Sala Trofei
+  // alla pipeline K.A.R.E.N. tramite `LOG_READINESS_SNAPSHOT` (bridge
+  // stateless in `KarenTrophyBridge`, nessuna lettura diretta delle tabelle
+  // biometriche da qui: l'isolamento resta intatto).
+  {
+    id: 'telemetria_bronzo',
+    nome: 'Prima Scansione Biometrica',
+    tier: TIER.NEIGHBORHOOD,
+    secret: false,
+    descrizione: 'Registra la telemetria K.A.R.E.N. per 3 giorni, anche non consecutivi.',
+    condizione: (state) => (state.profile.readinessLogDaysTotal || 0) >= 3,
+    iconPath: 'M3 12h4l2 6 4-16 2 10h6'
+  },
+  // V35.0 — famiglia "Giorni Readiness Ottimale" (Bronzo): premia
+  // l'aderenza reale ai suggerimenti di recupero, non solo il logging.
+  {
+    id: 'readiness_ottimale_bronzo',
+    nome: 'Corazza In Perfetta Efficienza',
+    tier: TIER.NEIGHBORHOOD,
+    secret: false,
+    descrizione: 'Registra 5 giorni con Readiness Biometrica in banda OTTIMALE.',
+    condizione: (state) => (state.profile.optimalReadinessDaysTotal || 0) >= 5,
+    iconPath: 'M12 2 4 6v6c0 5 3.8 9.5 8 10 4.2-.5 8-5 8-10V6l-8-4Z M9 12l2 2 4-4.5'
   },
 
   // ---------------------------------------------------------------- AVENGER
@@ -224,6 +286,49 @@ export const TROPHY_DEFINITIONS = [
     descrizione: '14 giorni consecutivi di attività registrata.',
     condizione: (state) => state.profile.streak >= 14,
     iconPath: 'M12 2 4 6v6c0 5 3.8 9.5 8 10 4.2-.5 8-5 8-10V6l-8-4Z M9 12l2 2 4-4'
+  },
+  // V35.0 — famiglia "Monte Ore Focus" (Argento): affianca
+  // `peter_parker_mind_6h` sullo stesso tier con una soglia più alta —
+  // consolida la costanza oltre il primo traguardo delle 6 ore.
+  {
+    id: 'monte_ore_argento',
+    nome: 'Archivio Di Mezzanotte',
+    tier: TIER.AVENGER,
+    secret: false,
+    descrizione: 'Accumula 25 ore totali di Focus registrate.',
+    condizione: (state) => totalFocusMinutes(state) >= 1500,
+    iconPath: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M12 6v6l4 2'
+  },
+  // V35.0 — famiglia "Nodi Totali" (Argento): affianca `five_nodes_cleared`
+  // con un traguardo di volume più sostanzioso, verso i tier Oro/Vibranio.
+  {
+    id: 'nodi_totali_argento',
+    nome: 'Web-Matrix In Espansione',
+    tier: TIER.AVENGER,
+    secret: false,
+    descrizione: 'Completa 20 nodi in totale, in qualsiasi Skill Tree.',
+    condizione: (state) => totalCompletedNodes(state) >= 20,
+    iconPath: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M8 12l3 3 5-6'
+  },
+  // V35.0 — famiglia "Aderenza Telemetria K.A.R.E.N." (Argento).
+  {
+    id: 'telemetria_argento',
+    nome: 'Protocollo Di Monitoraggio Attivo',
+    tier: TIER.AVENGER,
+    secret: false,
+    descrizione: 'Registra la telemetria K.A.R.E.N. per 14 giorni, anche non consecutivi.',
+    condizione: (state) => (state.profile.readinessLogDaysTotal || 0) >= 14,
+    iconPath: 'M3 12h4l2 6 4-16 2 10h6'
+  },
+  // V35.0 — famiglia "Giorni Readiness Ottimale" (Argento).
+  {
+    id: 'readiness_ottimale_argento',
+    nome: 'Sincronia Uomo-Macchina',
+    tier: TIER.AVENGER,
+    secret: false,
+    descrizione: 'Registra 20 giorni con Readiness Biometrica in banda OTTIMALE.',
+    condizione: (state) => (state.profile.optimalReadinessDaysTotal || 0) >= 20,
+    iconPath: 'M12 2 4 6v6c0 5 3.8 9.5 8 10 4.2-.5 8-5 8-10V6l-8-4Z M9 12l2 2 4-4.5'
   },
 
   // ---------------------------------------------------------------- MULTIVERSE (segreti)
@@ -352,6 +457,125 @@ export const TROPHY_DEFINITIONS = [
     descrizione: 'Completa un Sinister Six Gauntlet pulito: tutti e 6 i Villain abbattuti in fila, nella stessa run.',
     condizione: (state) => (state.profile.gauntletsCleared || 0) >= 1,
     iconPath: 'M12 3 4 7v6c0 5 3.6 9.4 8 10 4.4-.6 8-5 8-10V7l-8-4Z M9 12l2 2 4-4.5'
+  },
+  // V35.0 — famiglia "Nodi Hard" (Oro): 25 nodi Hard superati, la
+  // dimostrazione che la difficoltà elevata è diventata la norma, non
+  // l'eccezione.
+  {
+    id: 'nodi_hard_oro',
+    nome: 'Predatore Del Web-Matrix',
+    tier: TIER.MULTIVERSE,
+    secret: true,
+    descrizione: 'Completa 25 nodi di difficoltà Hard.',
+    condizione: (state) => (state.profile.hardNodesCompleted || 0) >= 25,
+    iconPath: 'M3 20 9 10l3 4 3-5 6 11H3Z'
+  },
+  // V35.0 — famiglia "Nodi Totali" (Oro).
+  {
+    id: 'nodi_totali_oro',
+    nome: 'Architetto Del Web-Matrix',
+    tier: TIER.MULTIVERSE,
+    secret: true,
+    descrizione: 'Completa 40 nodi in totale, in qualsiasi Skill Tree.',
+    condizione: (state) => totalCompletedNodes(state) >= 40,
+    iconPath: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M8 12l3 3 5-6'
+  },
+  // V35.0 — famiglia "Monte Ore Focus" (Oro): 100 ore, soglia da carriera
+  // accademica seria, non da singolo mese produttivo.
+  {
+    id: 'monte_ore_oro',
+    nome: 'Cento Ore Sotto La Maschera',
+    tier: TIER.MULTIVERSE,
+    secret: true,
+    descrizione: 'Accumula 100 ore totali di Focus registrate.',
+    condizione: (state) => totalFocusMinutes(state) >= 6000,
+    iconPath: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M12 6v6l4 2'
+  },
+  // V35.0 — famiglia "Aderenza Telemetria K.A.R.E.N." (Oro).
+  {
+    id: 'telemetria_oro',
+    nome: 'Suit Fully Synced',
+    tier: TIER.MULTIVERSE,
+    secret: true,
+    descrizione: 'Registra la telemetria K.A.R.E.N. per 45 giorni, anche non consecutivi.',
+    condizione: (state) => (state.profile.readinessLogDaysTotal || 0) >= 45,
+    iconPath: 'M3 12h4l2 6 4-16 2 10h6'
+  },
+  // V35.0 — famiglia "Giorni Readiness Ottimale" (Oro): chiude la
+  // progressione a 3 tier richiesta dalla Direttiva Suprema.
+  {
+    id: 'readiness_ottimale_oro',
+    nome: 'Stato Di Grazia Biometrico',
+    tier: TIER.MULTIVERSE,
+    secret: true,
+    descrizione: 'Registra 50 giorni con Readiness Biometrica in banda OTTIMALE.',
+    condizione: (state) => (state.profile.optimalReadinessDaysTotal || 0) >= 50,
+    iconPath: 'M12 2 4 6v6c0 5 3.8 9.5 8 10 4.2-.5 8-5 8-10V6l-8-4Z M9 12l2 2 4-4.5'
+  },
+
+  // ---------------------------------------------------------------- VIBRANIUM (i più rari — tutti segreti)
+  // V35.0 — "Potenziamento Sala Trofei": quarto tier, riservato ai
+  // traguardi lifetime più estremi — volumi/streak che richiedono mesi di
+  // costanza ininterrotta, mai raggiungibili "per caso".
+  {
+    id: 'nodi_hard_vibranio',
+    nome: 'Nessun Nodo È Troppo Hard',
+    tier: TIER.VIBRANIUM,
+    secret: true,
+    descrizione: 'Completa 40 nodi di difficoltà Hard.',
+    condizione: (state) => (state.profile.hardNodesCompleted || 0) >= 40,
+    iconPath: 'M3 20 9 10l3 4 3-5 6 11H3Z'
+  },
+  {
+    id: 'nodi_totali_vibranio',
+    nome: 'Signore Del Web-Matrix',
+    tier: TIER.VIBRANIUM,
+    secret: true,
+    descrizione: 'Completa 75 nodi in totale, in qualsiasi Skill Tree.',
+    condizione: (state) => totalCompletedNodes(state) >= 75,
+    iconPath: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M8 12l3 3 5-6'
+  },
+  {
+    id: 'monte_ore_vibranio',
+    nome: 'Trecento Ore Nel Multiverso',
+    tier: TIER.VIBRANIUM,
+    secret: true,
+    descrizione: 'Accumula 300 ore totali di Focus registrate.',
+    condizione: (state) => totalFocusMinutes(state) >= 18000,
+    iconPath: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M12 6v6l4 2'
+  },
+  {
+    id: 'telemetria_vibranio',
+    nome: 'Un Corpo Solo Con La Tuta',
+    tier: TIER.VIBRANIUM,
+    secret: true,
+    descrizione: 'Registra la telemetria K.A.R.E.N. per 100 giorni, anche non consecutivi.',
+    condizione: (state) => (state.profile.readinessLogDaysTotal || 0) >= 100,
+    iconPath: 'M3 12h4l2 6 4-16 2 10h6'
+  },
+  // V35.0 — chiude la famiglia streak (3/7/14/30 già esistenti) con il
+  // traguardo lifetime più alto in assoluto.
+  {
+    id: 'streak_100_vibranio',
+    nome: 'Ragno Immortale',
+    tier: TIER.VIBRANIUM,
+    secret: true,
+    descrizione: 'Mantieni una streak di 100 giorni consecutivi.',
+    condizione: (state) => (state.profile.streak || 0) >= 100,
+    iconPath: 'M6 12c0-2 1.5-3 3-3s3 2 3 3-1.5 3-3 3-3-1-3-3Zm9 0c0-2 1.5-3 3-3s3 2 3 3-1.5 3-3 3-3-1-3-3Z'
+  },
+  // V35.0 — trofeo segreto legato non al *volume* di log ma alla
+  // *costanza* della disciplina biometrica giorno-dopo-giorno
+  // (`readinessLogStreak`, edge-trigger giornaliero in
+  // `LOG_READINESS_SNAPSHOT` — vedi ArachnoForgeContext.jsx).
+  {
+    id: 'readiness_streak_vibranio',
+    nome: 'Sincronia Biometrica Totale',
+    tier: TIER.VIBRANIUM,
+    secret: true,
+    descrizione: 'Registra la telemetria K.A.R.E.N. per 30 giorni consecutivi, senza saltarne uno.',
+    condizione: (state) => (state.profile.readinessLogStreak || 0) >= 30,
+    iconPath: 'M12 2c3 3 6 6 6 11a6 6 0 0 1-12 0c0-5 3-8 6-11Z M9 15c1 1 5 1 6 0'
   }
 ];
 

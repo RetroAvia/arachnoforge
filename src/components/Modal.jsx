@@ -2,6 +2,10 @@ import React, { useEffect, useRef, useId } from 'react';
 import { Icon } from './Icons.jsx';
 import { CARD_NOPAD } from '../utils/designSystem.js';
 
+/** Selettore degli elementi realisticamente "raggiungibili da Tab" dentro la modale — stesso set usato dal focus trap qui sotto. */
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 /**
  * V34.0 — "God-Tier Pass" (Accessibilita' + Mobile Hardening).
  *
@@ -16,16 +20,50 @@ import { CARD_NOPAD } from '../utils/designSystem.js';
  *  3. `role="dialog"` + `aria-modal` + `aria-labelledby` reale, cosi' uno
  *     screen reader annuncia correttamente titolo e natura modale invece
  *     di un generico `<div>`.
+ *
+ * V35.2 — "Blindatura & Governance": aggiunto un vero focus trap — Tab e
+ * Shift+Tab restavano liberi di uscire dalla modale verso elementi
+ * dell'app sottostante (mai completamente invisibili, solo coperti
+ * dall'overlay): un utente da tastiera poteva ritrovarsi a interagire con
+ * un pulsante "dietro" la modale senza alcun feedback visivo. Ora il
+ * ciclo di Tab resta chiuso fra il primo e l'ultimo elemento
+ * raggiungibile dentro il pannello, esattamente come richiesto dal
+ * pattern "Dialog (Modal)" delle WAI-ARIA Authoring Practices. Aggiunto
+ * anche un prop opzionale `role` (default invariato: "dialog") cosi'
+ * ConfirmDialog puo' dichiararsi come "alertdialog", piu' corretto per le
+ * conferme distruttive.
  */
-export default function Modal({ open, onClose, title, children, maxWidth = 'max-w-md' }) {
+export default function Modal({ open, onClose, title, children, maxWidth = 'max-w-md', role = 'dialog' }) {
   const closeBtnRef = useRef(null);
   const previouslyFocusedRef = useRef(null);
+  const panelRef = useRef(null);
   const titleId = useId();
 
   useEffect(() => {
     if (!open) return undefined;
     const onKeyDown = (e) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (e.key !== 'Tab' || !panelRef.current) return;
+      const focusables = Array.from(panelRef.current.querySelectorAll(FOCUSABLE_SELECTOR));
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      // Fuori dal pannello (mai dovrebbe accadere, ma difensivo) -> riparte dal primo.
+      if (!panelRef.current.contains(document.activeElement)) {
+        e.preventDefault();
+        first.focus();
+        return;
+      }
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -63,12 +101,12 @@ export default function Modal({ open, onClose, title, children, maxWidth = 'max-
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center px-4"
-      role="dialog"
+      role={role}
       aria-modal="true"
       aria-labelledby={titleId}
     >
       <div className="absolute inset-0 bg-surface/80 backdrop-blur-md" onClick={onClose} />
-      <div className={`relative w-full ${maxWidth} ${CARD_NOPAD} shadow-2xl af-scroll max-h-[85vh] overflow-y-auto`}>
+      <div ref={panelRef} className={`relative w-full ${maxWidth} ${CARD_NOPAD} shadow-2xl af-scroll max-h-[85vh] overflow-y-auto`}>
         {/* Bagliore atmosferico d'ambiente dietro l'header, mai uno sfondo piatto. */}
         <div className="absolute -top-20 -right-20 w-64 h-64 rounded-full bg-secondary/10 blur-3xl pointer-events-none" />
         <div className="relative flex items-center justify-between gap-3 px-4 sm:px-6 py-4 border-b border-secondary/20 sticky top-0 bg-surface/90 backdrop-blur-2xl">

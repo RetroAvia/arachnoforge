@@ -63,7 +63,23 @@ export function createDefaultState() {
       // completate "pulite" (6/6 Villain abbattuti nella stessa run senza
       // mai perdere un round) — alimenta il trofeo dedicato in
       // data/trophies.js, stesso pattern di dailyPatrolsCompleted.
-      gauntletsCleared: 0
+      gauntletsCleared: 0,
+      // V35.0 — Ribilanciamento Economico: soglie di streak (giorni) per
+      // cui è già stato assegnato il Tech Token bonus "Costanza Premiata"
+      // — lifetime, mai revocato, mai riassegnato sulla stessa soglia
+      // (vedi applyStreakTokenMilestone in ArachnoForgeContext.jsx).
+      streakTokenMilestonesAwarded: [],
+      // V35.0 — K.A.R.E.N. Daily Brain (Sala Trofei — Aderenza alla
+      // Readiness Biometrica): contatori lifetime alimentati da
+      // LOG_READINESS_SNAPSHOT (edge-trigger giornaliero, dispatchato dal
+      // componente-ponte KarenTrophyBridge quando un nuovo briefing è
+      // disponibile). Compartimenti stagni preservati: nessuna tabella
+      // biometrica viene letta/scritta da questo Cloud State, solo un
+      // riepilogo numerico già calcolato altrove.
+      lastReadinessLogDateKey: null,
+      readinessLogDaysTotal: 0,
+      readinessLogStreak: 0,
+      optimalReadinessDaysTotal: 0
     },
     settings: {
       focusTime: 25,
@@ -71,7 +87,13 @@ export function createDefaultState() {
       longBreakTime: 15,
       suit: SUITS.CLASSIC,
       calmMode: false,
-      soundEffects: true
+      soundEffects: true,
+      // V35.0 — Focus Timer Adattivo: quando true (default), i minuti di
+      // Focus/Pausa Breve seguono la direttiva `focus_timer` del Daily
+      // Brief K.A.R.E.N. odierno (se disponibile) invece dei valori
+      // manuali qui sopra — mai un override silenzioso e non
+      // disattivabile: l'utente può spegnerlo in Karen OS Settings.
+      karenAdaptiveTimer: true
     },
     materie: [],
     starLog: [],
@@ -225,7 +247,16 @@ export function hydrateState(rawState) {
     symbioteSuitUnlocked: rawProfile.symbioteSuitUnlocked === true,
     // V33.1 — Blindatura contatore Gauntlet: mai propagare un valore
     // "sporco" (NaN, negativo, stringa) da un salvataggio corrotto.
-    gauntletsCleared: Number.isFinite(rawProfile.gauntletsCleared) && rawProfile.gauntletsCleared >= 0 ? rawProfile.gauntletsCleared : 0
+    gauntletsCleared: Number.isFinite(rawProfile.gauntletsCleared) && rawProfile.gauntletsCleared >= 0 ? rawProfile.gauntletsCleared : 0,
+    // V35.0 — Blindatura Ribilanciamento Economico + Daily Brain: stessa
+    // logica "mai un valore sporco propagato" già applicata sopra.
+    streakTokenMilestonesAwarded: Array.isArray(rawProfile.streakTokenMilestonesAwarded)
+      ? rawProfile.streakTokenMilestonesAwarded.filter((n) => Number.isFinite(n))
+      : [],
+    lastReadinessLogDateKey: typeof rawProfile.lastReadinessLogDateKey === 'string' ? rawProfile.lastReadinessLogDateKey : null,
+    readinessLogDaysTotal: Number.isFinite(rawProfile.readinessLogDaysTotal) && rawProfile.readinessLogDaysTotal >= 0 ? rawProfile.readinessLogDaysTotal : 0,
+    readinessLogStreak: Number.isFinite(rawProfile.readinessLogStreak) && rawProfile.readinessLogStreak >= 0 ? rawProfile.readinessLogStreak : 0,
+    optimalReadinessDaysTotal: Number.isFinite(rawProfile.optimalReadinessDaysTotal) && rawProfile.optimalReadinessDaysTotal >= 0 ? rawProfile.optimalReadinessDaysTotal : 0
   };
 
   return {

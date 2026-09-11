@@ -16,7 +16,11 @@ export default function ConfirmDialog({ open, onClose, onConfirm, title, message
   const { audio } = useArachnoForge();
 
   return (
-    <Modal open={open} onClose={onClose} title={title} maxWidth="max-w-sm">
+    // V35.2 — Accessibilita': "alertdialog" (non il generico "dialog" di
+    // Modal) e' il ruolo ARIA corretto per una conferma che richiede una
+    // decisione immediata dell'utente — annuncio piu' preciso per chi usa
+    // uno screen reader, zero cambio di comportamento visivo.
+    <Modal open={open} onClose={onClose} title={title} maxWidth="max-w-sm" role="alertdialog">
       <div className="flex items-start gap-3 mb-6">
         <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${danger ? 'bg-primary/10 text-primary' : 'bg-secondary/10 text-secondary'}`}>
           <Icon name="alertTriangle" className="w-6 h-6" />

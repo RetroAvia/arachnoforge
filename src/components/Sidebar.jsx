@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Icon } from './Icons.jsx';
 import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
+import { useKarenBrain } from '../context/KarenBrainContext.jsx';
 import { ROUTES } from '../hooks/useArachnoForgeRouter.js';
 import { BADGE } from '../utils/designSystem.js';
 
@@ -11,7 +12,8 @@ const NAV_ITEMS = [
   { route: ROUTES.STAR_LOG, label: 'Daily Bugle Archives', icon: 'newspaper' },
   { route: ROUTES.ARMORY, label: 'Suit Lab & Trophies', icon: 'flask' },
   { route: ROUTES.MULTIVERSE_SIMULATOR, label: 'Multiverse Simulator', icon: 'multiverse' },
-  { route: ROUTES.CORE_CONFIG, label: 'Karen OS Settings', icon: 'chip' }
+  { route: ROUTES.CORE_CONFIG, label: 'Karen OS Settings', icon: 'chip' },
+  { route: ROUTES.SUIT_TELEMETRY, label: 'Suit Telemetry', icon: 'heart' }
 ];
 
 const TRAJECTORY_BADGE = {
@@ -41,8 +43,18 @@ function getSyncMeta(syncStatus, storageMode) {
   return SYNC_META_BASE[syncStatus] || SYNC_META_BASE.loading;
 }
 
+// V35.0 — K.A.R.E.N. Daily Brain: stesso idioma visivo del chip Cloud
+// Sync — mai un chip vuoto o "n/d" quando la telemetria non è ancora
+// arrivata (default 100/OTTIMALE già gestito da useSuitTelemetry.js).
+const READINESS_CHIP_META = {
+  OTTIMALE: { icon: 'check', label: 'READINESS OTTIMALE', className: 'text-emerald-400 border-emerald-400/30 bg-emerald-900/20' },
+  ATTENZIONE: { icon: 'alertTriangle', label: 'READINESS ATTENZIONE', className: 'text-accent border-accent/30 bg-accent/10' },
+  CRITICO: { icon: 'alertTriangle', label: 'READINESS CRITICO', className: 'text-primary border-primary/40 bg-primary/10' }
+};
+
 export default function Sidebar({ currentPage, navigate }) {
   const { state, derived, sensoryZero, syncStatus, storageMode } = useArachnoForge();
+  const karen = useKarenBrain();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   if (sensoryZero) return null;
@@ -51,6 +63,12 @@ export default function Sidebar({ currentPage, navigate }) {
   const xpPct = derived.xpPct ?? 0;
   const rankMeta = derived.rankMeta || { textClass: 'text-secondary', glowClass: '' };
   const syncMeta = getSyncMeta(syncStatus, storageMode);
+  // Chip visibile solo per chi ha una sessione Nexus reale (Modalità
+  // Ospite non ha telemetria biometrica — vedi SuitTelemetryView.jsx) e
+  // solo dopo il primo fetch, per non lampeggiare OTTIMALE per un istante
+  // prima che il default elegante di useSuitTelemetry venga confermato.
+  const readinessMeta = READINESS_CHIP_META[karen.readinessBand] || READINESS_CHIP_META.OTTIMALE;
+  const showReadinessChip = karen.hasSession && !karen.loading;
 
   const handleNavigate = (route) => {
     navigate(route);
@@ -103,6 +121,14 @@ export default function Sidebar({ currentPage, navigate }) {
                 <Icon name={syncMeta.icon} className={`w-3 h-3 ${syncMeta.spin ? 'af-cloud-syncing' : ''}`} />
                 {syncMeta.label}
               </div>
+              {/* V35.0 — K.A.R.E.N. Daily Brain: readiness sempre visibile,
+                  ogni pagina — non più confinata alla sola Suit Telemetry. */}
+              {showReadinessChip && (
+                <div className={`mt-1.5 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[9px] font-mono tracking-wide w-fit ${readinessMeta.className}`}>
+                  <Icon name={readinessMeta.icon} className="w-3 h-3" />
+                  {readinessMeta.label}
+                </div>
+              )}
               {/* V27.0 — Pillar 3: chip Maximum Carnage, sempre visibile
                   (anche nel drawer mobile) mentre la finestra è attiva. */}
               {derived.isMaxCarnageActive && (

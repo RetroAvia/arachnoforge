@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
 import { Icon } from '../components/Icons.jsx';
 import StaminaBar from '../components/StaminaBar.jsx';
+import { useKarenBrain } from '../context/KarenBrainContext.jsx';
 import DoomsdayClock from '../components/DoomsdayClock.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import Modal from '../components/Modal.jsx';
@@ -72,10 +73,26 @@ function QuotaRow({ q }) {
 
 export default function MissionControl() {
   const { state, actions, timer, derived, sensoryZero, setSensoryZero, TIMER_STATUS, spiderSenseSurgeAt } = useArachnoForge();
+
+  // Fase 2 — Biometric Suit HUD: il Readiness Score calcolato da K.A.R.E.N.
+  // (karen-oracle) sostituisce la vecchia lettura statica della Stamina
+  // SOLO nella card qui sotto — il costo/recupero di state.profile.stamina
+  // che governa Fatigue e XP dimezzati (xpEngine.js) resta invariato e
+  // indipendente da questo hook.
+  // V35.0 — Daily Brain: un solo Provider condiviso (App.jsx) al posto del
+  // montaggio diretto di useSuitTelemetry — stesso identico shape di
+  // ritorno, più `directives` (mission_control/focus_timer/study_window),
+  // il payload esteso della stessa, unica chiamata Claude giornaliera.
+  const karen = useKarenBrain();
+  const { readinessScore } = karen;
   const [selectedMateriaId, setSelectedMateriaId] = useState('');
   const [selectedSfidaId, setSelectedSfidaId] = useState('');
   const [confirmInterruptOpen, setConfirmInterruptOpen] = useState(false);
-  const [awaitingPostFocus, setAwaitingPostFocus] = useState(false);
+  // V35.0 — guardia "sessione non salvata": se l'utente prova ad avviare
+  // un nuovo Focus mentre `timer.awaitingDebrief` è true (blocco
+  // precedente concluso ma non ancora Debriefato), chiede conferma invece
+  // di lasciare che il nuovo Focus si sovrapponga silenziosamente.
+  const [confirmRestartOpen, setConfirmRestartOpen] = useState(false);
   const [questModalOpen, setQuestModalOpen] = useState(false);
   const [questNome, setQuestNome] = useState('');
   const [questReward, setQuestReward] = useState(20);
@@ -89,7 +106,12 @@ export default function MissionControl() {
   const [debriefOpen, setDebriefOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState(null);
 
-  const briefing = useMemo(() => getBriefingForToday(), []);
+  // V35.0 — Daily Brain: la citazione statica a rotazione resta come
+  // fallback elegante — mai rimossa, solo declassata — quando K.A.R.E.N.
+  // non ha ancora generato (o non può generare) il briefing di oggi.
+  const staticBriefing = useMemo(() => getBriefingForToday(), []);
+  const karenBriefingToday = karen.briefing && karen.briefing.date === karen.todayStr ? karen.briefing : null;
+  const karenDirectivesToday = karenBriefingToday ? karen.directives : null;
 
   // Daily Patrol Engine (V23.0, Modulo 2): le quest vivono direttamente in
   // `state.dailyPatrols.quests` — nessuna derivazione, il Context le tiene
@@ -126,14 +148,6 @@ export default function MissionControl() {
     prevQuestsRef.current = dailyQuests;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dailyQuests]);
-
-  const prevStatusRef = useRef(timer.status);
-  useEffect(() => {
-    if (prevStatusRef.current === TIMER_STATUS.FOCUS && timer.status === TIMER_STATUS.IDLE) {
-      setAwaitingPostFocus(true);
-    }
-    prevStatusRef.current = timer.status;
-  }, [timer.status, TIMER_STATUS.FOCUS, TIMER_STATUS.IDLE]);
 
   // V28.1 — Pillar 3 (Spider-Sense Focus Surge): l'animazione di sblocco è
   // "one-shot" — si accende per ~1.1s ad ogni nuovo `spiderSenseSurgeAt`
@@ -187,7 +201,21 @@ export default function MissionControl() {
   );
 
   const previewDifficulty = selectedSfida ? selectedSfida.difficulty : DIFFICULTY.MEDIUM;
-  const previewStaminaCost = computeFocusStaminaCost(state.settings.focusTime, previewDifficulty, derived.skillEffects.staminaCostMultiplier);
+
+  // V35.0 — Focus Timer Adattivo: quando K.A.R.E.N. ha emesso una
+  // direttiva `focus_timer` per oggi (e `settings.karenAdaptiveTimer` non
+  // è disattivato — vedi `derived.karenAdaptiveTimerActive`, calcolato una
+  // sola volta in ArachnoForgeContext.jsx e già quello che governa i
+  // minuti REALI passati a `useFocusTimer`), i minuti mostrati qui
+  // seguono la stessa fonte di verità — mai un'anteprima disallineata dal
+  // timer che poi parte davvero.
+  const effectiveFocusMinutes = derived.karenAdaptiveTimerActive
+    ? derived.karenFocusDirective.focus_minutes
+    : state.settings.focusTime;
+  const effectiveShortBreakMinutes = derived.karenAdaptiveTimerActive
+    ? derived.karenFocusDirective.break_minutes
+    : state.settings.shortBreakTime;
+  const previewStaminaCost = computeFocusStaminaCost(effectiveFocusMinutes, previewDifficulty, derived.skillEffects.staminaCostMultiplier);
 
   // V34.5 — "Timer pulito": le Materie già superate (esame passato,
   // `examPassed`) non hanno più nulla da studiare, quindi spariscono dal
@@ -235,20 +263,35 @@ export default function MissionControl() {
     setSelectedSfidaId('');
   }, []);
 
-  const handleStartFocus = useCallback(() => {
-    setAwaitingPostFocus(false);
+  const doStartFocus = useCallback(() => {
     timer.startFocus(selectedMateriaId || null, selectedSfidaId || null, false);
   }, [timer, selectedMateriaId, selectedSfidaId]);
+
+  // V35.0 — guardia "sessione non salvata": `timer.awaitingDebrief` è ora
+  // derivato direttamente dall'hook (mai una copia locale che si perde a
+  // cambio pagina) — se true, un nuovo Focus concatenerebbe silenziosamente
+  // minuti su una materia/nodo potenzialmente diversi da quelli in sospeso.
+  // Si chiede conferma esplicita invece di permetterlo senza preavviso.
+  const handleStartFocus = useCallback(() => {
+    if (timer.awaitingDebrief) {
+      setConfirmRestartOpen(true);
+      return;
+    }
+    doStartFocus();
+  }, [timer.awaitingDebrief, doStartFocus]);
+
+  const confirmRestartFocus = useCallback(() => {
+    setConfirmRestartOpen(false);
+    doStartFocus();
+  }, [doStartFocus]);
 
   const handleInterrupt = useCallback(() => setConfirmInterruptOpen(true), []);
 
   const confirmInterrupt = useCallback(() => {
     timer.interruptFocus();
-    setAwaitingPostFocus(false);
   }, [timer]);
 
   const handleOverdrive = useCallback(() => {
-    setAwaitingPostFocus(false);
     timer.overdrive();
   }, [timer]);
 
@@ -371,16 +414,56 @@ export default function MissionControl() {
         <p className="text-base text-slate-400 mt-1.5">Karen: sistemi operativi. Centro di comando del ciclo di studio.</p>
       </div>
 
+      {/* V35.0 — Daily Brain: il box briefing mostra ora il vero
+          briefing_text/tactical_advice generato dall'unica chiamata
+          K.A.R.E.N. giornaliera, quando disponibile per oggi — se
+          la telemetria non c'è ancora, degrado con grazia alla citazione
+          statica a rotazione (mai rimossa, solo declassata a fallback). */}
       <div className={`${CARD} flex items-start gap-3`}>
         <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-secondary/10 blur-3xl pointer-events-none" />
         <div className="relative w-9 h-9 rounded-xl bg-secondary/10 flex items-center justify-center text-secondary shrink-0">
           <Icon name="radar" className="w-5 h-5" />
         </div>
-        <div className="relative">
-          <p className="text-xs tracking-widest text-slate-500 mb-1">DAILY BRIEFING</p>
-          <p className="text-base italic text-slate-300 leading-relaxed">"{briefing}"</p>
+        <div className="relative flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
+            <p className="text-xs tracking-widest text-slate-500">
+              {karenBriefingToday ? 'K.A.R.E.N. — DAILY BRIEFING' : 'DAILY BRIEFING'}
+            </p>
+            {karenDirectivesToday?.study_window?.label && (
+              <span className={BADGE.blue}>
+                <Icon name="calendar" className="w-3 h-3" />
+                Picco cognitivo: {karenDirectivesToday.study_window.label}
+              </span>
+            )}
+          </div>
+          {karenBriefingToday ? (
+            <>
+              <p className="text-base italic text-slate-300 leading-relaxed">"{karenBriefingToday.briefing_text}"</p>
+              {karenBriefingToday.tactical_advice && (
+                <p className="text-sm text-secondary mt-2 leading-relaxed">{karenBriefingToday.tactical_advice}</p>
+              )}
+            </>
+          ) : (
+            <p className="text-base italic text-slate-300 leading-relaxed">"{staticBriefing}"</p>
+          )}
         </div>
       </div>
+
+      {karenDirectivesToday?.mission_control?.load_adjustment_pct < 0 && (
+        <div className={`${CARD} flex items-start gap-3 !py-3.5`}>
+          <div className="relative w-9 h-9 rounded-xl bg-accent/15 border border-accent/40 flex items-center justify-center text-accent shrink-0">
+            <Icon name="bolt" className="w-5 h-5" />
+          </div>
+          <div className="relative">
+            <p className="text-sm font-semibold text-accent">
+              Karen consiglia {karenDirectivesToday.mission_control.load_adjustment_pct}% di carico oggi
+            </p>
+            {karenDirectivesToday.mission_control.rationale && (
+              <p className="text-xs text-slate-400 mt-1 leading-relaxed">{karenDirectivesToday.mission_control.rationale}</p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* K.A.R.E.N. QUANTUM ROUTER — Daily Quota HUD (V23.0, Modulo 1) e
           Daily Patrol Engine (V23.0, Modulo 2): entrambi sempre visibili
@@ -599,7 +682,21 @@ export default function MissionControl() {
               </div>
             </div>
 
-            {timer.status === TIMER_STATUS.IDLE && !awaitingPostFocus && (
+            {/* V35.0 — Focus Timer Adattivo: badge visibile SOLO quando
+                `settings.karenAdaptiveTimer` è attivo E K.A.R.E.N. ha
+                davvero sovrascritto i minuti odierni (mai un override
+                silenzioso — l'utente vede sempre perché il timer non è più
+                sui minuti di Core Config). */}
+            {derived.karenAdaptiveTimerActive && timer.status === TIMER_STATUS.IDLE && (
+              <div className="relative -mt-1 mb-1">
+                <span className={BADGE.blue}>
+                  <Icon name="chip" className="w-3 h-3" />
+                  Preset Adattivo K.A.R.E.N.: {derived.karenFocusDirective.preset_label || `${effectiveFocusMinutes}/${effectiveShortBreakMinutes}`}
+                </span>
+              </div>
+            )}
+
+            {timer.status === TIMER_STATUS.IDLE && !timer.awaitingDebrief && (
               <div className="relative w-full mt-6 space-y-3">
                 <Dropdown
                   value={selectedMateriaId}
@@ -619,7 +716,7 @@ export default function MissionControl() {
 
                 <button type="button" onClick={handleStartFocus} className={`w-full ${BTN_PRIMARY}`}>
                   <Icon name="play" className="w-6 h-6" />
-                  Avvia Focus ({state.settings.focusTime} min · -{previewStaminaCost} Stamina)
+                  Avvia Focus ({effectiveFocusMinutes} min · -{previewStaminaCost} Stamina)
                 </button>
                 {selectedSfida && (
                   <p className={`text-[11px] text-center ${DIFFICULTY_META[selectedSfida.difficulty].color}`}>
@@ -630,7 +727,7 @@ export default function MissionControl() {
               </div>
             )}
 
-            {awaitingPostFocus && (
+            {timer.awaitingDebrief && (
               <div className="relative w-full mt-6 space-y-3">
                 <p className="text-[11px] text-center text-slate-500 font-mono">
                   Sessione in sospeso: {timer.pendingFocusMinutes} min{timer.pendingFocusOverdrive ? ' · overdrive attivo' : ''} — non ancora salvata
@@ -642,7 +739,7 @@ export default function MissionControl() {
                   </button>
                   <button type="button" onClick={() => handleTakeBreak(false)} className={BTN_SECONDARY}>
                     <Icon name="pause" className="w-6 h-6" />
-                    PAUSA ({state.settings.shortBreakTime} min)
+                    PAUSA ({effectiveShortBreakMinutes} min)
                   </button>
                   <button type="button" onClick={handleEndAndSave} className={BTN_PRIMARY}>
                     <Icon name="check" className="w-6 h-6" />
@@ -687,7 +784,7 @@ export default function MissionControl() {
         <div className="lg:col-span-2 space-y-6">
           <div className={derived.fatigued ? CARD_ALERT : CARD}>
             {derived.fatigued && !state.settings.calmMode && <div className="af-interference rounded-2xl" />}
-            <StaminaBar stamina={state.profile.stamina} />
+            <StaminaBar stamina={readinessScore} />
           </div>
 
           {/* V27.0 — Pillar 4: Daily Web-Sling, widget compatto e non
@@ -747,6 +844,18 @@ export default function MissionControl() {
         title="Blood Pact"
         message={`Interrompere ora la sessione di Focus costa ${derived.effectiveBloodPactPenalty} XP. Confermi il sacrificio?`}
         confirmLabel="Sacrifica XP"
+      />
+
+      {/* V35.0 — guardia "sessione non salvata": mai più una concatenazione
+          silenziosa di una nuova sessione su una materia/nodo diversi
+          mentre minuti già chiusi restano ancora da Debriefare. */}
+      <ConfirmDialog
+        open={confirmRestartOpen}
+        onClose={() => setConfirmRestartOpen(false)}
+        onConfirm={confirmRestartFocus}
+        title="Sessione Non Salvata"
+        message={`Hai una sessione da ${timer.pendingFocusMinutes} minuti non ancora Debriefata. Avviarne una nuova ora la lascia in sospeso: confermi comunque?`}
+        confirmLabel="Avvia Comunque"
       />
 
       <DebriefModal

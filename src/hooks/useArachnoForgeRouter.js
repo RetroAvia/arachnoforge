@@ -12,7 +12,8 @@ export const ROUTES = {
   STAR_LOG: 'star-log',
   ARMORY: 'armory',
   CORE_CONFIG: 'core-config',
-  MULTIVERSE_SIMULATOR: 'multiverse-simulator'
+  MULTIVERSE_SIMULATOR: 'multiverse-simulator',
+  SUIT_TELEMETRY: 'suit-telemetry'
 };
 
 const VALID_ROUTES = new Set(Object.values(ROUTES));

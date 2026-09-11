@@ -52,6 +52,7 @@ import { isMaxCarnageActive, bumpCriticalActionStreak, deactivateMaxCarnage } fr
 import { canClaimWebSling, rollWebSlingRewardWithPity, isHighTier } from '../utils/webSling.js';
 import { createSfideTreeFromAiIndex } from '../utils/aiIndexParser.js';
 import { validateAdminPassphrase, sandboxStorageKey, guestStorageKey, loadLocalState, saveLocalState } from '../utils/adminOverride.js';
+import { useKarenBrain } from './KarenBrainContext.jsx';
 
 const ArachnoForgeContext = createContext(null);
 
@@ -104,12 +105,41 @@ function applyCriticalAction(profile, combatLog, isCriticalAction) {
   return { profile: nextProfile, combatLog: nextLog };
 }
 
-function updateStreakOnActivity(profile) {
+/**
+ * V35.0 — Ribilanciamento Economico: Tech Token legati anche alla
+ * COSTANZA (giorni di streak consecutivi), non solo al level-up grezzo
+ * (vedi applyXpDeltaWithTokens in xpEngine.js). Bonus one-shot LIFETIME
+ * per soglia (mai retroattivo, mai ripetuto — stesso idioma "flag
+ * one-way" già usato per Symbiote Suit in applyCriticalAction): un
+ * Cadetto che interrompe e ricomincia la streak non può "grindare" lo
+ * stesso traguardo più volte.
+ */
+const STREAK_TOKEN_MILESTONES = [7, 14, 30, 60, 100];
+
+function applyStreakTokenMilestone(profile, combatLog) {
+  const awarded = Array.isArray(profile.streakTokenMilestonesAwarded) ? profile.streakTokenMilestonesAwarded : [];
+  const nextMilestone = STREAK_TOKEN_MILESTONES.find((m) => profile.streak >= m && !awarded.includes(m));
+  if (!nextMilestone) return { profile, combatLog };
+  const nextProfile = {
+    ...profile,
+    techTokens: (Number.isFinite(profile.techTokens) ? profile.techTokens : 0) + 1,
+    streakTokenMilestonesAwarded: [...awarded, nextMilestone]
+  };
+  const nextLog = pushLog(
+    combatLog,
+    `Costanza Premiata — ${nextMilestone} giorni di streak consecutivi: +1 Tech Token bonus.`,
+    'SYSTEM'
+  );
+  return { profile: nextProfile, combatLog: nextLog };
+}
+
+function updateStreakOnActivity(profile, combatLog) {
   const now = nowIso();
-  if (isSameDay(profile.lastActiveDate, now)) return profile;
+  if (isSameDay(profile.lastActiveDate, now)) return { profile, combatLog };
   const gap = daysBetween(profile.lastActiveDate, now);
   const streak = gap === 1 ? profile.streak + 1 : 1;
-  return { ...profile, streak, lastActiveDate: now };
+  const bumped = { ...profile, streak, lastActiveDate: now };
+  return applyStreakTokenMilestone(bumped, combatLog);
 }
 
 /**
@@ -295,13 +325,18 @@ function reducer(state, action) {
 
       let profile = applyXpDeltaWithTokens(state.profile, xpGain);
       profile = { ...profile, hardNodesCompleted: profile.hardNodesCompleted + (isHard ? 1 : 0) };
-      profile = updateStreakOnActivity(profile);
 
       let combatLog = pushLog(
         state.combatLog,
         `Nodo "${target.nome}" completato in ${materia.nome}. +${xpGain} XP${isMaxCarnage ? ' [MAXIMUM CARNAGE x2]' : ''}. Prossimo Spider-Sense tra 7 giorni.`,
         'SUCCESS'
       );
+
+      {
+        const streakUpdate = updateStreakOnActivity(profile, combatLog);
+        profile = streakUpdate.profile;
+        combatLog = streakUpdate.combatLog;
+      }
 
       // Maximum Carnage Mode (V27.0, Pillar 3): un Nodo Hard completato è
       // un'"azione critica" — alimenta lo streak verso il prossimo sblocco.
@@ -404,7 +439,6 @@ function reducer(state, action) {
 
       let profile = applyXpDeltaWithTokens(state.profile, reviewXp);
       profile = { ...profile, reviewsCompleted: (profile.reviewsCompleted || 0) + 1 };
-      profile = updateStreakOnActivity(profile);
 
       let combatLog = pushLog(
         state.combatLog,
@@ -413,6 +447,12 @@ function reducer(state, action) {
           : `Ripasso Manuale forzato su "${target.nome}": prossimo ripasso ${nextReviewDate}. +${reviewXp} XP.`,
         'SUCCESS'
       );
+
+      {
+        const streakUpdate = updateStreakOnActivity(profile, combatLog);
+        profile = streakUpdate.profile;
+        combatLog = streakUpdate.combatLog;
+      }
 
       // Daily Patrol Engine: "Web-Shooter" (Ripassi Azzerati) si aggiorna da solo.
       const questUpdate = applyQuestProgressAndProfile(state, profile, combatLog, QUEST_EVENTS.REVIEW_DONE, {});
@@ -478,7 +518,6 @@ function reducer(state, action) {
         stamina: Math.max(0, profile.stamina - staminaCost),
         overdriveCount: profile.overdriveCount + (wasOverdrive ? 1 : 0)
       };
-      profile = updateStreakOnActivity(profile);
 
       const key = getDateKey();
       const starLog = [...state.starLog];
@@ -530,6 +569,26 @@ function reducer(state, action) {
         `Sessione Focus completata${wasOverdrive ? ' [OVERDRIVE]' : ''}${isMaxCarnage ? ' [MAXIMUM CARNAGE x2]' : ''}${targetNode ? ` su "${targetNode.nome}"` : ''} — Debriefing: ${qualityMeta.label} (${qualityMeta.badge}). +${xpGain} XP, -${staminaCost} Stamina (${focusMinutes} min).`,
         wasOverdrive ? 'OVERDRIVE' : 'FOCUS'
       );
+
+      // V35.0 — "Sessione Blindata": una FOCUS_COMPLETED originata da un
+      // recupero automatico (checkpoint orfano ritrovato al boot, vedi
+      // useFocusTimer.js) riceve una riga di log distinta — stessa,
+      // identica pipeline XP/Stamina/StarLog di qualunque altra sessione,
+      // mai un trattamento numerico speciale.
+      if (action.payload.recovered) {
+        combatLog = pushLog(
+          combatLog,
+          'K.A.R.E.N. — Sessione Focus recuperata automaticamente dopo una chiusura imprevista (tab chiusa/crash prima del Tactical Debriefing).',
+          'SYSTEM'
+        );
+      }
+
+      {
+        const streakUpdate = updateStreakOnActivity(profile, combatLog);
+        profile = streakUpdate.profile;
+        combatLog = streakUpdate.combatLog;
+        nextState = { ...nextState, profile };
+      }
 
       // Maximum Carnage Mode (V27.0, Pillar 3): una sessione conclusa in
       // Overdrive è un'"azione critica" — alimenta lo streak verso il
@@ -885,6 +944,30 @@ function reducer(state, action) {
       };
     }
 
+    // V35.0 — K.A.R.E.N. Daily Brain: registra un singolo "snapshot" di
+    // readiness al giorno (edge-trigger, dedup su lastReadinessLogDateKey
+    // — stesso idioma di RESET_STAMINA/GENERATE_DAILY_PATROLS), dispatchata
+    // dal componente-ponte KarenTrophyBridge (App.jsx) quando un nuovo
+    // briefing K.A.R.E.N. per oggi diventa disponibile. Alimenta SOLO i
+    // contatori lifetime per la Sala Trofei (Aderenza alla Readiness
+    // Biometrica) — compartimenti stagni preservati: nessuna tabella
+    // biometrica viene letta o scritta da qui, si riceve solo un valore
+    // già calcolato altrove (karen-oracle) come payload di un evento.
+    case 'LOG_READINESS_SNAPSHOT': {
+      const { dateKey, band } = action.payload;
+      if (!dateKey || state.profile.lastReadinessLogDateKey === dateKey) return state; // già loggato oggi.
+      const prevDateKey = state.profile.lastReadinessLogDateKey;
+      const isConsecutive = !!prevDateKey && daysBetween(prevDateKey, dateKey) === 1;
+      const profile = {
+        ...state.profile,
+        lastReadinessLogDateKey: dateKey,
+        readinessLogDaysTotal: (state.profile.readinessLogDaysTotal || 0) + 1,
+        readinessLogStreak: isConsecutive ? (state.profile.readinessLogStreak || 0) + 1 : 1,
+        optimalReadinessDaysTotal: (state.profile.optimalReadinessDaysTotal || 0) + (band === 'OTTIMALE' ? 1 : 0)
+      };
+      return { ...state, profile };
+    }
+
     default:
       return state;
   }
@@ -899,6 +982,11 @@ export function ArachnoForgeProvider({ children }) {
   // effect qui sotto, che sostituisce lo stato con HYDRATE non appena la
   // query Supabase risolve.
   const { user, signOut: authSignOut, isGuest } = useAuthContext();
+  // V35.0 — K.A.R.E.N. Daily Brain: unica dipendenza da KarenBrainContext,
+  // montato come antenato in App.jsx. Lettura sola andata (nessuna
+  // scrittura verso le tabelle biometriche da qui) — usata solo per
+  // calcolare gli "effective" minuti del Focus Timer Adattivo più sotto.
+  const karenBrain = useKarenBrain();
   const [state, dispatch] = useReducer(reducer, undefined, createDefaultState);
   const [sensoryZero, setSensoryZero] = useState(false);
   const [toasts, setToasts] = useState([]);
@@ -991,13 +1079,36 @@ export function ArachnoForgeProvider({ children }) {
   // "Il Cervello" del Tactical Timer, isolato in un custom hook dedicato
   // (Fase 2 — Custom Hooks & State Split). Comunica col reducer solo via
   // `dispatch`, che useReducer garantisce stabile fra i render.
+  // V35.0 — Focus Timer Adattivo: quando `settings.karenAdaptiveTimer` è
+  // attivo (default true, disattivabile in Karen OS Settings — mai un
+  // override silenzioso e non disattivabile) e il Daily Brain di oggi ha
+  // prodotto una direttiva `focus_timer`, i minuti effettivi di
+  // Focus/Pausa Breve vengono presi da lì invece che dalle impostazioni
+  // manuali. La Pausa Lunga resta SEMPRE una scelta manuale dell'utente
+  // (mai automatizzata: è un blocco deliberato, non un ciclo ricorrente).
+  // Fallback totale alle impostazioni manuali se karen-oracle non ha
+  // ancora girato oggi (`directives` null) — mai un valore assente.
+  const karenFocusDirective =
+    state.settings.karenAdaptiveTimer !== false && karenBrain.directives && karenBrain.directives.focus_timer
+      ? karenBrain.directives.focus_timer
+      : null;
+  const effectiveFocusTime =
+    karenFocusDirective && Number.isFinite(karenFocusDirective.focus_minutes) && karenFocusDirective.focus_minutes > 0
+      ? karenFocusDirective.focus_minutes
+      : state.settings.focusTime;
+  const effectiveShortBreakTime =
+    karenFocusDirective && Number.isFinite(karenFocusDirective.break_minutes) && karenFocusDirective.break_minutes > 0
+      ? karenFocusDirective.break_minutes
+      : state.settings.shortBreakTime;
+
   const timer = useFocusTimer({
-    focusTime: state.settings.focusTime,
-    shortBreakTime: state.settings.shortBreakTime,
+    focusTime: effectiveFocusTime,
+    shortBreakTime: effectiveShortBreakTime,
     longBreakTime: state.settings.longBreakTime,
     dispatch,
     audio,
-    pushToast
+    pushToast,
+    userId: user.id
   });
 
   // V26.0 — Cloud State Sync (Pillar 3): boot fetch. Un'unica query alla
@@ -1475,6 +1586,11 @@ export function ArachnoForgeProvider({ children }) {
         pushToast('Sandbox disattivata — profilo Cloud ripristinato.', 'info');
         audio.playWebClick();
       },
+      // V35.0 — K.A.R.E.N. Daily Brain: bookkeeping silenzioso, lato
+      // Cloud State, dell'aderenza alla readiness biometrica (Sala
+      // Trofei). Dispatchata dal componente-ponte KarenTrophyBridge —
+      // mai un'azione visibile/rumorosa (nessun toast, nessun suono).
+      logReadinessSnapshot: (dateKey, band) => dispatch({ type: 'LOG_READINESS_SNAPSHOT', payload: { dateKey, band } }),
       // V26.0 — Pillar 2: Logout dal Nexus Gate (o uscita dalla Modalità
       // Ospite — stesso ingresso unico, vedi AuthContext.signOut). Non
       // serve pulire lo stato qui: smontando ArachnoForgeProvider (App.jsx
@@ -1604,10 +1720,14 @@ export function ArachnoForgeProvider({ children }) {
       // ancora disponibile — letto dal widget in Mission Control.
       canClaimWebSling: canClaimWebSling(state.profile),
       // V31.3 — Bounty Board (Friction Analytics).
-      bountyTargets
+      bountyTargets,
+      // V35.0 — K.A.R.E.N. Daily Brain: Focus Timer Adattivo, letto dal
+      // widget del Tactical Timer per il badge "Preset Adattivo K.A.R.E.N.".
+      karenAdaptiveTimerActive: !!karenFocusDirective,
+      karenFocusDirective
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, nowTick, spiderSense, progression, karenAutoRouter, primaryTarget, skillEffects]);
+  }, [state, nowTick, spiderSense, progression, karenAutoRouter, primaryTarget, skillEffects, karenFocusDirective]);
 
   const value = useMemo(
     () => ({
