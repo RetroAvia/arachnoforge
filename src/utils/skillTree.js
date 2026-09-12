@@ -4,6 +4,14 @@ import { DIFFICULTY } from './xpEngine.js';
 export const NODE_STATUS = {
   LOCKED: 'LOCKED',
   AVAILABLE: 'AVAILABLE',
+  // V35.5 — "In Corso": stato puramente DERIVATO (mai persistito — nessuna
+  // migrazione di schema necessaria), attivato in automatico dal primo
+  // minuto di Focus Timer investito sul nodo (`sfida.focusMinutes > 0`,
+  // già tracciato dal V16.0 per tutt'altro scopo). Sostituisce AVAILABLE
+  // ovunque il nodo sarebbe altrimenti liberamente completabile, e torna
+  // automaticamente ad AVAILABLE se `focusMinutes` viene azzerato (nessun
+  // flag manuale da disattivare, nessuno stato "bloccato").
+  IN_PROGRESS: 'IN_PROGRESS',
   COMPLETED: 'COMPLETED',
   NEEDS_REVIEW: 'NEEDS_REVIEW'
 };
@@ -41,13 +49,21 @@ export function deriveNodeStatus(sfida, siblings = []) {
     return isReviewDue(sfida.nextReviewDate) ? NODE_STATUS.NEEDS_REVIEW : NODE_STATUS.COMPLETED;
   }
 
+  // V35.5 — "In Corso": un nodo altrimenti libero (foglia, o Boss già
+  // sbloccato) passa a IN_PROGRESS non appena porta minuti di Focus
+  // registrati — zero costo di calcolo aggiuntivo, stesso identico campo
+  // già scritto da FOCUS_COMPLETED. Un Boss ancora LOCKED resta LOCKED a
+  // prescindere: i suoi eventuali minuti propri non lo sbloccano prima
+  // che i figli siano completati.
+  const isOpen = (status) => (sfida.focusMinutes > 0 ? NODE_STATUS.IN_PROGRESS : status);
+
   const children = directChildrenOf(sfida, siblings);
   if (children.length > 0) {
     const allChildrenDone = children.every((c) => c.status === PERSISTED_STATUS.COMPLETED);
-    return allChildrenDone ? NODE_STATUS.AVAILABLE : NODE_STATUS.LOCKED;
+    return allChildrenDone ? isOpen(NODE_STATUS.AVAILABLE) : NODE_STATUS.LOCKED;
   }
 
-  return NODE_STATUS.AVAILABLE;
+  return isOpen(NODE_STATUS.AVAILABLE);
 }
 
 /**

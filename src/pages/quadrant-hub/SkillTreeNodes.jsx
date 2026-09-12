@@ -29,6 +29,11 @@ import { CARD, BADGE, RADIAL_GLOW } from '../../utils/designSystem.js';
 export const STATUS_META = {
   LOCKED: { label: 'In Attesa', text: 'text-slate-400', border: 'border-slate-500/30', badge: BADGE.slate, icon: 'gear', glow: null },
   AVAILABLE: { label: 'Disponibile', text: 'text-secondary', border: 'border-secondary/40', badge: BADGE.blue, icon: 'target', glow: RADIAL_GLOW.blue },
+  // V35.5 — "In Corso": tinta Ciano fissa (vedi designSystem.js) — mai
+  // AVAILABLE (blu/Secondario) né COMPLETED (verde), uno stato visivamente
+  // distinto a colpo d'occhio per un nodo su cui è già stato investito
+  // tempo di Focus reale ma non ancora chiuso.
+  IN_PROGRESS: { label: 'In Corso', text: 'text-cyan-400', border: 'border-cyan-400/40', badge: BADGE.cyan, icon: 'bolt', glow: RADIAL_GLOW.cyan },
   COMPLETED: { label: 'Completato', text: 'text-emerald-400', border: 'border-emerald-400/40', badge: BADGE.green, icon: 'check', glow: RADIAL_GLOW.green },
   NEEDS_REVIEW: { label: 'Spider-Sense', text: 'text-accent', border: 'border-accent/40', badge: BADGE.amber, icon: 'alertTriangle', glow: RADIAL_GLOW.amber }
 };

@@ -189,6 +189,23 @@ export default function Sidebar({ currentPage, navigate }) {
             </span>
             <span className="text-sm font-mono font-bold text-accent af-mono-nums">{profile.techTokens || 0}</span>
           </div>
+          {/* V35.5 — Streak Shield: indicatore condizionale, visibile SOLO
+              quando c'è almeno 1 scudo in cassa — un Cadetto a 0 scudi non
+              deve leggere un ennesimo contatore a zero fisso sotto la
+              streak, stessa filosofia "degrado con grazia" già in uso nel
+              resto della Sidebar. */}
+          {profile.streakShields > 0 && (
+            <div
+              className="mt-2 flex items-center justify-between rounded-lg bg-cyan-500/10 border border-cyan-400/25 px-2.5 py-1.5"
+              title="Scudi Streak: proteggono automaticamente la streak se salti un giorno."
+            >
+              <span className="text-[10px] tracking-widest text-cyan-300/90 flex items-center gap-1.5">
+                <Icon name="shield" className="w-3.5 h-3.5" />
+                STREAK SHIELD
+              </span>
+              <span className="text-sm font-mono font-bold text-cyan-300 af-mono-nums">{profile.streakShields}</span>
+            </div>
+          )}
         </div>
 
         <nav className="relative flex-1 overflow-y-auto af-scroll px-3 py-4 space-y-1">

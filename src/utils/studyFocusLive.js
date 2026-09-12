@@ -51,7 +51,10 @@ function liveStatusOf(materie, materiaId, sfidaId) {
  * ancora aperto (fail open) piuttosto che farlo sparire silenziosamente. */
 function isStillOpenTopic(materie, materiaId, sfidaId) {
   const status = liveStatusOf(materie, materiaId, sfidaId);
-  return status === null || status === NODE_STATUS.AVAILABLE;
+  // V35.5 — "In Corso": un argomento su cui l'utente ha già investito
+  // tempo di Focus resta un "lavoro aperto" a tutti gli effetti — non va
+  // scambiato per completato solo perché ha smesso di essere AVAILABLE.
+  return status === null || status === NODE_STATUS.AVAILABLE || status === NODE_STATUS.IN_PROGRESS;
 }
 
 /** Un ripasso è ancora da fare oggi solo se lo stato live è tornato

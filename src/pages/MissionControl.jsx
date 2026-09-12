@@ -237,7 +237,14 @@ export default function MissionControl() {
 
   const studiableNodes = useMemo(() => {
     if (!selectedMateria || !Array.isArray(selectedMateria.sfide)) return [];
-    return selectedMateria.sfide.filter((s) => deriveNodeStatus(s, selectedMateria.sfide) === NODE_STATUS.AVAILABLE);
+    // V35.5 — "In Corso": un nodo su cui è già stato investito tempo di
+    // Focus resta scelto come target valido per la sessione successiva
+    // (deve poter continuare lo stesso argomento), non solo i nodi mai
+    // ancora toccati.
+    return selectedMateria.sfide.filter((s) => {
+      const status = deriveNodeStatus(s, selectedMateria.sfide);
+      return status === NODE_STATUS.AVAILABLE || status === NODE_STATUS.IN_PROGRESS;
+    });
   }, [selectedMateria]);
 
   const selectedSfida = useMemo(

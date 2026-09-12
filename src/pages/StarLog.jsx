@@ -267,6 +267,47 @@ export default function StarLog() {
       (t) => typeof t.unlockedAt === 'string' && t.unlockedAt.slice(0, 10) >= cutoffKey
     );
     const hasActivity = recentLog.length > 0 || examsGraded.length > 0 || trophiesUnlocked.length > 0;
+
+    // V35.5 — Ripartizione per Materia: quanti minuti di Focus di questa
+    // settimana sono andati su ciascuna Materia. `materiaId` è già
+    // tracciato su ogni FOCUS_SESSION dal V20.0 (Daily Patrol) — zero nuovo
+    // campo persistito, solo un'aggregazione di sola lettura. Il nome
+    // viene risolto dal vivo su `state.materie` (mai congelato/stale: se
+    // una Materia viene rinominata, la ripartizione della settimana in
+    // corso riflette subito il nome aggiornato).
+    const materieById = new Map((state.materie || []).map((m) => [m.id, m.nome]));
+    const byMateria = new Map();
+    focusEntries.forEach((e) => {
+      const key = e.materiaId || 'GENERIC';
+      if (!byMateria.has(key)) byMateria.set(key, { materiaId: e.materiaId || null, minutes: 0, sessions: 0 });
+      const entry = byMateria.get(key);
+      entry.minutes += e.minutes || 0;
+      entry.sessions += 1;
+    });
+    const materiaBreakdown = Array.from(byMateria.values())
+      .map((e) => ({
+        ...e,
+        materiaNome: e.materiaId ? (materieById.get(e.materiaId) || 'Materia rimossa') : 'Focus generico'
+      }))
+      .sort((a, b) => b.minutes - a.minutes);
+
+    // V35.5 — Confronto settimana su settimana: stessa identica pipeline
+    // di calcolo applicata ai 7 giorni PRECEDENTI il cutoff corrente (una
+    // finestra scorrevole distinta, mai sovrapposta a `recentLog`), solo
+    // per dare un senso di trend a "The Weekly Bugle" — nessun nuovo dato
+    // persistito, puro confronto derivato dallo stesso `starLog`.
+    const prevCutoffKey = getDateKey(new Date(Date.now() - 2 * WEEK_MS));
+    const previousLog = state.starLog.filter(
+      (e) => e && typeof e.dateKey === 'string' && e.dateKey >= prevCutoffKey && e.dateKey < cutoffKey
+    );
+    const prevFocusMinutes = previousLog.filter((e) => e.type === 'FOCUS_MINUTES').reduce((sum, e) => sum + (e.minutes || 0), 0);
+    const prevSessions = previousLog.filter((e) => e.type === 'FOCUS_SESSION').length;
+    const prevTotalXp = previousLog.reduce((sum, e) => sum + (e.xp || 0), 0);
+    // Percentuale onesta: se la settimana precedente era a zero minuti,
+    // un "+∞%" non racconterebbe nulla di utile — meglio nessun confronto
+    // percentuale piuttosto che un numero fuorviante.
+    const minutesDeltaPct = prevFocusMinutes > 0 ? Math.round(((focusMinutes - prevFocusMinutes) / prevFocusMinutes) * 100) : null;
+
     return {
       cutoffKey,
       focusMinutes,
@@ -277,9 +318,11 @@ export default function StarLog() {
       bossLosses,
       examsGraded,
       trophiesUnlocked,
-      hasActivity
+      hasActivity,
+      materiaBreakdown,
+      previousWeek: { focusMinutes: prevFocusMinutes, sessions: prevSessions, totalXp: prevTotalXp, minutesDeltaPct }
     };
-  }, [state.starLog, state.gradeHistory, derived.trophyList]);
+  }, [state.starLog, state.gradeHistory, state.materie, derived.trophyList]);
 
   // V31.3 — Spider-Sense Surge Analytics: prima d'ora il bonus finiva
   // impastato dentro l'XP totale della sessione, invisibile a posteriori
@@ -437,9 +480,31 @@ export default function StarLog() {
             <Icon name="chartBar" className="w-5 h-5 text-primary" />
             <span className={H2}>THE WEEKLY BUGLE</span>
           </div>
-          <span className="text-xs font-mono text-slate-500">
-            Edizione dal {formatDateOnlyHuman(weeklyBugle.cutoffKey)} a oggi
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-mono text-slate-500">
+              Edizione dal {formatDateOnlyHuman(weeklyBugle.cutoffKey)} a oggi
+            </span>
+            {/* V35.5 — Confronto settimana su settimana: badge di trend,
+                mostrato solo quando esiste un termine di paragone onesto
+                (la settimana scorsa aveva già minuti registrati). */}
+            {weeklyBugle.previousWeek.minutesDeltaPct !== null && (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-mono ${
+                  weeklyBugle.previousWeek.minutesDeltaPct >= 0
+                    ? 'bg-emerald-900/50 text-emerald-300'
+                    : 'bg-primary/15 text-primary'
+                }`}
+                title={`Settimana scorsa: ${weeklyBugle.previousWeek.focusMinutes} min Focus`}
+              >
+                <Icon
+                  name="trendUp"
+                  className={`w-3.5 h-3.5 ${weeklyBugle.previousWeek.minutesDeltaPct < 0 ? 'rotate-180' : ''}`}
+                />
+                {weeklyBugle.previousWeek.minutesDeltaPct >= 0 ? '+' : ''}
+                {weeklyBugle.previousWeek.minutesDeltaPct}% vs settimana scorsa
+              </span>
+            )}
+          </div>
         </div>
 
         {!weeklyBugle.hasActivity ? (
@@ -494,6 +559,34 @@ export default function StarLog() {
                     {t.nome}
                   </p>
                 ))}
+              </div>
+            )}
+
+            {/* V35.5 — Ripartizione per Materia: dove sono effettivamente
+                andati i minuti di Focus di questa settimana, una barra per
+                Materia ordinata dalla più studiata alla meno studiata. */}
+            {weeklyBugle.materiaBreakdown.length > 0 && (
+              <div className="relative space-y-2 pt-1 border-t border-white/5">
+                <p className="text-xs tracking-widest text-slate-500 font-mono">RIPARTIZIONE PER MATERIA</p>
+                {weeklyBugle.materiaBreakdown.map((m) => {
+                  const pct = weeklyBugle.focusMinutes > 0 ? Math.round((m.minutes / weeklyBugle.focusMinutes) * 100) : 0;
+                  return (
+                    <div key={m.materiaId || 'GENERIC'} className="space-y-1">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-300 truncate">{m.materiaNome}</span>
+                        <span className="text-xs font-mono text-slate-500 shrink-0 ml-2">
+                          {m.minutes} min · {m.sessions} sess.
+                        </span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-surface/80 border border-secondary/15 overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-secondary to-secondary-dark shadow-secondary-glow transition-all duration-500"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </>

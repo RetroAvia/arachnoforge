@@ -79,7 +79,17 @@ export function createDefaultState() {
       lastReadinessLogDateKey: null,
       readinessLogDaysTotal: 0,
       readinessLogStreak: 0,
-      optimalReadinessDaysTotal: 0
+      optimalReadinessDaysTotal: 0,
+      // V35.5 — Streak Shield (stile Duolingo): scudi disponibili (cap
+      // STREAK_SHIELD_CAP in ArachnoForgeContext.jsx), assegnati in modo
+      // automatico 1 a calendar-month tramite grantMonthlyStreakShield —
+      // nessuna attivazione manuale, nessun rischio di "dimenticare" di
+      // proteggere la streak. `lastStreakShieldGrantMonthKey` è la chiave
+      // "YYYY-MM" dell'ultimo mese già premiato (edge-trigger, mai due
+      // scudi nello stesso mese solare).
+      streakShields: 0,
+      streakShieldsUsedTotal: 0,
+      lastStreakShieldGrantMonthKey: null
     },
     settings: {
       focusTime: 25,
@@ -256,7 +266,13 @@ export function hydrateState(rawState) {
     lastReadinessLogDateKey: typeof rawProfile.lastReadinessLogDateKey === 'string' ? rawProfile.lastReadinessLogDateKey : null,
     readinessLogDaysTotal: Number.isFinite(rawProfile.readinessLogDaysTotal) && rawProfile.readinessLogDaysTotal >= 0 ? rawProfile.readinessLogDaysTotal : 0,
     readinessLogStreak: Number.isFinite(rawProfile.readinessLogStreak) && rawProfile.readinessLogStreak >= 0 ? rawProfile.readinessLogStreak : 0,
-    optimalReadinessDaysTotal: Number.isFinite(rawProfile.optimalReadinessDaysTotal) && rawProfile.optimalReadinessDaysTotal >= 0 ? rawProfile.optimalReadinessDaysTotal : 0
+    optimalReadinessDaysTotal: Number.isFinite(rawProfile.optimalReadinessDaysTotal) && rawProfile.optimalReadinessDaysTotal >= 0 ? rawProfile.optimalReadinessDaysTotal : 0,
+    // V35.5 — Blindatura Streak Shield: stessa identica logica "mai un
+    // valore sporco propagato" già applicata sopra a tutti gli altri
+    // contatori lifetime del profilo.
+    streakShields: Number.isFinite(rawProfile.streakShields) && rawProfile.streakShields >= 0 ? rawProfile.streakShields : 0,
+    streakShieldsUsedTotal: Number.isFinite(rawProfile.streakShieldsUsedTotal) && rawProfile.streakShieldsUsedTotal >= 0 ? rawProfile.streakShieldsUsedTotal : 0,
+    lastStreakShieldGrantMonthKey: typeof rawProfile.lastStreakShieldGrantMonthKey === 'string' ? rawProfile.lastStreakShieldGrantMonthKey : null
   };
 
   return {

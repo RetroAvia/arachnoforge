@@ -37,7 +37,7 @@ import { computeNextReviewDate, REVIEW_RATING } from '../utils/spiderSense.js';
 import { isBountyTarget, computeFriction } from '../utils/friction.js';
 import { isGoblinProtocol } from '../utils/materiaMeta.js';
 import { computeWeightedAverage, isGradedMateria } from '../utils/gpaEngine.js';
-import { nowIso, getDateKey, isSameDay, daysBetween, crossedThreeAM, daysUntilDateOnly } from '../utils/dateUtils.js';
+import { nowIso, getDateKey, isSameDay, daysBetween, crossedThreeAM, daysUntilDateOnly, currentMonthKey } from '../utils/dateUtils.js';
 import { evaluateTrophies } from '../data/trophies.js';
 import { TIMER_STATUS } from '../hooks/useTimerEngine.js';
 import { useFocusTimer } from '../hooks/useFocusTimer.js';
@@ -133,13 +133,83 @@ function applyStreakTokenMilestone(profile, combatLog) {
   return { profile: nextProfile, combatLog: nextLog };
 }
 
+// V35.5 — Streak Shield ("Scudo Streak", stile Duolingo): cap
+// sull'accumulo — stesso valore del limite Duolingo storico (max 2 scudi
+// contemporaneamente), scelto apposta per restare un salvagente per le
+// emergenze occasionali, mai un "jolly" illimitato che azzera il valore
+// della streak stessa.
+const STREAK_SHIELD_CAP = 2;
+
+/**
+ * Assegna automaticamente 1 Streak Shield ad ogni nuovo mese solare
+ * (edge-trigger su `currentMonthKey()`, stesso idioma di
+ * `applyStreakTokenMilestone` — un flag "ultima chiave già premiata", mai
+ * un doppio assegno nello stesso mese). Nessuna attivazione manuale:
+ * protegge fin dal primo giorno del mese, silenziosamente, finché non
+ * raggiunge il cap.
+ */
+function grantMonthlyStreakShield(profile, combatLog) {
+  const monthKey = currentMonthKey();
+  if (profile.lastStreakShieldGrantMonthKey === monthKey) return { profile, combatLog };
+  const current = Number.isFinite(profile.streakShields) ? profile.streakShields : 0;
+  if (current >= STREAK_SHIELD_CAP) {
+    // Il mese è comunque "consumato" ai fini del trigger, anche se il
+    // cassetto è già pieno: evita di ricontrollare (e ri-loggare "pieno")
+    // ad ogni singola attività per il resto del mese.
+    return { profile: { ...profile, lastStreakShieldGrantMonthKey: monthKey }, combatLog };
+  }
+  const nextProfile = {
+    ...profile,
+    streakShields: current + 1,
+    lastStreakShieldGrantMonthKey: monthKey
+  };
+  const nextLog = pushLog(
+    combatLog,
+    `K.A.R.E.N. — Nuovo Streak Shield assegnato (${current + 1}/${STREAK_SHIELD_CAP}): copre automaticamente un giorno saltato senza spezzare la streak.`,
+    'SYSTEM'
+  );
+  return { profile: nextProfile, combatLog: nextLog };
+}
+
 function updateStreakOnActivity(profile, combatLog) {
   const now = nowIso();
   if (isSameDay(profile.lastActiveDate, now)) return { profile, combatLog };
   const gap = daysBetween(profile.lastActiveDate, now);
-  const streak = gap === 1 ? profile.streak + 1 : 1;
-  const bumped = { ...profile, streak, lastActiveDate: now };
-  return applyStreakTokenMilestone(bumped, combatLog);
+
+  let bumped;
+  let nextLog = combatLog;
+
+  if (gap === 1) {
+    bumped = { ...profile, streak: profile.streak + 1, lastActiveDate: now };
+  } else {
+    // V35.5 — Streak Shield: `gap - 1` giorni di calendario sono stati
+    // saltati del tutto. Se il Cadetto ha abbastanza scudi in cassa per
+    // coprirli TUTTI, la streak resta esattamente dov'era (mai un
+    // incremento indebito, mai un reset) e gli scudi usati vengono
+    // scalati; altrimenti (copertura solo parziale o nulla) si applica il
+    // normale reset a 1 — nessuna protezione "a metà" che complicherebbe
+    // silenziosamente la lettura del numero mostrato in Sidebar.
+    const skippedDays = Math.max(0, gap - 1);
+    const availableShields = Number.isFinite(profile.streakShields) ? profile.streakShields : 0;
+    if (skippedDays > 0 && availableShields >= skippedDays) {
+      bumped = {
+        ...profile,
+        streakShields: availableShields - skippedDays,
+        streakShieldsUsedTotal: (Number.isFinite(profile.streakShieldsUsedTotal) ? profile.streakShieldsUsedTotal : 0) + skippedDays,
+        lastActiveDate: now
+      };
+      nextLog = pushLog(
+        nextLog,
+        `K.A.R.E.N. — Streak Shield attivato: ${skippedDays} giorno/i saltato/i coperto/i, streak preservata a ${profile.streak}.`,
+        'SYSTEM'
+      );
+    } else {
+      bumped = { ...profile, streak: 1, lastActiveDate: now };
+    }
+  }
+
+  const shieldGrant = grantMonthlyStreakShield(bumped, nextLog);
+  return applyStreakTokenMilestone(shieldGrant.profile, shieldGrant.combatLog);
 }
 
 /**
@@ -303,7 +373,12 @@ function reducer(state, action) {
       const target = materia.sfide.find((s) => s.id === sfidaId);
       if (!target) return state;
       const displayStatus = deriveNodeStatus(target, materia.sfide);
-      if (displayStatus !== NODE_STATUS.AVAILABLE) return state; // Blindatura: doppio click non ridà XP.
+      // V35.5 — "In Corso": un nodo con Focus già investito (IN_PROGRESS)
+      // deve restare completabile esattamente come uno AVAILABLE — SENZA
+      // questa aggiunta un nodo su cui l'utente ha già studiato non
+      // potrebbe più essere chiuso (regressione severa: la Blindatura
+      // anti-doppio-click bloccherebbe anche il primo click legittimo).
+      if (displayStatus !== NODE_STATUS.AVAILABLE && displayStatus !== NODE_STATUS.IN_PROGRESS) return state; // Blindatura: doppio click non ridà XP.
       const isFatigued = state.profile.stamina < FATIGUE_STAMINA_THRESHOLD;
       const isHard = target.difficulty === DIFFICULTY.HARD;
       const skillEffects = computeSkillEffects(state.profile.unlockedSkills);

@@ -77,7 +77,12 @@ export const BADGE = {
   red: 'inline-flex items-center gap-1 bg-primary/15 text-primary rounded-full px-3 py-1 text-xs font-mono',
   green: 'inline-flex items-center gap-1 bg-emerald-900/50 text-emerald-300 rounded-full px-3 py-1 text-xs font-mono',
   amber: 'inline-flex items-center gap-1 bg-accent/15 text-accent rounded-full px-3 py-1 text-xs font-mono',
-  slate: 'inline-flex items-center gap-1 bg-slate-800/60 text-slate-300 rounded-full px-3 py-1 text-xs font-mono'
+  slate: 'inline-flex items-center gap-1 bg-slate-800/60 text-slate-300 rounded-full px-3 py-1 text-xs font-mono',
+  // V35.5 — "In Corso": tinta Ciano FISSA e universale (come l'Emerald del
+  // successo), volutamente indipendente dal costume — segnala uno stato di
+  // avanzamento "a metà" che deve restare riconoscibile a colpo d'occhio
+  // anche quando il costume attivo usa già ciano/blu come colore di ruolo.
+  cyan: 'inline-flex items-center gap-1 bg-cyan-900/50 text-cyan-300 rounded-full px-3 py-1 text-xs font-mono'
 };
 
 /** Glow radiale dietro un nodo/riquadro completato — mai un box piatto, sempre un bagliore atmosferico. */
@@ -85,5 +90,6 @@ export const RADIAL_GLOW = {
   green: 'absolute -inset-3 rounded-full bg-emerald-500/25 blur-2xl pointer-events-none',
   blue: 'absolute -inset-3 rounded-full bg-secondary/25 blur-2xl pointer-events-none',
   red: 'absolute -inset-3 rounded-full bg-primary/25 blur-2xl pointer-events-none',
-  amber: 'absolute -inset-3 rounded-full bg-accent/25 blur-2xl pointer-events-none'
+  amber: 'absolute -inset-3 rounded-full bg-accent/25 blur-2xl pointer-events-none',
+  cyan: 'absolute -inset-3 rounded-full bg-cyan-500/25 blur-2xl pointer-events-none'
 };

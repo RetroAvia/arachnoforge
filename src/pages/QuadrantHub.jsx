@@ -1094,12 +1094,21 @@ export default function QuadrantHub() {
       <Modal open={!!nodeDetail} onClose={requestCloseNodeDetail} title={nodeDetail?.nome || ''}>
         {nodeDetail && selectedMateria && (() => {
           const status = deriveNodeStatus(nodeDetail, selectedSfide);
-          const meta = STATUS_META[status];
+          // V35.5 — "In Corso" è un valore NODE_STATUS aggiuntivo: senza
+          // questo fallback un lookup su un nodo con minuti di Focus già
+          // investiti tornerebbe `undefined` qui (STATUS_META.LOCKED è già
+          // il fallback usato altrove in SkillTreeNodes.jsx per lo stesso
+          // motivo di robustezza).
+          const meta = STATUS_META[status] || STATUS_META.LOCKED;
           const diffMeta = DIFFICULTY_META[nodeDetail.difficulty];
           const ownChildren = directChildrenOf(nodeDetail, selectedSfide);
           const isBoss = ownChildren.length > 0;
           const pendingOwnChildren = ownChildren.filter((c) => c.status !== 'COMPLETED').length;
-          const canComplete = status === NODE_STATUS.AVAILABLE;
+          // V35.5 — un nodo "In Corso" (Focus già investito) resta
+          // liberamente completabile esattamente come uno "Disponibile":
+          // IN_PROGRESS è solo un segnale visivo di avanzamento, mai un
+          // secondo cancello da sbloccare.
+          const canComplete = status === NODE_STATUS.AVAILABLE || status === NODE_STATUS.IN_PROGRESS;
           const bossLocked = isBoss && status === NODE_STATUS.LOCKED;
           const parentOptions = selectedSfide.filter(
             (s) => s.id !== nodeDetail.id && !isDescendant(selectedSfide, nodeDetail.id, s.id)
