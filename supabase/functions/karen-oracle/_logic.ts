@@ -432,6 +432,17 @@ function normalizeMaterie(raw: unknown): MateriaSnapshot[] {
 }
 
 export type StudyTopicCandidate = {
+  // V35.4 — id/materiaId: MAI mostrati a Claude come informazione su cui
+  // ragionare (il prompt le ignora comunque), servono solo lato client
+  // per la riconciliazione live (vedi nota su MAX_FORCE_REGENERATIONS_PER_DAY
+  // e defaultStudyFocusDirective più sotto): appena l'utente completa un
+  // nodo/risolve un ripasso, il client può capire ISTANTANEAMENTE — senza
+  // aspettare una nuova generazione — che quel candidato non è più
+  // valido, confrontando questo id con lo stato REALE (sempre aggiornato)
+  // del Cloud State, invece di fidarsi di un nome che potrebbe anche
+  // essere stato rinominato nel frattempo.
+  sfidaId: string;
+  materiaId: string;
   materia: string;
   argomento: string;
   obiettivo: string;
@@ -482,6 +493,8 @@ export function selectStudyFocusCandidates(rawMaterie: unknown, todayKey: string
     materia.sfide.filter((s) => isSfidaAvailable(s, materia.sfide)).forEach((s) => {
       if (argomentiDisponibili.length >= MAX_AVAILABLE_TOPICS) return;
       argomentiDisponibili.push({
+        sfidaId: s.id,
+        materiaId: materia.id,
         materia: materia.nome,
         argomento: s.nome,
         obiettivo: s.obiettivo,
@@ -499,6 +512,8 @@ export function selectStudyFocusCandidates(rawMaterie: unknown, todayKey: string
       .forEach((s) => {
         if (ripassiScaduti.length >= MAX_DUE_REVIEWS) return;
         ripassiScaduti.push({
+          sfidaId: s.id,
+          materiaId: materia.id,
           materia: materia.nome,
           argomento: s.nome,
           obiettivo: s.obiettivo,
@@ -593,8 +608,22 @@ Regole ferree:
 // per briefingText/tacticalAdvice qui sopra.
 // ---------------------------------------------------------------------
 export type StudyFocusDirective = {
-  argomento_principale: { materia: string; argomento: string; metodo: string; rationale: string } | null;
-  ripassi_da_non_saltare: { materia: string; argomento: string; nota: string }[];
+  // `sfidaId`/`materiaId` sono recuperati DOPO la risposta di Claude,
+  // riabbinando il testo libero (materia/argomento) al paniere originale di
+  // candidati (vedi findMatchingCandidate) — mai chiesti a Claude stessa.
+  // Servono SOLO alla riconciliazione live lato client (vedi
+  // src/utils/studyFocusLive.js): quando l'utente completa il nodo, il
+  // client confronta questi id con lo stato REALE e vivo di app_state.materie
+  // per capire se il piano è ancora valido o va promosso all'opzione
+  // successiva — zero nuove chiamate AI per questo aggiornamento.
+  argomento_principale: { materia: string; argomento: string; metodo: string; rationale: string; sfidaId: string | null; materiaId: string | null } | null;
+  ripassi_da_non_saltare: { materia: string; argomento: string; nota: string; sfidaId: string | null; materiaId: string | null }[];
+  // Alternative reali già pronte (stesso paniere del principale) cosi' il
+  // client può promuoverne una istantaneamente, senza aspettare la
+  // rigenerazione AI del giorno dopo, quando il principale viene completato.
+  // Costruito SEMPRE deterministicamente da noi (mai da Claude): sono gli
+  // `argomenti_disponibili` rimasti fuori dalla scelta di `argomento_principale`.
+  altre_opzioni: { materia: string; argomento: string; sfidaId: string; materiaId: string }[];
 };
 
 export type Directives = {
@@ -628,8 +657,18 @@ function defaultStudyFocusDirective(studyFocus: StudyFocusSnapshot): StudyFocusD
       nota:
         (r.tentativiFalliti ?? 0) > (r.tentativiSuccessi ?? 0) && (r.tentativiFalliti ?? 0) > 0
           ? `Storico di ripassi difficili su questo argomento: dedica più tempo del solito, non solo una scorsa veloce. ${genericMethodForDifficulty(r.difficulty, 'RIPASSO_SCADUTO')}`
-          : genericMethodForDifficulty(r.difficulty, 'RIPASSO_SCADUTO')
+          : genericMethodForDifficulty(r.difficulty, 'RIPASSO_SCADUTO'),
+      sfidaId: r.sfidaId,
+      materiaId: r.materiaId
     }));
+
+  // Tutti gli "argomenti_disponibili" non scelti come principale diventano
+  // opzioni pronte per la promozione client-side istantanea (vedi commento
+  // sul tipo StudyFocusDirective sopra) — mai un piano limitato a un solo
+  // argomento senza alternative quando ne esistono di reali.
+  const altreOpzioni = studyFocus.argomenti_disponibili
+    .filter((c) => !primary || c.sfidaId !== primary.sfidaId)
+    .map((c) => ({ materia: c.materia, argomento: c.argomento, sfidaId: c.sfidaId, materiaId: c.materiaId }));
 
   return {
     argomento_principale: primary
@@ -640,10 +679,13 @@ function defaultStudyFocusDirective(studyFocus: StudyFocusSnapshot): StudyFocusD
           rationale:
             primary.tipo === 'DISPONIBILE'
               ? `Prossimo argomento disponibile in ${primary.materia}, fra le materie più urgenti del piano di studi.`
-              : `Nessun nuovo argomento disponibile nelle materie in focus: il ripasso più scaduto (${primary.materia}) diventa la priorità operativa di oggi.`
+              : `Nessun nuovo argomento disponibile nelle materie in focus: il ripasso più scaduto (${primary.materia}) diventa la priorità operativa di oggi.`,
+          sfidaId: primary.sfidaId,
+          materiaId: primary.materiaId
         }
       : null,
-    ripassi_da_non_saltare: ripassi
+    ripassi_da_non_saltare: ripassi,
+    altre_opzioni: altreOpzioni
   };
 }
 
@@ -704,6 +746,21 @@ function sanitizeRipassoEntry(raw: unknown): { materia: string; argomento: strin
   return { materia: materia.slice(0, 120), argomento: argomento.slice(0, 160), nota: nota.slice(0, 400) };
 }
 
+/** Riabbina un materia/argomento in testo libero (uscito dalla risposta di
+ * Claude, quindi potenzialmente riformulato) al candidato originale del
+ * paniere — confronto case-insensitive, spazi ai bordi ignorati. Nessun
+ * abbinamento (Claude ha riformulato troppo, o ha "inventato" un nome
+ * leggermente diverso) restituisce `null`: il testo scelto da Claude resta
+ * comunque valido e visibile, semplicemente senza id per la riconciliazione
+ * live lato client su quella singola voce. */
+function findMatchingCandidate(materia: string, argomento: string, studyFocus: StudyFocusSnapshot): StudyTopicCandidate | null {
+  const norm = (s: string) => s.trim().toLowerCase();
+  const wantMateria = norm(materia);
+  const wantArgomento = norm(argomento);
+  const pool = [...studyFocus.argomenti_disponibili, ...studyFocus.ripassi_scaduti];
+  return pool.find((c) => norm(c.materia) === wantMateria && norm(c.argomento) === wantArgomento) ?? null;
+}
+
 /** Valida/clampa il ramo "study_focus" della risposta di Claude — come
  * ogni altro blocco di sanitizeDirectives, un'anomalia qualunque (campo
  * mancante, tipo sbagliato) fa ricadere SOLO questo blocco sul default
@@ -727,18 +784,49 @@ function sanitizeStudyFocus(raw: unknown, studyFocus: StudyFocusSnapshot, fallba
     const argomento = typeof ap.argomento === 'string' ? ap.argomento.trim() : '';
     const metodo = typeof ap.metodo === 'string' ? ap.metodo.trim() : '';
     const rationale = typeof ap.rationale === 'string' ? ap.rationale.trim() : '';
-    argomentoPrincipale =
-      materia && argomento && metodo
-        ? { materia: materia.slice(0, 120), argomento: argomento.slice(0, 160), metodo: metodo.slice(0, 500), rationale: rationale.slice(0, 400) || fallback.argomento_principale?.rationale || '' }
-        : fallback.argomento_principale;
+    if (materia && argomento && metodo) {
+      const matched = findMatchingCandidate(materia, argomento, studyFocus);
+      argomentoPrincipale = {
+        materia: materia.slice(0, 120),
+        argomento: argomento.slice(0, 160),
+        metodo: metodo.slice(0, 500),
+        rationale: rationale.slice(0, 400) || fallback.argomento_principale?.rationale || '',
+        sfidaId: matched ? matched.sfidaId : null,
+        materiaId: matched ? matched.materiaId : null
+      };
+    } else {
+      argomentoPrincipale = fallback.argomento_principale;
+    }
   }
 
   const ripassiRaw = Array.isArray(r.ripassi_da_non_saltare) ? r.ripassi_da_non_saltare : null;
   const ripassiDaNonSaltare = ripassiRaw
-    ? ripassiRaw.map(sanitizeRipassoEntry).filter((e): e is { materia: string; argomento: string; nota: string } => e !== null).slice(0, MAX_DUE_REVIEWS)
+    ? ripassiRaw
+        .map(sanitizeRipassoEntry)
+        .filter((e): e is { materia: string; argomento: string; nota: string } => e !== null)
+        .slice(0, MAX_DUE_REVIEWS)
+        .map((e) => {
+          const matched = findMatchingCandidate(e.materia, e.argomento, studyFocus);
+          return { ...e, sfidaId: matched ? matched.sfidaId : null, materiaId: matched ? matched.materiaId : null };
+        })
     : fallback.ripassi_da_non_saltare;
 
-  return { argomento_principale: argomentoPrincipale, ripassi_da_non_saltare: ripassiDaNonSaltare };
+  // "altre_opzioni" non viene mai chiesto a Claude: è ricostruito qui in modo
+  // interamente deterministico, escludendo dal paniere originale l'argomento
+  // scelto come principale (per id se recuperato, altrimenti per testo) —
+  // cosi' il client ha sempre alternative pronte per la promozione live
+  // anche quando Claude riformula leggermente il nome del principale.
+  const chosenSfidaId = argomentoPrincipale?.sfidaId ?? null;
+  const chosenKey = argomentoPrincipale ? `${argomentoPrincipale.materia.trim().toLowerCase()}|||${argomentoPrincipale.argomento.trim().toLowerCase()}` : null;
+  const altreOpzioni = studyFocus.argomenti_disponibili
+    .filter((c) => {
+      if (chosenSfidaId) return c.sfidaId !== chosenSfidaId;
+      if (chosenKey) return `${c.materia.trim().toLowerCase()}|||${c.argomento.trim().toLowerCase()}` !== chosenKey;
+      return true;
+    })
+    .map((c) => ({ materia: c.materia, argomento: c.argomento, sfidaId: c.sfidaId, materiaId: c.materiaId }));
+
+  return { argomento_principale: argomentoPrincipale, ripassi_da_non_saltare: ripassiDaNonSaltare, altre_opzioni: altreOpzioni };
 }
 
 /** Blindatura: ogni campo numerico/stringa viene validato e clampato
@@ -855,4 +943,8 @@ export function buildUserPrompt(params: {
  * prevedibile del costo di una singola chiamata/utente/giorno — mai più
  * un budget potenzialmente illimitato lasciato al solo buon senso del
  * client. */
-export const MAX_FORCE_REGENERATIONS_PER_DAY = 5;
+// Single-user app (vedi CLAUDE.md): il costo di una rigenerazione manuale è
+// trascurabile, quindi il limite serve solo a evitare loop accidentali
+// (es. un bottone premuto ripetutamente per errore), non a contenere la
+// spesa — alzato da 5 a 20/giorno.
+export const MAX_FORCE_REGENERATIONS_PER_DAY = 20;

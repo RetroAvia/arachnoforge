@@ -473,13 +473,16 @@ Deno.test('defaultDirectivesForBand — study_focus sceglie il primo argomento d
   const studyFocus = {
     materie_in_focus: ['Analisi 1'],
     argomenti_disponibili: [
-      { materia: 'Analisi 1', argomento: 'Limiti', obiettivo: '', blueprint: '', difficulty: 'HARD', tipo: 'DISPONIBILE' as const }
+      { sfidaId: 's1', materiaId: 'm1', materia: 'Analisi 1', argomento: 'Limiti', obiettivo: '', blueprint: '', difficulty: 'HARD', tipo: 'DISPONIBILE' as const }
     ],
     ripassi_scaduti: []
   };
   const d = defaultDirectivesForBand('OTTIMALE', null, studyFocus);
   assertEquals(d.study_focus.argomento_principale?.materia, 'Analisi 1');
   assertEquals(d.study_focus.argomento_principale?.argomento, 'Limiti');
+  // Gli id del candidato scelto si propagano al principale — riconciliazione live lato client.
+  assertEquals(d.study_focus.argomento_principale?.sfidaId, 's1');
+  assertEquals(d.study_focus.argomento_principale?.materiaId, 'm1');
 });
 
 Deno.test('defaultDirectivesForBand — study_focus ricade sul ripasso più scaduto se non ci sono argomenti nuovi', () => {
@@ -487,13 +490,32 @@ Deno.test('defaultDirectivesForBand — study_focus ricade sul ripasso più scad
     materie_in_focus: ['Fisica'],
     argomenti_disponibili: [],
     ripassi_scaduti: [
-      { materia: 'Fisica', argomento: 'Cinematica', obiettivo: '', blueprint: '', difficulty: 'MEDIUM', tipo: 'RIPASSO_SCADUTO' as const, giorni_ripasso_scaduto: 5 }
+      { sfidaId: 'sR', materiaId: 'mF', materia: 'Fisica', argomento: 'Cinematica', obiettivo: '', blueprint: '', difficulty: 'MEDIUM', tipo: 'RIPASSO_SCADUTO' as const, giorni_ripasso_scaduto: 5 }
     ]
   };
   const d = defaultDirectivesForBand('OTTIMALE', null, studyFocus);
   assertEquals(d.study_focus.argomento_principale?.argomento, 'Cinematica');
+  assertEquals(d.study_focus.argomento_principale?.sfidaId, 'sR');
   // Il ripasso scelto come principale non deve duplicarsi nella lista ripassi.
   assertEquals(d.study_focus.ripassi_da_non_saltare.length, 0);
+});
+
+Deno.test('defaultDirectivesForBand — study_focus.altre_opzioni contiene gli argomenti disponibili non scelti', () => {
+  const studyFocus = {
+    materie_in_focus: ['Analisi 1', 'Fisica'],
+    argomenti_disponibili: [
+      { sfidaId: 's1', materiaId: 'm1', materia: 'Analisi 1', argomento: 'Limiti', obiettivo: '', blueprint: '', difficulty: 'HARD', tipo: 'DISPONIBILE' as const },
+      { sfidaId: 's2', materiaId: 'm2', materia: 'Fisica', argomento: 'Cinematica', obiettivo: '', blueprint: '', difficulty: 'MEDIUM', tipo: 'DISPONIBILE' as const }
+    ],
+    ripassi_scaduti: []
+  };
+  const d = defaultDirectivesForBand('OTTIMALE', null, studyFocus);
+  // Il primo argomento disponibile ('Limiti') è il principale...
+  assertEquals(d.study_focus.argomento_principale?.sfidaId, 's1');
+  // ...e il secondo diventa un'alternativa pronta, non semplicemente scartato.
+  assertEquals(d.study_focus.altre_opzioni.length, 1);
+  assertEquals(d.study_focus.altre_opzioni[0].sfidaId, 's2');
+  assertEquals(d.study_focus.altre_opzioni[0].argomento, 'Cinematica');
 });
 
 // ---------------------------------------------------------------------
@@ -518,7 +540,7 @@ Deno.test('sanitizeDirectives — un argomento_principale nullo di Claude è un\
   const studyFocus = {
     materie_in_focus: ['Analisi 1'],
     argomenti_disponibili: [
-      { materia: 'Analisi 1', argomento: 'Limiti', obiettivo: '', blueprint: '', difficulty: 'HARD', tipo: 'DISPONIBILE' as const }
+      { sfidaId: 's1', materiaId: 'm1', materia: 'Analisi 1', argomento: 'Limiti', obiettivo: '', blueprint: '', difficulty: 'HARD', tipo: 'DISPONIBILE' as const }
     ],
     ripassi_scaduti: []
   };
@@ -553,4 +575,83 @@ Deno.test('sanitizeDirectives — study_focus mancante/malformato ricade sul def
   };
   const d = sanitizeDirectives(raw, 'CRITICO');
   assertEquals(d.study_focus, defaultDirectivesForBand('CRITICO').study_focus);
+});
+
+// ---------------------------------------------------------------------
+// sanitizeDirectives — study_focus: riconciliazione id (V35.4) + altre_opzioni
+// ---------------------------------------------------------------------
+Deno.test('sanitizeDirectives — study_focus recupera sfidaId/materiaId riabbinando il testo di Claude al paniere originale', () => {
+  const studyFocus = {
+    materie_in_focus: ['Analisi 1'],
+    argomenti_disponibili: [
+      { sfidaId: 's1', materiaId: 'm1', materia: 'Analisi 1', argomento: 'Limiti', obiettivo: '', blueprint: '', difficulty: 'HARD', tipo: 'DISPONIBILE' as const },
+      { sfidaId: 's2', materiaId: 'm1', materia: 'Analisi 1', argomento: 'Derivate', obiettivo: '', blueprint: '', difficulty: 'MEDIUM', tipo: 'DISPONIBILE' as const }
+    ],
+    ripassi_scaduti: []
+  };
+  const raw = {
+    mission_control: { load_adjustment_pct: -10, rationale: 'ok' },
+    focus_timer: { focus_minutes: 30, break_minutes: 5, preset_label: 'X', rationale: 'ok' },
+    study_window: { start_hour: 10, end_hour: 13, label: 'L', rationale: 'ok' },
+    study_focus: {
+      // Claude riformula leggermente spazi/maiuscole — il match è case/trim-insensitive.
+      argomento_principale: { materia: '  analisi 1 ', argomento: 'LIMITI', metodo: 'Tecnica Feynman.', rationale: 'Urgente.' },
+      ripassi_da_non_saltare: []
+    }
+  };
+  const d = sanitizeDirectives(raw, 'OTTIMALE', null, studyFocus);
+  assertEquals(d.study_focus.argomento_principale?.sfidaId, 's1');
+  assertEquals(d.study_focus.argomento_principale?.materiaId, 'm1');
+  // L'unico altro disponibile ('Derivate') diventa un'opzione alternativa pronta.
+  assertEquals(d.study_focus.altre_opzioni.length, 1);
+  assertEquals(d.study_focus.altre_opzioni[0].sfidaId, 's2');
+});
+
+Deno.test('sanitizeDirectives — study_focus: nessun match per argomento_principale -> id null, testo comunque valido', () => {
+  const studyFocus = {
+    materie_in_focus: ['Analisi 1'],
+    argomenti_disponibili: [
+      { sfidaId: 's1', materiaId: 'm1', materia: 'Analisi 1', argomento: 'Limiti', obiettivo: '', blueprint: '', difficulty: 'HARD', tipo: 'DISPONIBILE' as const }
+    ],
+    ripassi_scaduti: []
+  };
+  const raw = {
+    mission_control: { load_adjustment_pct: -10, rationale: 'ok' },
+    focus_timer: { focus_minutes: 30, break_minutes: 5, preset_label: 'X', rationale: 'ok' },
+    study_window: { start_hour: 10, end_hour: 13, label: 'L', rationale: 'ok' },
+    study_focus: {
+      // Claude ha riformulato il nome dell'argomento in modo irriconoscibile.
+      argomento_principale: { materia: 'Analisi 1', argomento: 'Concetto di limite (riformulato)', metodo: 'Tecnica Feynman.', rationale: 'Urgente.' },
+      ripassi_da_non_saltare: []
+    }
+  };
+  const d = sanitizeDirectives(raw, 'OTTIMALE', null, studyFocus);
+  assertEquals(d.study_focus.argomento_principale?.argomento, 'Concetto di limite (riformulato)');
+  assertEquals(d.study_focus.argomento_principale?.sfidaId, null);
+  // Senza un id da escludere per match, l'originale 'Limiti' resta comunque disponibile come opzione.
+  assertEquals(d.study_focus.altre_opzioni.length, 1);
+  assertEquals(d.study_focus.altre_opzioni[0].sfidaId, 's1');
+});
+
+Deno.test('sanitizeDirectives — study_focus: ripassi_da_non_saltare recupera anch\'esso sfidaId/materiaId per riconciliazione', () => {
+  const studyFocus = {
+    materie_in_focus: ['Fisica'],
+    argomenti_disponibili: [],
+    ripassi_scaduti: [
+      { sfidaId: 'sR', materiaId: 'mF', materia: 'Fisica', argomento: 'Cinematica', obiettivo: '', blueprint: '', difficulty: 'MEDIUM', tipo: 'RIPASSO_SCADUTO' as const, giorni_ripasso_scaduto: 5 }
+    ]
+  };
+  const raw = {
+    mission_control: { load_adjustment_pct: -10, rationale: 'ok' },
+    focus_timer: { focus_minutes: 30, break_minutes: 5, preset_label: 'X', rationale: 'ok' },
+    study_window: { start_hour: 10, end_hour: 13, label: 'L', rationale: 'ok' },
+    study_focus: {
+      argomento_principale: null,
+      ripassi_da_non_saltare: [{ materia: 'Fisica', argomento: 'Cinematica', nota: 'Richiamo attivo.' }]
+    }
+  };
+  const d = sanitizeDirectives(raw, 'OTTIMALE', null, studyFocus);
+  assertEquals(d.study_focus.ripassi_da_non_saltare.length, 1);
+  assertEquals(d.study_focus.ripassi_da_non_saltare[0].sfidaId, 'sR');
+  assertEquals(d.study_focus.ripassi_da_non_saltare[0].materiaId, 'mF');
 });

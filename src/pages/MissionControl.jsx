@@ -13,13 +13,32 @@ import WebSlingChest from '../components/WebSlingChest.jsx';
 import { formatClock, formatHoursMinutes } from '../utils/dateUtils.js';
 import { getBriefingForToday } from '../data/briefings.js';
 import { deriveNodeStatus, NODE_STATUS } from '../utils/skillTree.js';
+import { resolveLiveStudyFocus } from '../utils/studyFocusLive.js';
 import { computeFocusStaminaCost, DIFFICULTY, DIFFICULTY_META } from '../utils/xpEngine.js';
 import { QUEST_DIFFICULTY_META } from '../utils/dailyPatrol.js';
 import { QUOTA_STATUS_META } from '../hooks/useKarenAutoRouter.js';
 import { CARD, CARD_ALERT, BTN_PRIMARY, BTN_SECONDARY, BTN_AMBER, BTN_GHOST, INPUT, H1, BADGE } from '../utils/designSystem.js';
 
-/** V29.0 — Pillar 1/2: riga singola della Quota Odierna, riusata per le tre sezioni (In Focus Oggi / In Coda / Congelata) — mai tre markup duplicati. */
-function QuotaRow({ q }) {
+/** V29.0 — Pillar 1/2: riga singola della Quota Odierna, riusata per le tre sezioni (In Focus Oggi / In Coda / Congelata) — mai tre markup duplicati.
+ *
+ * V35.4 — "Ritmo vs Oggi": prima di questa modifica, ogni riga (anche
+ * quelle IN CODA, esplicitamente NON spinte dal planner) mostrava lo
+ * stesso badge blu "Oggi: Xh" — un numero calcolato in totale isolamento
+ * per QUELLA sola materia (ore residue / giorni all'esame), mai un vero
+ * budget condiviso fra materie. Il risultato era fuorviante: una materia
+ * a 6 giorni dall'esame (davvero da spingere oggi) e una a 90+ giorni
+ * (in coda, non prioritaria) potevano mostrare "Oggi: 1h40m" e
+ * "Oggi: 1h23m" — numeri quasi identici che facevano sembrare le due
+ * materie ugualmente urgenti OGGI, quando non lo sono affatto. La
+ * matematica di computeMateriaQuota resta invariata (è un ritmo
+ * sostenibile legittimo, utile come informazione), ma ora SOLO le
+ * materie realmente "in focus" (spinte dal planner) mostrano quel numero
+ * come "Oggi: Xh" in evidenza; le materie "in coda" mostrano lo stesso
+ * valore ma etichettato onestamente come "Ritmo: Xh/giorno" in stile
+ * neutro — un dato informativo ("se dovessi iniziare oggi questa
+ * materia, servirebbe questo ritmo"), mai un'istruzione per la giornata
+ * odierna, che resta dominata dalla materia in focus. */
+function QuotaRow({ q, today = true }) {
   const statusMeta = QUOTA_STATUS_META[q.status];
   return (
     <div className={`p-2.5 sm:p-3.5 rounded-xl border transition-all duration-300 ${statusMeta.cardClass || 'bg-surface/60 border-secondary/15'}`}>
@@ -32,9 +51,9 @@ function QuotaRow({ q }) {
           <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-mono border ${statusMeta.badgeClass}`}>
             {statusMeta.label}
           </span>
-          {!q.frozen && (
-            <span className={BADGE.blue}>
-              {q.dailyQuotaHours == null ? 'n/d' : `Oggi: ${formatHoursMinutes(q.dailyQuotaHours)}`}
+          {!q.frozen && q.dailyQuotaHours != null && (
+            <span className={today ? BADGE.blue : BADGE.slate}>
+              {today ? `Oggi: ${formatHoursMinutes(q.dailyQuotaHours)}` : `Ritmo: ${formatHoursMinutes(q.dailyQuotaHours)}/giorno`}
             </span>
           )}
         </span>
@@ -105,6 +124,14 @@ export default function MissionControl() {
   // "Termina", avviare la pausa (breve/lunga) per "Avvia Pausa".
   const [debriefOpen, setDebriefOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState(null);
+
+  // V35.4 — "Aggiorna piano": feedback locale (mai persistito) sull'ultima
+  // rigenerazione manuale del piano — stesso pattern già in uso in
+  // SuitTelemetryView.handleScan, qui isolato per non confondersi con
+  // un'eventuale Diagnostica Neurale lanciata da quella pagina.
+  const [planRefreshFeedback, setPlanRefreshFeedback] = useState(null);
+  const planRefreshFeedbackTimeoutRef = useRef(null);
+  useEffect(() => () => clearTimeout(planRefreshFeedbackTimeoutRef.current), []);
 
   // V35.0 — Daily Brain: la citazione statica a rotazione resta come
   // fallback elegante — mai rimossa, solo declassata — quando K.A.R.E.N.
@@ -184,6 +211,24 @@ export default function MissionControl() {
       : ['rgb(100 116 139)', 'rgb(51 65 85)'];
 
   const materie = Array.isArray(state.materie) ? state.materie : [];
+
+  // V35.4 — Riconciliazione live del "Piano Argomenti di Oggi": lo
+  // study_focus ricevuto oggi da K.A.R.E.N. resta invariato in cache, ma
+  // qui viene proiettato sullo stato VIVO di `materie` ad ogni render —
+  // appena l'utente completa il nodo suggerito, la prossima opzione già
+  // pronta nel payload viene promossa istantaneamente, zero chiamate di
+  // rete (vedi src/utils/studyFocusLive.js per il motivo esteso).
+  const liveStudyFocus = useMemo(
+    () => resolveLiveStudyFocus(karenDirectivesToday?.study_focus, materie),
+    [karenDirectivesToday, materie]
+  );
+
+  const handleRefreshStudyPlan = useCallback(async () => {
+    const { error: refreshError } = await karen.triggerOracleScan({ force: true });
+    setPlanRefreshFeedback(refreshError ? 'error' : 'success');
+    clearTimeout(planRefreshFeedbackTimeoutRef.current);
+    planRefreshFeedbackTimeoutRef.current = setTimeout(() => setPlanRefreshFeedback(null), 3200);
+  }, [karen]);
 
   const selectedMateria = useMemo(
     () => materie.find((m) => m.id === selectedMateriaId) || null,
@@ -465,39 +510,91 @@ export default function MissionControl() {
         </div>
       )}
 
-      {/* V35.3 — Study Focus Engine ("Piano Argomenti del Giorno"): unica
-          superficie in cui K.A.R.E.N. nomina un argomento SPECIFICO (non
-          solo una materia) letto dal Web-Matrix reale, con la tecnica di
-          studio motivata sul suo contenuto — vedi directives.study_focus
+      {/* V35.3/V35.4 — Study Focus Engine ("Piano Argomenti del Giorno"):
+          unica superficie in cui K.A.R.E.N. nomina un argomento SPECIFICO
+          (non solo una materia) letto dal Web-Matrix reale, con la tecnica
+          di studio motivata sul suo contenuto — vedi directives.study_focus
           (supabase/functions/karen-oracle/_logic.ts). Card indipendente
           da mission_control/study_window: può comparire anche quando il
           carico non viene ridotto (banda OTTIMALE), perché il piano
-          sull'argomento è utile ogni giorno, non solo nei giorni critici. */}
-      {karenDirectivesToday?.study_focus?.argomento_principale && (
+          sull'argomento è utile ogni giorno, non solo nei giorni critici.
+          V35.4: il payload del giorno non cambia, ma `liveStudyFocus`
+          (src/utils/studyFocusLive.js) lo riconcilia in tempo reale con lo
+          stato vivo dell'albero — completare il nodo suggerito promuove
+          istantaneamente la prossima opzione, mai una card "congelata". */}
+      {karenDirectivesToday?.study_focus && (liveStudyFocus.primary || liveStudyFocus.exhausted) && (
         <div className={`${CARD} flex items-start gap-3`}>
           <div className="relative w-9 h-9 rounded-xl bg-secondary/15 border border-secondary/40 flex items-center justify-center text-secondary shrink-0">
             <Icon name="target" className="w-5 h-5" />
           </div>
           <div className="relative flex-1 min-w-0">
-            <p className="text-xs tracking-widest text-slate-500 mb-1">PIANO ARGOMENTI DI OGGI</p>
-            <p className="text-sm font-semibold text-white">
-              {karenDirectivesToday.study_focus.argomento_principale.argomento}
-              <span className="text-slate-500 font-normal"> — {karenDirectivesToday.study_focus.argomento_principale.materia}</span>
-            </p>
-            {karenDirectivesToday.study_focus.argomento_principale.rationale && (
-              <p className="text-xs text-slate-500 mt-1 leading-relaxed">{karenDirectivesToday.study_focus.argomento_principale.rationale}</p>
+            <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
+              <p className="text-xs tracking-widest text-slate-500">PIANO ARGOMENTI DI OGGI</p>
+              <button
+                type="button"
+                onClick={handleRefreshStudyPlan}
+                disabled={karen.scanning}
+                className={`inline-flex items-center gap-1 text-[11px] font-mono text-slate-500 hover:text-secondary transition-colors ${karen.scanning ? 'opacity-60' : ''}`}
+                title="Chiede a K.A.R.E.N. una nuova valutazione completa del piano di oggi"
+              >
+                <Icon name="radar" className={`w-3.5 h-3.5 ${karen.scanning ? 'animate-spin' : ''}`} />
+                {karen.scanning ? 'Aggiornamento...' : 'Aggiorna piano'}
+              </button>
+            </div>
+            {planRefreshFeedback === 'success' && (
+              <p className="text-[11px] text-green-400 mb-1.5">Piano rivalutato da K.A.R.E.N.</p>
             )}
-            {karenDirectivesToday.study_focus.argomento_principale.metodo && (
-              <p className="text-sm text-secondary mt-2 leading-relaxed">{karenDirectivesToday.study_focus.argomento_principale.metodo}</p>
+            {planRefreshFeedback === 'error' && (
+              <p className="text-[11px] text-primary mb-1.5">{karen.error || 'Rigenerazione non riuscita — riprova.'}</p>
             )}
-            {karenDirectivesToday.study_focus.ripassi_da_non_saltare?.length > 0 && (
+
+            {liveStudyFocus.primary ? (
+              <>
+                {liveStudyFocus.promoted && (
+                  <p className="text-[11px] font-mono text-accent mb-1 flex items-center gap-1">
+                    <Icon name="bolt" className="w-3 h-3" />
+                    Argomento precedente completato — promossa la prossima opzione
+                  </p>
+                )}
+                <p className="text-sm font-semibold text-white">
+                  {liveStudyFocus.primary.argomento}
+                  <span className="text-slate-500 font-normal"> — {liveStudyFocus.primary.materia}</span>
+                </p>
+                {liveStudyFocus.primary.rationale && (
+                  <p className="text-xs text-slate-500 mt-1 leading-relaxed">{liveStudyFocus.primary.rationale}</p>
+                )}
+                {liveStudyFocus.primary.metodo && (
+                  <p className="text-sm text-secondary mt-2 leading-relaxed">{liveStudyFocus.primary.metodo}</p>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-slate-300 leading-relaxed">
+                Piano di oggi completato — nessun altro argomento o ripasso in sospeso fra quelli proposti. Usa "Aggiorna piano" per una nuova valutazione.
+              </p>
+            )}
+
+            {liveStudyFocus.otherOpenOptions.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
+                <p className="text-[11px] font-mono tracking-widest text-slate-500 flex items-center gap-1.5">
+                  <Icon name="grid" className="w-3.5 h-3.5" />
+                  ALTRE OPZIONI DISPONIBILI
+                </p>
+                {liveStudyFocus.otherOpenOptions.map((o) => (
+                  <p key={o.sfidaId} className="text-xs text-slate-400 leading-relaxed">
+                    <span className="text-slate-300 font-medium">{o.argomento}</span> ({o.materia})
+                  </p>
+                ))}
+              </div>
+            )}
+
+            {liveStudyFocus.ripassiDaNonSaltare.length > 0 && (
               <div className="mt-3 pt-3 border-t border-white/10 space-y-2">
                 <p className="text-[11px] font-mono tracking-widest text-slate-500 flex items-center gap-1.5">
                   <Icon name="book" className="w-3.5 h-3.5" />
                   RIPASSI DA NON SALTARE
                 </p>
-                {karenDirectivesToday.study_focus.ripassi_da_non_saltare.map((r, idx) => (
-                  <p key={`${r.materia}-${r.argomento}-${idx}`} className="text-xs text-slate-400 leading-relaxed">
+                {liveStudyFocus.ripassiDaNonSaltare.map((r, idx) => (
+                  <p key={`${r.sfidaId || r.materia}-${r.argomento}-${idx}`} className="text-xs text-slate-400 leading-relaxed">
                     <span className="text-slate-300 font-medium">{r.argomento}</span> ({r.materia}): {r.nota}
                   </p>
                 ))}
@@ -547,14 +644,19 @@ export default function MissionControl() {
                 {derived.karenDailyFocusQuotas.length === 0 ? (
                   <p className="text-xs text-slate-500 italic">Nessuna materia da spingere oggi.</p>
                 ) : (
-                  derived.karenDailyFocusQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} />)
+                  derived.karenDailyFocusQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} today />)
                 )}
               </div>
 
               {derived.karenQueuedQuotas.length > 0 && (
                 <div className="space-y-2.5 pt-3 border-t border-white/10">
-                  <span className="text-[11px] font-mono tracking-widest text-slate-500">IN CODA</span>
-                  {derived.karenQueuedQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} />)}
+                  <span className="text-[11px] font-mono tracking-widest text-slate-500">IN CODA — non spinta oggi</span>
+                  {derived.karenMonotaskActive && (
+                    <p className="text-xs text-slate-500 italic -mt-1">
+                      Monotask attivo: il tempo di oggi va sulla materia in focus qui sopra. Il "Ritmo" qui sotto è il passo sostenibile SE iniziassi questa materia da oggi, non un'indicazione per la giornata odierna.
+                    </p>
+                  )}
+                  {derived.karenQueuedQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} today={false} />)}
                 </div>
               )}
 

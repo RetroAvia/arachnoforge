@@ -42,6 +42,30 @@ import { getMissingPrerequisites } from '../data/vanvitelliCourseMap.js';
  * `utils/karenSuggestor.js`). Resta comunque calcolabile e visibile: la
  * congelazione riguarda SOLO la spinta automatica del planner, mai la
  * possibilità di aprire la scheda e preparare i nodi in anticipo.
+ *
+ * V35.4 — "Correzione disparità elevata": il commento sopra prometteva
+ * "MAI il monte-ore grezzo a scavalcare una scadenza vicina", ma
+ * l'implementazione originale di `compareByUrgency` ordinava PRIMA per
+ * `status` (CRITICO > ATTENZIONE > OTTIMALE > CONGELATA) e SOLO POI per
+ * giorni residui. Questo permetteva esattamente lo scavalcamento
+ * promesso come impossibile: una materia lontana (es. 111gg) ma indietro
+ * di passo (CRITICO, tanto monte-ore non ancora affrontato) scavalcava in
+ * classifica una materia vicinissima (es. 6gg) ma ancora "in pari" col
+ * proprio ritmo (OTTIMALE) — cosi' la seconda restava fuori dal Top-1,
+ * `selectDailyFocus` non attivava il monotask (perché guardava SOLO
+ * `eligible[0].daysRemaining`, cioè quello della materia lontana), e la
+ * Quota Odierna finiva per spingere 1-2 materie lontane con un "Oggi: Xh"
+ * paragonabile a quello della materia realmente urgente — esattamente la
+ * "disparità elevata" segnalata dall'utente con un esame fra 6 giorni
+ * trattato come equivalente a uno fra 87-111. Fix: qualunque materia
+ * entro `CRITICAL_DISTANCE_DAYS` scavalca ORA sempre tutto il resto (a
+ * prescindere dal suo status di passo), e fra due materie entrambe entro
+ * quella soglia vince la più vicina — la vicinanza della scadenza,
+ * l'unica cosa che l'utente non può recuperare con più impegno, viene
+ * prima della salute della traiettoria. Lo stato/passo resta il criterio
+ * di ordinamento SOLO fra materie che hanno tutte più di
+ * `CRITICAL_DISTANCE_DAYS` giorni di margine, dove ha senso dare priorità
+ * a chi è più indietro rispetto a chi è comodamente in pari.
  */
 export const HOURS_PER_CFU = 10;
 export const EVENT_HORIZON_THRESHOLD_HOURS = 8;
@@ -106,7 +130,10 @@ function computePrereqFreeze(materia, allMaterie) {
   return { frozen: missing.length > 0, missingPrereqNames: missing.map((c) => c.nome) };
 }
 
-function computeMateriaQuota(materia, allMaterie) {
+/** Esportata per test unitari mirati (V35.4) — il motore di calcolo della
+ * quota di una singola Materia resta comunque uso interno primario di
+ * `useKarenAutoRouter`, questa non è un'API pubblica per la UI. */
+export function computeMateriaQuota(materia, allMaterie) {
   const sfide = Array.isArray(materia.sfide) ? materia.sfide : [];
   const hasNodes = sfide.length > 0;
   const daysRemaining = materia.examDate ? daysUntilDateOnly(materia.examDate) : null;
@@ -194,20 +221,33 @@ function computeMateriaQuota(materia, allMaterie) {
   };
 }
 
-/** V29.0 — Pillar 1: ordinamento a precedenza assoluta — stato (Critico > Attenzione > Ottimale > Congelata) e poi giorni residui ascendenti. Mai il monte-ore grezzo a scavalcare una scadenza più vicina. */
-const STATUS_RANK = {
+/** V29.0 — Pillar 1: ordinamento a precedenza assoluta. V35.4: la
+ * vicinanza di un esame entro CRITICAL_DISTANCE_DAYS scavalca SEMPRE lo
+ * status di passo — vedi commento esteso in cima al file. Fra materie
+ * tutte oltre quella soglia, resta status (Critico > Attenzione >
+ * Ottimale > Congelata) poi giorni residui ascendenti. */
+export const STATUS_RANK = {
   [QUOTA_STATUS.CRITICO]: 0,
   [QUOTA_STATUS.ATTENZIONE]: 1,
   [QUOTA_STATUS.OTTIMALE]: 2,
   [QUOTA_STATUS.CONGELATA]: 3
 };
 
-function compareByUrgency(a, b) {
+/** Esportata per test unitari mirati (V35.4). */
+export function compareByUrgency(a, b) {
+  const daysA = a.daysRemaining == null ? Infinity : a.daysRemaining;
+  const daysB = b.daysRemaining == null ? Infinity : b.daysRemaining;
+
+  // Un esame entro CRITICAL_DISTANCE_DAYS scavalca sempre tutto il resto,
+  // a prescindere dallo status di passo — vedi commento V35.4 sopra.
+  const aImminent = daysA <= CRITICAL_DISTANCE_DAYS;
+  const bImminent = daysB <= CRITICAL_DISTANCE_DAYS;
+  if (aImminent !== bImminent) return aImminent ? -1 : 1;
+  if (aImminent && bImminent && daysA !== daysB) return daysA - daysB;
+
   const rankA = STATUS_RANK[a.status] ?? 4;
   const rankB = STATUS_RANK[b.status] ?? 4;
   if (rankA !== rankB) return rankA - rankB;
-  const daysA = a.daysRemaining == null ? Infinity : a.daysRemaining;
-  const daysB = b.daysRemaining == null ? Infinity : b.daysRemaining;
   if (daysA !== daysB) return daysA - daysB;
   return (b.dailyQuotaHours || 0) - (a.dailyQuotaHours || 0);
 }
@@ -218,10 +258,14 @@ function compareByUrgency(a, b) {
  *   1. Mai una Materia congelata (propedeuticità mancante, Pillar 2).
  *   2. Mai più di MAX_DAILY_FOCUS_MATERIE materie insieme.
  *   3. Se la Materia più urgente (già in cima a `sortedQuotas`, ordinata
- *      da `compareByUrgency`) è a CRITICAL_DISTANCE_DAYS giorni o meno,
+ *      da `compareByUrgency` — V35.4: ora garantita essere l'esame più
+ *      vicino fra quelle eleggibili, se ce n'è uno entro
+ *      CRITICAL_DISTANCE_DAYS) è a CRITICAL_DISTANCE_DAYS giorni o meno,
  *      monotask intensivo forzato: una sola Materia in focus.
+ *
+ * Esportata per test unitari mirati (V35.4).
  */
-function selectDailyFocus(sortedQuotas) {
+export function selectDailyFocus(sortedQuotas) {
   const eligible = sortedQuotas.filter((q) => !q.frozen);
   if (eligible.length === 0) return { focusIds: new Set(), monotaskActive: false };
   const topDays = eligible[0].daysRemaining;
