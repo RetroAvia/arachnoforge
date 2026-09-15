@@ -35,6 +35,235 @@ import { CARD, CARD_ALERT, BTN_PRIMARY, BTN_SECONDARY, BTN_SUCCESS, BTN_GHOST, I
 import { KarenSuggestorPanel, BountyBoardPanel } from './quadrant-hub/KarenPanels.jsx';
 import { TechSlider, ExamPassedToggle } from './quadrant-hub/TacticalControls.jsx';
 import { STATUS_META, ReviewButtons, ParentModuleCard } from './quadrant-hub/SkillTreeNodes.jsx';
+import { VERDICT_META } from '../utils/examReadiness.js';
+import { useKarenBrain } from '../context/KarenBrainContext.jsx';
+
+/** Barra orizzontale di un singolo pilastro dell'indice — mai un numero
+ * nudo: si deve vedere a colpo d'occhio QUALE dei quattro sta trascinando
+ * giù il verdetto. Un pilastro senza dati reali è dichiarato tale invece
+ * di essere disegnato come se fosse misurato. */
+function ReadinessPillar({ label, value, known }) {
+  const pctValue = Math.round(value * 100);
+  const tone = pctValue >= 75 ? 'bg-emerald-400' : pctValue >= 50 ? 'bg-accent' : 'bg-primary';
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2 text-xs mb-1">
+        <span className="text-slate-400">{label}</span>
+        <span className={`font-mono ${known ? 'text-slate-300' : 'text-slate-500'}`}>
+          {known ? `${pctValue}%` : 'n/d'}
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${known ? tone : 'bg-slate-600'}`}
+          style={{ width: `${Math.max(2, pctValue)}%`, opacity: known ? 1 : 0.35 }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * V36.0 — Il verdetto sull'esame, in una card sola: punteggio, i quattro
+ * pilastri che lo compongono, il motivo dominante e — quando serve — il
+ * burn-down, cioè l'unico grafico che risponde davvero a "ci arrivo o
+ * no": ore ancora da fare contro giorni ancora disponibili.
+ */
+function ExamReadinessCard({ readiness, materia, estimate }) {
+  const meta = VERDICT_META[readiness.verdict] || VERDICT_META.UNKNOWN;
+  const lowConfidence = readiness.confidence < 0.75;
+
+  return (
+    <div className={`${CARD} !py-4`}>
+      <div className="relative flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="relative w-14 h-14 shrink-0 flex items-center justify-center">
+            <div className={`absolute inset-0 rounded-full blur-xl ${meta.tone} opacity-20`} />
+            <div className="relative w-14 h-14 rounded-full border border-white/10 bg-surface/80 flex flex-col items-center justify-center">
+              <span className={`text-lg font-mono font-bold leading-none ${meta.tone}`}>{readiness.score}</span>
+              <span className="text-[8px] tracking-widest text-slate-500 mt-0.5">SU 100</span>
+            </div>
+          </div>
+          <div className="min-w-0">
+            <p className="text-[11px] font-mono tracking-widest text-slate-500">PRONTEZZA D'ESAME</p>
+            <p className={`text-xl font-extrabold tracking-tight ${meta.tone}`}>{meta.label}</p>
+            {readiness.daysRemaining != null && (
+              <p className="text-xs text-slate-500 mt-0.5">
+                {readiness.daysRemaining <= 0 ? "Esame oggi o già passato" : `${readiness.daysRemaining} giorni all'esame`}
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex-1 min-w-[220px] grid grid-cols-2 gap-x-4 gap-y-2">
+          <ReadinessPillar label="Copertura" value={readiness.parts.coverage} known={readiness.known.hasNodes} />
+          <ReadinessPillar label="Stabilità" value={readiness.parts.stability} known={readiness.known.hasStability} />
+          <ReadinessPillar label="Fattibilità" value={readiness.parts.feasibility} known={readiness.known.hasExamDate} />
+          <ReadinessPillar label="Attrito" value={readiness.parts.friction} known={readiness.known.hasFriction} />
+        </div>
+      </div>
+
+      <p className="relative text-sm text-slate-300 mt-3.5 leading-relaxed">{readiness.rationale}</p>
+
+      {/* Burn-down: ore residue contro giorni residui. Due sole barre —
+          se la prima è più lunga della seconda, non ci arrivi. */}
+      {materia.examDate && estimate && !estimate.done && (
+        <div className="relative mt-3.5 pt-3.5 border-t border-white/10 space-y-2">
+          {(() => {
+            const needed = estimate.totalDaysNeeded || 0;
+            const available = Math.max(0, readiness.daysRemaining ?? 0);
+            const scale = Math.max(needed, available, 1);
+            const late = needed > available;
+            return (
+              <>
+                <div className="flex items-center gap-3">
+                  <span className="text-[11px] font-mono text-slate-500 w-24 shrink-0">SERVONO</span>
+                  <div className="flex-1 h-2 rounded-full bg-white/[0.06] overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${late ? 'bg-primary' : 'bg-emerald-400'}`}
+                      style={{ width: `${(needed / scale) * 100}%` }}
+                    />
+                  </div>
+                  <span className="text-xs font-mono text-slate-300 w-16 text-right shrink-0">{needed}gg</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-[11px] font-mono text-slate-500 w-24 shrink-0">DISPONIBILI</span>
+                  <div className="flex-1 h-2 rounded-full bg-white/[0.06] overflow-hidden">
+                    <div className="h-full rounded-full bg-secondary" style={{ width: `${(available / scale) * 100}%` }} />
+                  </div>
+                  <span className="text-xs font-mono text-slate-300 w-16 text-right shrink-0">{available}gg</span>
+                </div>
+                <p className="text-xs text-slate-500">
+                  {estimate.totalHoursNeeded}h residue calibrate sul tuo storico
+                  {late
+                    ? ` — mancano ${needed - available} giorni al ritmo attuale.`
+                    : ` — ${available - needed} giorni di margine.`}
+                </p>
+              </>
+            );
+          })()}
+        </div>
+      )}
+
+      {lowConfidence && (
+        <p className="relative text-xs text-slate-500 mt-3 italic">
+          Confidenza parziale: alcuni pilastri non hanno ancora dati reali (n/d qui sopra). Il verdetto si affina man mano
+          che mappi i nodi, fissi la data e accumuli ripassi.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * V36.0 — INTERROGAZIONE K.A.R.E.N.
+ *
+ * Il punto debole strutturale di tutta la ripetizione dilazionata
+ * dell'app era l'autovalutazione: i tre pulsanti Facile/Medio/Difficile
+ * premuti DOPO aver riletto gli appunti. La sensazione di "sì, lo so"
+ * subito dopo una rilettura è notoriamente scollegata dalla capacità di
+ * richiamare davvero quel contenuto — e quando sei stanco è
+ * sistematicamente generosa, cioè proprio quando l'errore costa di più.
+ *
+ * Qui K.A.R.E.N. legge titolo, obiettivo, blueprint e i TUOI appunti del
+ * nodo e genera 6-8 domande di richiamo attivo. Rispondi a mente, poi
+ * riveli la traccia per autocorreggerti, e solo allora dai il giudizio:
+ * non più una sensazione, ma l'esito di un tentativo reale.
+ *
+ * Generata UNA volta e salvata dentro il nodo (Cloud State, nessuna
+ * tabella nuova): dal secondo ripasso in poi è già lì, anche offline e
+ * senza alcuna chiamata AI.
+ */
+function NodeQuizPanel({ node, materiaId, onSaveQuiz }) {
+  const karen = useKarenBrain();
+  const [revealed, setRevealed] = useState(() => new Set());
+  const [error, setError] = useState(null);
+  const [thin, setThin] = useState(false);
+  const quiz = node.quiz && Array.isArray(node.quiz.domande) ? node.quiz : null;
+
+  const toggleReveal = (idx) =>
+    setRevealed((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+
+  const handleGenerate = async () => {
+    setError(null);
+    const result = await karen.generateNodeQuiz(materiaId, node.id);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    setThin(!!result.thinContext);
+    setRevealed(new Set());
+    onSaveQuiz(result.quiz);
+  };
+
+  return (
+    <div className="space-y-3 pt-3 border-t border-white/10">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-sm text-secondary font-semibold flex items-center gap-1.5">
+          <Icon name="chip" className="w-4 h-4" />
+          Interrogazione K.A.R.E.N.
+        </p>
+        <button
+          type="button"
+          onClick={handleGenerate}
+          disabled={karen.quizGenerating}
+          className="inline-flex items-center gap-1 text-[11px] font-mono text-slate-500 hover:text-secondary transition-colors disabled:opacity-60"
+        >
+          <Icon name="radar" className={`w-3.5 h-3.5 ${karen.quizGenerating ? 'animate-spin' : ''}`} />
+          {karen.quizGenerating ? 'In preparazione...' : quiz ? 'Rigenera' : 'Preparala'}
+        </button>
+      </div>
+
+      {error && <p className="text-xs text-primary leading-relaxed">{error}</p>}
+      {thin && (
+        <p className="text-xs text-accent leading-relaxed">
+          Karen: su questo nodo c'è poco materiale scritto, quindi le domande restano sui fondamenti standard
+          dell'argomento. Aggiungi due righe negli Appunti e rigenerala: diventeranno mirate sul tuo contenuto.
+        </p>
+      )}
+
+      {!quiz ? (
+        <p className="text-xs text-slate-500 leading-relaxed">
+          Rispondere a mente prima di rileggere è ciò che fissa davvero la memoria — e rende onesto il giudizio che
+          darai qui sotto. Generata una volta, resta salvata sul nodo per tutti i ripassi successivi.
+        </p>
+      ) : (
+        <ol className="space-y-2">
+          {quiz.domande.map((d, idx) => (
+            <li key={`${d.domanda}-${idx}`} className="bg-white/[0.03] border border-white/10 rounded-xl p-3">
+              <div className="flex items-start gap-2.5">
+                <span className="text-[11px] font-mono text-secondary shrink-0 mt-0.5">{String(idx + 1).padStart(2, '0')}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-slate-200 leading-relaxed">{d.domanda}</p>
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    {d.tipo && <span className="text-[10px] font-mono text-slate-500 uppercase">{d.tipo}</span>}
+                    {d.traccia && (
+                      <button
+                        type="button"
+                        onClick={() => toggleReveal(idx)}
+                        className="text-[11px] font-mono text-slate-500 hover:text-secondary transition-colors"
+                      >
+                        {revealed.has(idx) ? 'nascondi traccia' : 'mostra traccia'}
+                      </button>
+                    )}
+                  </div>
+                  {revealed.has(idx) && d.traccia && (
+                    <p className="text-xs text-slate-400 mt-2 leading-relaxed border-l-2 border-secondary/40 pl-2.5">{d.traccia}</p>
+                  )}
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
 
 export default function QuadrantHub() {
   const { state, actions, derived, pushToast } = useArachnoForge();
@@ -86,6 +315,12 @@ export default function QuadrantHub() {
   const [editObiettivo, setEditObiettivo] = useState('');
   const [editOreStimate, setEditOreStimate] = useState(2);
   const [editDifficulty, setEditDifficulty] = useState(DIFFICULTY.MEDIUM);
+  // V36.0 — Appunti del nodo: il contenuto (formule, passaggi chiave,
+  // errori tipici, riferimento alla dispensa) vive finalmente DENTRO il
+  // nodo. Senza questo campo un ripasso obbligava a uscire dall'app e
+  // ritrovare gli appunti altrove — l'attrito per cui i ripassi brevi
+  // finivano per essere saltati.
+  const [editNote, setEditNote] = useState('');
   const [editParentId, setEditParentId] = useState('');
   // V31.2.1 — guardia "modifiche non salvate": mostra un ConfirmDialog
   // invece di scartare silenziosamente lo staging quando si tenta di
@@ -109,13 +344,24 @@ export default function QuadrantHub() {
     () => (selectedCourse ? getMissingPrerequisites(selectedCourse.id, materie, editingMateria?.id || null) : []),
     [selectedCourse, materie, editingMateria]
   );
-  // Time-Weaver Formula (V20.0, Pillar 2): l'Urgenza manuale è sparita —
-  // il fattore tempo ora arriva SOLO dalla Data Esame reale (1000/giorni
-  // mancanti), quindi l'anteprima deve includere `examDate` per essere
-  // coerente col punteggio finale che Karen userà davvero.
+  // Pressure Formula (V36.0): il punteggio misura ore residue contro ore
+  // realmente disponibili prima dell'esame, quindi l'anteprima nel form
+  // include sia la data sia i CFU (peso del monte ore) per essere coerente
+  // col punteggio che Karen userà davvero. Una materia ancora senza nodi
+  // usa il fallback CFU x 10 ore, come nel calcolo reale.
   const previewSpiderScore = useMemo(
-    () => computeSpiderScore({ perceivedDifficulty: formDifficulty, courseId: selectedCourse?.id || null, examDate: formExamDate || null }),
-    [formDifficulty, selectedCourse, formExamDate]
+    () =>
+      computeSpiderScore(
+        {
+          perceivedDifficulty: formDifficulty,
+          courseId: selectedCourse?.id || null,
+          examDate: formExamDate || null,
+          cfu: selectedCourse?.cfu || Number(formCfu) || 0,
+          sfide: []
+        },
+        derived.calibration
+      ),
+    [formDifficulty, selectedCourse, formExamDate, formCfu, derived.calibration]
   );
 
   const [sfidaNome, setSfidaNome] = useState('');
@@ -124,13 +370,12 @@ export default function QuadrantHub() {
   const [sfidaParentId, setSfidaParentId] = useState('');
   const [sfidaDifficulty, setSfidaDifficulty] = useState(DIFFICULTY.MEDIUM);
 
-  // Time-Weaver Formula del Web-Path Planner (V20.0, Pillar 2): Spider-Score
-  // decrescente (Difficoltà + Esami Sbloccati + 1000/Giorni Mancanti) — il
-  // corso da attaccare per primo è sempre in cima, con il tempo come
-  // fattore dominante assoluto.
+  // Pressure Formula del Web-Path Planner (V36.0): Spider-Score
+  // decrescente — la materia in cima è quella con più ore residue rispetto
+  // al tempo che le resta, non quella con la data più vicina in assoluto.
   const sortedMaterie = useMemo(
-    () => [...materie].sort((a, b) => computeSpiderScore(b) - computeSpiderScore(a)),
-    [materie]
+    () => [...materie].sort((a, b) => computeSpiderScore(b, derived.calibration) - computeSpiderScore(a, derived.calibration)),
+    [materie, derived.calibration]
   );
 
   // Karen's Tactical Suggestor — Primary Target calcolato una sola volta a
@@ -203,9 +448,16 @@ export default function QuadrantHub() {
   // V16.0 (Pillar 2): stima "Fine Prevista" millimetrica — somma esatta dei
   // giorni residui di ogni nodo incompleto, nessuna media generica.
   const estimate = useMemo(
-    () => (selectedMateria ? computeEstimatedCompletion(selectedMateria) : null),
-    [selectedMateria]
+    // V36.0 — la stima parte dalle ore DICHIARATE corrette dal bias reale
+    // e dalla capacità giornaliera misurata: "Fine prevista" smette di
+    // essere il calcolo di uno studente ideale.
+    () => (selectedMateria ? computeEstimatedCompletion(selectedMateria, derived.calibration) : null),
+    [selectedMateria, derived.calibration]
   );
+
+  // V36.0 — Exam Readiness Index della materia aperta, già calcolato una
+  // sola volta a livello di Provider (mai ricalcolato qui).
+  const readiness = selectedMateria ? derived.examReadinessByMateriaId.get(selectedMateria.id) || null : null;
 
   // Spider-Sense Schedule: tutti i nodi tracciati dal motore SRS, raggruppati
   // per materia — visibilità totale (non solo i ripassi già scaduti).
@@ -350,6 +602,7 @@ export default function QuadrantHub() {
     setEditObiettivo(node.obiettivo || '');
     setEditOreStimate(node.oreStimate);
     setEditDifficulty(node.difficulty);
+    setEditNote(node.note || '');
     setEditParentId(node.parentId || '');
     setNodeSaveState('idle');
     setNodeEditMode(true);
@@ -373,6 +626,7 @@ export default function QuadrantHub() {
       obiettivo: editObiettivo.trim(),
       oreStimate: Math.max(0.5, Number(editOreStimate) || 2),
       difficulty: editDifficulty,
+      note: editNote,
       parentId: editParentId || null
     };
     const result = await actions.updateSfidaAndSync(selectedMateria.id, node.id, patch);
@@ -388,7 +642,21 @@ export default function QuadrantHub() {
       setNodeSaveState('error');
       pushToast('Karen: sincronizzazione Cloud fallita. Riprova a salvare.', 'danger');
     }
-  }, [selectedMateria, editNome, editObiettivo, editOreStimate, editDifficulty, editParentId, nodeSaveState, actions, pushToast]);
+  }, [selectedMateria, editNome, editObiettivo, editOreStimate, editDifficulty, editNote, editParentId, nodeSaveState, actions, pushToast]);
+
+  /** V36.0 — persiste l'interrogazione DENTRO il nodo, con la stessa
+   * azione già usata per ogni altra modifica di un nodo: nessun canale di
+   * scrittura nuovo, nessuna tabella nuova. `nodeDetail` viene aggiornato
+   * in loco così le domande compaiono senza richiudere la modale. */
+  const handleSaveQuiz = useCallback(
+    async (quiz) => {
+      if (!selectedMateria || !nodeDetail) return;
+      setNodeDetail((prev) => (prev && prev.id === nodeDetail.id ? { ...prev, quiz } : prev));
+      const result = await actions.updateSfidaAndSync(selectedMateria.id, nodeDetail.id, { quiz });
+      if (!result.success) pushToast('Karen: interrogazione generata ma non sincronizzata sul Cloud.', 'danger');
+    },
+    [selectedMateria, nodeDetail, actions, pushToast]
+  );
 
   const handleReview = useCallback((node, rating) => {
     const materia = materie.find((m) => Array.isArray(m?.sfide) && m.sfide.some((s) => s.id === node.id));
@@ -515,7 +783,8 @@ export default function QuadrantHub() {
                 {isOpen && (
                   <div className="px-3 pb-3 space-y-3">
                     {items.map((m) => {
-                      const spiderScore = computeSpiderScore(m);
+                      const spiderScore = computeSpiderScore(m, derived.calibration);
+                      const mReadiness = derived.examReadinessByMateriaId.get(m.id) || null;
                       const mSfide = Array.isArray(m?.sfide) ? m.sfide : [];
                       const total = mSfide.length;
                       const done = mSfide.filter((s) => s.status === 'COMPLETED').length;
@@ -541,7 +810,7 @@ export default function QuadrantHub() {
                           key={m.id}
                           type="button"
                           onClick={() => setSelectedMateriaId(m.id)}
-                          className={`relative w-full text-left p-3 sm:p-4 rounded-2xl border transition-all duration-300 backdrop-blur-2xl overflow-hidden ${
+                          className={`relative w-full text-left p-3 sm:p-4 rounded-2xl border transition-all duration-300 backdrop-blur-lg overflow-hidden ${
                             critico
                               ? 'af-event-horizon border-primary/70 bg-primary/10'
                               : goblin
@@ -575,10 +844,25 @@ export default function QuadrantHub() {
                                 </span>
                               )}
                               <span className={BADGE.blue}>{m.cfu} CFU</span>
-                              <span className={BADGE.amber} title="Spider-Score — Time-Weaver Formula">
+                              <span
+                                className={BADGE.amber}
+                                title="Spider-Score — Pressure Formula: ore residue contro ore disponibili prima dell'esame, pesate per importanza strategica"
+                              >
                                 <Icon name="bolt" className="w-3.5 h-3.5" />
                                 {spiderScore}
                               </span>
+                              {/* V36.0 — il verdetto d'esame a colpo d'occhio,
+                                  già nell'elenco: non serve aprire la materia
+                                  per sapere se ti ci puoi presentare. */}
+                              {mReadiness && mReadiness.verdict !== 'UNKNOWN' && (
+                                <span
+                                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-mono border ${VERDICT_META[mReadiness.verdict].badge}`}
+                                  title={mReadiness.rationale}
+                                >
+                                  <Icon name="gauge" className="w-3.5 h-3.5" />
+                                  {VERDICT_META[mReadiness.verdict].short}
+                                </span>
+                              )}
                             </span>
                           </div>
                           <div className="flex items-center gap-2 mt-1.5 flex-wrap">
@@ -736,6 +1020,17 @@ export default function QuadrantHub() {
                   AI Index Matrix
                 </button>
               </div>
+
+              {/* V36.0 — EXAM READINESS INDEX: il verdetto esplicito
+                  "sostieni / rimanda" che l'app non ha mai dato. Fino alla
+                  V35 sapeva dire "sei in ritardo" e "finirai il giorno X",
+                  ma non rispondeva alla domanda del giorno in cui si
+                  aprono le prenotazioni. Nessun numero inventato: i
+                  pilastri senza dati valgono un neutro dichiarato e la
+                  confidenza scende (vedi utils/examReadiness.js). */}
+              {readiness && (
+                <ExamReadinessCard readiness={readiness} materia={selectedMateria} estimate={estimate} />
+              )}
 
               {/* V34.2 — "Selezione Multipla Nodi": barra azioni di gruppo,
                   sempre visibile mentre la modalità è attiva (0 o più nodi
@@ -1190,6 +1485,24 @@ export default function QuadrantHub() {
                     />
                   </div>
 
+                  <div className="relative">
+                    <label className="text-sm text-slate-400 block mb-1.5 flex items-center gap-1.5">
+                      <Icon name="note" className="w-3.5 h-3.5 text-secondary" />
+                      Appunti del nodo
+                    </label>
+                    <textarea
+                      value={editNote}
+                      onChange={(e) => setEditNote(e.target.value)}
+                      rows={6}
+                      className={`${INPUT} resize-y font-mono text-sm leading-relaxed`}
+                      placeholder={'Formule, passaggi chiave, errori tipici, pagina della dispensa...\nQuello che serve per ripassare senza cercare altrove.'}
+                      disabled={isSaving}
+                    />
+                    <p className="text-xs text-slate-500 mt-1.5">
+                      Compaiono qui sotto ad ogni apertura del nodo e ad ogni ripasso Spider-Sense.
+                    </p>
+                  </div>
+
                   <div className="relative grid grid-cols-2 gap-3">
                     <div>
                       <label className="text-sm text-slate-400 block mb-1.5">Ore previste</label>
@@ -1274,6 +1587,22 @@ export default function QuadrantHub() {
               ) : (
                 <>
                   {nodeDetail.obiettivo && <p className="text-base text-slate-300">{nodeDetail.obiettivo}</p>}
+
+                  {/* V36.0 — Appunti del nodo in sola lettura: la prima
+                      cosa che serve quando lo Spider-Sense chiede un
+                      ripasso. `whitespace-pre-wrap` conserva a capo e
+                      rientri scritti a mano, senza introdurre un parser
+                      markdown (e il suo peso) per un campo personale. */}
+                  {nodeDetail.note && (
+                    <div className="relative bg-secondary/5 border border-secondary/20 rounded-xl p-3.5">
+                      <p className="text-[11px] font-mono tracking-widest text-secondary mb-2 flex items-center gap-1.5">
+                        <Icon name="note" className="w-3.5 h-3.5" />
+                        APPUNTI
+                      </p>
+                      <p className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed font-mono">{nodeDetail.note}</p>
+                    </div>
+                  )}
+
                   <p className="text-sm text-slate-500">
                     Ore previste: {nodeDetail.oreStimate}h · {nodeDetail.focusMinutes} min di Focus accumulati
                     {currentParent && <> · Nodo Padre: <span className="text-slate-300">{currentParent.nome}</span></>}
@@ -1283,7 +1612,19 @@ export default function QuadrantHub() {
                       Prossimo ripasso: <span className="font-mono text-slate-300">{nodeDetail.nextReviewDate}</span>
                       {nodeDetail.lastReviewRating && ` · ultimo giudizio: ${REVIEW_RATING_META[nodeDetail.lastReviewRating].label}`}
                       {nodeDetail.reviewCount > 0 && ` · ${nodeDetail.reviewCount} ripassi totali`}
+                      {nodeDetail.srsIntervalDays > 0 && (
+                        <span className="text-slate-600"> · intervallo attuale {nodeDetail.srsIntervalDays}gg</span>
+                      )}
                     </p>
+                  )}
+
+                  {/* V36.0 — l'interrogazione viene PRIMA dei pulsanti di
+                      giudizio, perché è l'ordine corretto: si tenta di
+                      richiamare, poi si giudica. Disponibile su qualunque
+                      nodo già completato, sia in allerta Spider-Sense sia
+                      per un ripasso anticipato. */}
+                  {(status === NODE_STATUS.COMPLETED || status === NODE_STATUS.NEEDS_REVIEW) && selectedMateria && (
+                    <NodeQuizPanel node={nodeDetail} materiaId={selectedMateria.id} onSaveQuiz={handleSaveQuiz} />
                   )}
 
                   {status === NODE_STATUS.NEEDS_REVIEW && (
@@ -1292,7 +1633,7 @@ export default function QuadrantHub() {
                         <Icon name="alertTriangle" className="w-4 h-4" />
                         Lo Spider-Sense formicola: è ora di ripassare.
                       </p>
-                      <ReviewButtons onReview={(rating) => { handleReview(nodeDetail, rating); closeNodeDetail(); }} />
+                      <ReviewButtons sfida={nodeDetail} examDate={selectedMateria?.examDate} onReview={(rating) => { handleReview(nodeDetail, rating); closeNodeDetail(); }} />
                     </div>
                   )}
 
@@ -1302,7 +1643,7 @@ export default function QuadrantHub() {
                         <Icon name="bolt" className="w-4 h-4" />
                         Forza Ripasso Manuale — rinforza subito la memoria, senza aspettare lo Spider-Sense.
                       </p>
-                      <ReviewButtons onReview={(rating) => { handleReview(nodeDetail, rating); closeNodeDetail(); }} />
+                      <ReviewButtons sfida={nodeDetail} examDate={selectedMateria?.examDate} onReview={(rating) => { handleReview(nodeDetail, rating); closeNodeDetail(); }} />
                     </div>
                   )}
 
@@ -1428,7 +1769,7 @@ export default function QuadrantHub() {
       {spiderSenseDrawerOpen && (
         <div className="fixed inset-0 z-[70]">
           <div className="absolute inset-0 bg-surface/75 backdrop-blur-sm" onClick={() => setSpiderSenseDrawerOpen(false)} />
-          <div className="absolute top-0 right-0 h-full w-full max-w-md bg-surface/90 backdrop-blur-2xl border-l border-secondary/20 shadow-2xl flex flex-col">
+          <div className="absolute top-0 right-0 h-full w-full max-w-md bg-surface/90 backdrop-blur-lg border-l border-secondary/20 shadow-2xl flex flex-col">
             <div className="flex items-center justify-between px-6 py-5 border-b border-secondary/15">
               <div>
                 <p className="text-sm text-accent tracking-widest">SPIDER-SENSE ENGINE</p>
@@ -1464,7 +1805,7 @@ export default function QuadrantHub() {
                           {diffMeta.label}
                         </span>
                       </div>
-                      <ReviewButtons size="small" onReview={(rating) => actions.reviewSfida(r.materiaId, r.sfidaId, rating)} />
+                      <ReviewButtons size="small" sfida={r} examDate={r.materiaExamDate} onReview={(rating) => actions.reviewSfida(r.materiaId, r.sfidaId, rating)} />
                     </div>
                   );
                 })

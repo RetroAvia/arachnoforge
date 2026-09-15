@@ -6,6 +6,7 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import CombatLog from '../components/CombatLog.jsx';
 import { SCHEMA_VERSION, SUITS } from '../data/defaultSchema.js';
 import { validateAdminPassphrase } from '../utils/adminOverride.js';
+import { notificationPermission, requestNotificationPermission, notify, NOTIFY_PERMISSION } from '../utils/systemNotify.js';
 import { CARD, CARD_ALERT, H1, H2, BTN_PRIMARY, BTN_SECONDARY, BTN_GHOST, INPUT } from '../utils/designSystem.js';
 
 const SUIT_OPTIONS = [
@@ -52,7 +53,35 @@ function TechSwitch({ checked, onChange, ariaLabel }) {
 }
 
 export default function CoreConfig() {
-  const { state, actions, storageMode, pushToast } = useArachnoForge();
+  const { state, actions, storageMode, pushToast, derived } = useArachnoForge();
+
+  // V36.0 — stato del permesso notifiche, letto dal browser (unica fonte
+  // di verità: `settings.systemNotifications` può restare `true` da una
+  // sessione precedente mentre il permesso è stato nel frattempo revocato,
+  // e in quel caso l'interruttore deve mostrarsi spento, non mentire).
+  const [notifyPermission, setNotifyPermission] = useState(notificationPermission);
+
+  const handleToggleNotifications = async () => {
+    const enabled = state.settings.systemNotifications === true && notifyPermission === NOTIFY_PERMISSION.GRANTED;
+    if (enabled) {
+      actions.updateSettings({ systemNotifications: false });
+      return;
+    }
+    let permission = notificationPermission();
+    if (permission === NOTIFY_PERMISSION.DEFAULT) {
+      permission = await requestNotificationPermission();
+    }
+    setNotifyPermission(permission);
+    if (permission === NOTIFY_PERMISSION.GRANTED) {
+      actions.updateSettings({ systemNotifications: true });
+      notify('K.A.R.E.N. online', { body: 'Riceverai una notifica a fine blocco Focus e a fine pausa.', tag: 'af-test' });
+    } else if (permission === NOTIFY_PERMISSION.DENIED) {
+      actions.updateSettings({ systemNotifications: false });
+      pushToast('Notifiche negate dal browser: riattivale dalle impostazioni del sito.', 'danger');
+    } else {
+      pushToast('Questo browser non supporta le notifiche di sistema.', 'info');
+    }
+  };
   const { user, isGuest } = useAuthContext();
   const [focusTime, setFocusTime] = useState(state.settings.focusTime);
   const [shortBreakTime, setShortBreakTime] = useState(state.settings.shortBreakTime);
@@ -136,7 +165,21 @@ export default function CoreConfig() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    // V36.0 — traccia la data dell'ultimo backup reale. L'intero percorso
+    // di studi vive in un'unica riga `user_data.app_state`: un export
+    // dimenticato per mesi è l'unico modo in cui questi dati possono
+    // davvero sparire, e finora nulla lo ricordava mai.
+    actions.updateSettings({ lastExportDateKey: stamp });
   };
+
+  // Giorni dall'ultimo export — `null` se non ne è mai stato fatto uno.
+  const daysSinceExport = (() => {
+    const last = state.settings.lastExportDateKey;
+    if (typeof last !== 'string') return null;
+    const diff = Math.floor((Date.now() - new Date(`${last}T00:00:00Z`).getTime()) / 86400000);
+    return Number.isFinite(diff) ? Math.max(0, diff) : null;
+  })();
+  const backupStale = daysSinceExport == null || daysSinceExport >= 14;
 
   /**
    * V32.0 — Export ICS: le date d'esame già presenti sulle Materie del
@@ -422,6 +465,123 @@ export default function CoreConfig() {
         </div>
       </section>
 
+      {/* V36.0 — Il blocco che mancava del tutto: l'app non aveva alcun
+          modo di raggiungerti fuori dalla scheda aperta. Con lo schermo
+          bloccato la fine di un blocco Focus non ti arrivava in nessun
+          modo — tornavi a guardare e la pausa era finita venti minuti
+          prima. Il permesso viene chiesto SOLO da questo click esplicito:
+          una richiesta automatica al primo caricamento viene rifiutata dai
+          browser (e ricordata male da Safari). */}
+      <section className={`${CARD} space-y-3`}>
+        <h2 className={`${H2} flex items-center gap-2`}>
+          <Icon name="satellite" className="w-5 h-5 text-secondary" />
+          NOTIFICHE E SCHERMO
+        </h2>
+
+        <div className="relative flex items-center justify-between gap-4">
+          <div>
+            <p className="text-base text-slate-400 leading-relaxed">
+              Notifica di sistema a fine blocco Focus e a fine pausa, anche a schermo bloccato o con l'app in secondo piano.
+            </p>
+            {notifyPermission === 'denied' && (
+              <p className="text-xs text-primary mt-1.5">
+                Permesso negato a livello di browser: va riattivato dalle impostazioni del sito, Karen non può farlo da qui.
+              </p>
+            )}
+            {notifyPermission === 'unsupported' && (
+              <p className="text-xs text-slate-500 mt-1.5">Questo browser non espone le notifiche di sistema.</p>
+            )}
+          </div>
+          <TechSwitch
+            checked={state.settings.systemNotifications === true && notifyPermission === 'granted'}
+            onChange={handleToggleNotifications}
+            ariaLabel="Notifiche di sistema"
+          />
+        </div>
+
+        <div className="relative flex items-center justify-between gap-4 pt-3 border-t border-white/10">
+          <p className="text-base text-slate-400 leading-relaxed">
+            Tieni lo schermo acceso durante un blocco di Focus (mai durante le pause: lì spegnere è il punto).
+            Senza, Sensory Zero si spegneva da solo dopo trenta secondi.
+          </p>
+          <TechSwitch
+            checked={state.settings.keepScreenAwake !== false}
+            onChange={() => actions.updateSettings({ keepScreenAwake: state.settings.keepScreenAwake === false })}
+            ariaLabel="Mantieni schermo acceso"
+          />
+        </div>
+      </section>
+
+      {/* V36.0 — Interfaccia: due leve che cambiano davvero la fatica
+          quotidiana d'uso, non l'estetica. */}
+      <section className={`${CARD} space-y-3`}>
+        <h2 className={`${H2} flex items-center gap-2`}>
+          <Icon name="grid" className="w-5 h-5 text-secondary" />
+          INTERFACCIA
+        </h2>
+
+        <div className="relative flex items-center justify-between gap-4">
+          <p className="text-base text-slate-400 leading-relaxed">
+            <span className="text-slate-200 font-semibold">Una cosa alla volta.</span> Lo Stark-Web Terminal si apre sulla
+            sola decisione del momento (argomento, minuti, Avvia); briefing, Quota Odierna e Daily Patrol restano a un
+            click. Il numero di pannelli che chiedono attenzione insieme è esso stesso una fonte di stress.
+          </p>
+          <TechSwitch
+            checked={state.settings.focusFirstHome !== false}
+            onChange={() => actions.updateSettings({ focusFirstHome: state.settings.focusFirstHome === false })}
+            ariaLabel="Una cosa alla volta"
+          />
+        </div>
+
+        <div className="relative flex items-center justify-between gap-4 pt-3 border-t border-white/10">
+          <p className="text-base text-slate-400 leading-relaxed">
+            <span className="text-slate-200 font-semibold">Effetti pesanti.</span> Sfocature profonde, grana, particelle e
+            interferenza. Spegnili su telefoni meno recenti: sono il primo punto in cui si perdono fluidità e batteria
+            durante un pomodoro. Nessuna informazione va persa — cambia solo l'atmosfera.
+          </p>
+          <TechSwitch
+            checked={state.settings.heavyEffects !== false}
+            onChange={() => actions.updateSettings({ heavyEffects: state.settings.heavyEffects === false })}
+            ariaLabel="Effetti pesanti"
+          />
+        </div>
+      </section>
+
+      {/* V36.0 — "Karen impara da te": i due numeri che l'app misura su di
+          te e che ora governano ogni proiezione. Mostrati apertamente,
+          compresa la loro affidabilità: un valore ancora non calibrato
+          viene dichiarato tale invece di essere spacciato per misurato. */}
+      <section className={`${CARD} space-y-3`}>
+        <h2 className={`${H2} flex items-center gap-2`}>
+          <Icon name="gauge" className="w-5 h-5 text-secondary" />
+          CALIBRAZIONE — COSA KAREN HA IMPARATO SU DI TE
+        </h2>
+        <div className="relative grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-3.5">
+            <p className="text-[11px] font-mono tracking-widest text-slate-500">CAPACITÀ GIORNALIERA</p>
+            <p className="text-2xl font-mono font-bold text-white mt-1">{derived.calibration.hoursPerDay}h</p>
+            <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
+              {derived.calibration.capacityConfident
+                ? `Media reale sulle tue ultime ${derived.calibration.observedDays} giornate, giorni di riposo inclusi. Sostituisce il vecchio 4.5h/giorno teorico in ogni proiezione.`
+                : 'Valore di default: servono almeno 7 giorni di sessioni registrate perché diventi il tuo.'}
+            </p>
+          </div>
+          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-3.5">
+            <p className="text-[11px] font-mono tracking-widest text-slate-500">PRECISIONE DELLE TUE STIME</p>
+            <p className="text-2xl font-mono font-bold text-white mt-1">×{derived.calibration.biasFactor}</p>
+            <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
+              {derived.calibration.biasConfident
+                ? derived.calibration.biasFactor > 1.05
+                  ? `Su ${derived.calibration.biasSampleSize} nodi chiusi, ogni ora dichiarata te ne è costate ${derived.calibration.biasFactor}. Le "Ore previste" future vengono corrette di conseguenza.`
+                  : derived.calibration.biasFactor < 0.95
+                  ? `Su ${derived.calibration.biasSampleSize} nodi chiusi sei più veloce delle tue stime: le proiezioni vengono accorciate.`
+                  : `Su ${derived.calibration.biasSampleSize} nodi chiusi le tue stime sono accurate. Nessuna correzione applicata.`
+                : `Servono almeno 5 nodi completati con tempo di Focus tracciato (ne hai ${derived.calibration.biasSampleSize}).`}
+            </p>
+          </div>
+        </div>
+      </section>
+
       <section className={`${CARD} space-y-4`}>
         <h2 className={`${H2} flex items-center gap-2`}>
           <Icon name="gear" className="w-5 h-5 text-secondary" />
@@ -508,6 +668,27 @@ export default function CoreConfig() {
             {importMessage.text}
           </p>
         )}
+        {/* V36.0 — promemoria di backup: nessun download automatico (sarebbe
+            invadente e comunque bloccato dai browser), solo lo stato reale
+            detto chiaramente. */}
+        <div
+          className={`relative flex items-start gap-2.5 rounded-xl border px-3.5 py-2.5 ${
+            backupStale ? 'border-accent/40 bg-accent/10' : 'border-emerald-400/30 bg-emerald-900/20'
+          }`}
+        >
+          <Icon
+            name={backupStale ? 'alertTriangle' : 'check'}
+            className={`w-4 h-4 shrink-0 mt-0.5 ${backupStale ? 'text-accent' : 'text-emerald-400'}`}
+          />
+          <p className={`text-sm leading-relaxed ${backupStale ? 'text-accent' : 'text-emerald-300'}`}>
+            {daysSinceExport == null
+              ? "Nessun backup locale mai esportato. Tutto il tuo percorso di studi vive in un'unica riga sul Cloud: scaricane una copia ogni tanto."
+              : backupStale
+              ? `Ultimo backup ${daysSinceExport} giorni fa. Karen consiglia una copia locale fresca.`
+              : `Ultimo backup ${daysSinceExport === 0 ? 'oggi' : `${daysSinceExport} giorni fa`}.`}
+          </p>
+        </div>
+
         <p className="relative text-base text-slate-500 leading-relaxed">
           L'import valida i campi chiave dello schema prima di sovrascrivere il profilo — una volta importato, il nuovo stato viene salvato automaticamente
           {storageMode === 'cloud' ? ' sul Cloud' : storageMode === 'sandbox' ? ' nella Sandbox locale (mai sul Cloud reale)' : ' in locale su questo browser'}.

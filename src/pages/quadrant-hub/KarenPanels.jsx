@@ -20,7 +20,7 @@ import { BADGE } from '../../utils/designSystem.js';
  */
 export function KarenSuggestorPanel({ primaryTarget, onSelect }) {
   return (
-    <div className="relative bg-surface/80 backdrop-blur-2xl border-2 border-secondary/50 rounded-2xl shadow-secondary-glow-lg p-6 overflow-hidden">
+    <div className="relative bg-surface/80 backdrop-blur-lg border-2 border-secondary/50 rounded-2xl shadow-secondary-glow-lg p-6 overflow-hidden">
       <div className="absolute -top-16 -left-16 w-64 h-64 rounded-full bg-secondary/20 blur-3xl pointer-events-none animate-pulse-slow" />
       <div className="absolute -bottom-16 -right-16 w-64 h-64 rounded-full bg-primary/10 blur-3xl pointer-events-none" />
       <div className="relative flex items-center gap-3 mb-4">
@@ -79,7 +79,7 @@ export function KarenSuggestorPanel({ primaryTarget, onSelect }) {
 export function BountyBoardPanel({ targets, onSelect }) {
   if (!targets || targets.length === 0) return null;
   return (
-    <div className="relative bg-surface/80 backdrop-blur-2xl border-2 border-primary/40 rounded-2xl shadow-primary-glow p-6 overflow-hidden">
+    <div className="relative bg-surface/80 backdrop-blur-lg border-2 border-primary/40 rounded-2xl shadow-primary-glow p-6 overflow-hidden">
       <div className="absolute -top-16 -right-16 w-64 h-64 rounded-full bg-primary/15 blur-3xl pointer-events-none" />
       <div className="relative flex items-center gap-3 mb-4">
         <div className="w-11 h-11 rounded-xl bg-primary/15 border border-primary/50 flex items-center justify-center text-primary shrink-0 shadow-primary-glow">

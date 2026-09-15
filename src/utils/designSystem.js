@@ -12,6 +12,15 @@
  * Bandito ovunque: sfondi piatti (`bg-black`, `bg-slate-900`), bordi
  * semplici a singolo colore, <select>/<input> con stile nativo.
  *
+ * V36.0 — `backdrop-blur-2xl` -> `backdrop-blur-lg` su tutte le superfici
+ * in vetro. La sfocatura di sfondo è l'effetto più costoso dell'intero
+ * Design System e qui veniva applicata a OGNI card: con decine di card
+ * per pagina, su mobile è il primo punto in cui si perdono frame (e
+ * batteria) durante una sessione di Focus. A occhio la differenza fra i
+ * due livelli è minima sopra uno sfondo già scuro; il costo di
+ * composizione no. Con `settings.heavyEffects` disattivo la sfocatura
+ * sparisce del tutto (vedi [data-effects="lite"] in index.css).
+ *
  * V16.0 — True Theme Engine (Pillar 3): NESSUN hex statico da qui in
  * avanti. Ogni colore "di ruolo" (attacco/primario, refuel/secondario,
  * decay/accento, superficie) passa dai token dinamici `primary` /
@@ -31,15 +40,15 @@ export const APP_BG =
 
 /** Card/Contenitore standard — vetro tecnologico profondo, bordo Secondario al 20%, ombra a doppio strato. */
 export const CARD =
-  'bg-surface/70 backdrop-blur-2xl border border-secondary/20 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 sm:p-6 relative overflow-hidden';
+  'bg-surface/70 backdrop-blur-lg border border-secondary/20 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 sm:p-6 relative overflow-hidden';
 
 /** Variante senza padding, per contenitori che gestiscono da soli lo spazio interno (header + body separati). */
 export const CARD_NOPAD =
-  'bg-surface/70 backdrop-blur-2xl border border-secondary/20 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] relative overflow-hidden';
+  'bg-surface/70 backdrop-blur-lg border border-secondary/20 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] relative overflow-hidden';
 
 /** Variante con bordo Primario (stati critici / attenzione / Enrage / Goblin Protocol). */
 export const CARD_ALERT =
-  'bg-surface/70 backdrop-blur-2xl border border-primary/35 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 sm:p-6 relative overflow-hidden';
+  'bg-surface/70 backdrop-blur-lg border border-primary/35 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 sm:p-6 relative overflow-hidden';
 
 /** Pulsante Primario — "Spider-Strike": gradiente Primario a due toni, glow acceso, lift on hover. */
 export const BTN_PRIMARY =

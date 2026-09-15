@@ -146,6 +146,12 @@ export function useSuitTelemetry() {
 
   const mountedRef = useRef(true);
   const scanInFlightRef = useRef(false);
+  // V36.0 — "Interrogazione K.A.R.E.N." (generateNodeQuiz): stato e
+  // guardia anti-doppio-click dedicati, deliberatamente SEPARATI da
+  // quelli della Diagnostica Neurale — sono due chiamate indipendenti e
+  // una non deve mai bloccare o confondersi con l'altra.
+  const quizInFlightRef = useRef(false);
+  const [quizGenerating, setQuizGenerating] = useState(false);
   const saveInFlightRef = useRef(false);
   const currentDateRef = useRef(todayDateOnlyKey());
   const [, forceDateTick] = useState(0);
@@ -287,6 +293,60 @@ export function useSuitTelemetry() {
     [fetchAll]
   );
 
+  /**
+   * V36.0 — "Interrogazione K.A.R.E.N.": genera on-demand un set di
+   * domande di richiamo attivo sul CONTENUTO reale di un nodo.
+   *
+   * Perché passa da qui e non dal Cloud State: è una chiamata AI, e in
+   * questa app ogni chiamata AI vive dietro l'Edge Function (la chiave
+   * Anthropic non tocca mai il client). Il risultato però NON viene
+   * salvato da questo hook: torna al chiamante, che lo persiste dentro
+   * il nodo con l'azione esistente `updateSfidaAndSync` — così le
+   * domande restano legate al nodo, disponibili offline ad ogni ripasso
+   * successivo, e i "compartimenti stagni" restano intatti (questo hook
+   * continua a non scrivere una riga in `user_data`).
+   *
+   * Guardia anti-race identica a triggerOracleScan: una generazione già
+   * in volo blocca un secondo click.
+   */
+  const generateNodeQuiz = useCallback(async (materiaId, sfidaId) => {
+    if (quizInFlightRef.current) {
+      return { quiz: null, error: 'Interrogazione già in preparazione.' };
+    }
+    if (!materiaId || !sfidaId) {
+      return { quiz: null, error: 'Nodo non valido.' };
+    }
+    quizInFlightRef.current = true;
+    if (mountedRef.current) setQuizGenerating(true);
+
+    const invokeOnce = () =>
+      supabase.functions.invoke('karen-oracle', {
+        body: { mode: 'quiz', materiaId, sfidaId }
+      });
+
+    try {
+      let { data, error: invokeError } = await invokeOnce();
+      if (invokeError && isAuthError(invokeError)) {
+        await supabase.auth.refreshSession();
+        ({ data, error: invokeError } = await invokeOnce());
+      }
+      if (invokeError) {
+        throw new Error(
+          await resolveInvokeErrorMessage(invokeError, "K.A.R.E.N. non è riuscita a preparare l'interrogazione.")
+        );
+      }
+      if (data?.error) throw new Error(data.error);
+      if (!data?.quiz) throw new Error("Risposta senza interrogazione utilizzabile.");
+      return { quiz: data.quiz, thinContext: data.thin_context === true, error: null };
+    } catch (err) {
+      console.error('useSuitTelemetry: errore in generateNodeQuiz', err);
+      return { quiz: null, error: err?.message || "K.A.R.E.N. non è riuscita a preparare l'interrogazione." };
+    } finally {
+      quizInFlightRef.current = false;
+      if (mountedRef.current) setQuizGenerating(false);
+    }
+  }, []);
+
   /** Upsert su cadet_subjective_logs, one-shot per giorno (onConflict
    * user_id+date). Ogni campo passa da clamp/sanitize PRIMA di lasciare
    * il client — difesa in profondità anche se il chiamante (UI) ha già
@@ -386,6 +446,8 @@ export function useSuitTelemetry() {
     todayStr: currentDateRef.current,
     triggerOracleScan,
     saveSubjectiveLog,
+    generateNodeQuiz,
+    quizGenerating,
     refresh
   };
 }

@@ -2,7 +2,7 @@ import React, { useState, memo } from 'react';
 import { Icon } from '../../components/Icons.jsx';
 import { deriveNodeStatus, NODE_STATUS, directChildrenOf } from '../../utils/skillTree.js';
 import { DIFFICULTY_META } from '../../utils/xpEngine.js';
-import { REVIEW_RATING, REVIEW_RATING_META } from '../../utils/spiderSense.js';
+import { REVIEW_RATING, REVIEW_RATING_META, previewReviewIntervals } from '../../utils/spiderSense.js';
 import { CARD, BADGE, RADIAL_GLOW } from '../../utils/designSystem.js';
 
 // =====================================================================
@@ -38,8 +38,17 @@ export const STATUS_META = {
   NEEDS_REVIEW: { label: 'Spider-Sense', text: 'text-accent', border: 'border-accent/40', badge: BADGE.amber, icon: 'alertTriangle', glow: RADIAL_GLOW.amber }
 };
 
-export function ReviewButtons({ onReview, size = 'normal' }) {
+/**
+ * V36.0 — le etichette mostrano l'intervallo REALE di QUESTO nodo, non
+ * più i vecchi 4/2/1 giorni fissi uguali per tutti. Su un nodo che
+ * conosci bene da mesi il pulsante dirà "Facile (+39gg)", su uno appena
+ * imparato "Facile (+16gg)": è il feedback che rende visibile — e quindi
+ * credibile — la ripetizione dilazionata, e l'unico modo per capire a
+ * colpo d'occhio che i ripassi si stanno diradando come devono.
+ */
+export function ReviewButtons({ onReview, size = 'normal', sfida = null, examDate = null }) {
   const pad = size === 'small' ? 'py-2 text-sm' : 'py-2.5 text-base';
+  const previews = previewReviewIntervals(sfida || {}, examDate);
   return (
     // V34.0 — "God-Tier Pass": su schermi molto stretti (<640px) tre
     // colonne con l'etichetta completa "Difficile (+1gg)" affiancavano il
@@ -60,7 +69,7 @@ export function ReviewButtons({ onReview, size = 'normal' }) {
             }}
             className={`${pad} rounded-xl border ${meta.border} ${meta.color} bg-white/[0.02] font-semibold hover:brightness-125 hover:-translate-y-0.5 transition-all duration-300`}
           >
-            {meta.label} (+{meta.days}gg)
+            {meta.label} (+{previews[rating]}gg)
           </button>
         );
       })}

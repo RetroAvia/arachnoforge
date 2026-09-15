@@ -701,3 +701,91 @@ body[data-carnage='true'] {
 .af-locked-shake {
   animation: af-screen-shake 0.4s ease-in-out;
 }
+
+/* ================================================================== *
+ * V36.0 — PRESTAZIONI, CONTRASTO E NOTCH
+ * ================================================================== */
+
+/* --- 1. Modalità Effetti Leggeri -----------------------------------
+ * `settings.heavyEffects: false` mette [data-effects="lite"] su <body>
+ * (stesso identico pattern di [data-theme] e [data-carnage]) e da qui
+ * una manciata di regole spegne in blocco ciò che costa davvero:
+ * ogni backdrop-filter (una sfocatura a schermo intero per CARD, e le
+ * card sono decine), la grana fissa a tutto schermo, la vignette di
+ * interferenza e le animazioni infinite. Nessuna INFORMAZIONE sparisce
+ * — cambia solo l'atmosfera: bordi, colori, stati e testo restano
+ * identici. Su telefoni meno recenti è la differenza fra un timer
+ * fluido e un timer che scatta. */
+body[data-effects='lite'] *,
+body[data-effects='lite'] *::before,
+body[data-effects='lite'] *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+body[data-effects='lite'] .af-grain,
+body[data-effects='lite'] .af-interference,
+body[data-effects='lite'] .af-carnage-overlay {
+  display: none !important;
+}
+/* Le animazioni cicliche (drone visivi) si fermano; quelle "una tantum"
+   di feedback (pop, shake, reveal) restano: sono informazione, non
+   decorazione, e durano poche centinaia di millisecondi. */
+body[data-effects='lite'] .af-event-horizon,
+body[data-effects='lite'] .af-attenzione-pulse,
+body[data-effects='lite'] .af-goblin,
+body[data-effects='lite'] .af-spidersense-pulse,
+body[data-effects='lite'] .af-carnage-pulse,
+body[data-effects='lite'] .af-chest-float,
+body[data-effects='lite'] .af-radar-ring,
+body[data-effects='lite'] .af-cursor-blink {
+  animation: none !important;
+}
+/* Gli stati critici devono restare riconoscibili anche senza la loro
+   animazione: il colore del bordo prende il posto del lampeggio. */
+body[data-effects='lite'] .af-event-horizon {
+  border-color: rgb(var(--af-attack-rgb) / 0.8) !important;
+}
+body[data-effects='lite'] .af-attenzione-pulse {
+  border-color: rgb(var(--af-decay-rgb) / 0.7) !important;
+}
+
+/* --- 2. Contrasto del testo informativo ---------------------------
+ * `text-slate-500` (#64748b) su superficie #0b0d14 sta sotto la soglia
+ * di leggibilità AA per testo piccolo: è il colore usato in tutta l'app
+ * per le righe esplicative sotto ai dati, cioè proprio quelle da
+ * leggere su un telefono, di sera, o con lo schermo al sole. Viene
+ * alzato di uno scalino (verso slate-400) MANTENENDO la gerarchia:
+ * resta chiaramente secondario rispetto a slate-300 e al bianco.
+ * Override deliberato di una utility Tailwind, in un solo punto e
+ * reversibile cancellando questo blocco — la alternativa era riscrivere
+ * la classe in qualche centinaio di punti del codice. */
+@layer utilities {
+  .text-slate-500 {
+    color: #8496ad;
+  }
+  .text-slate-600 {
+    color: #6b7c93;
+  }
+}
+
+/* --- 3. Notch e barre di sistema ----------------------------------
+ * Con viewport-fit=cover (index.html) la Shell usa tutta l'altezza reale
+ * del telefono: senza questi padding, su iPhone il contenuto finirebbe
+ * sotto la dynamic island e sopra la barra gesti. */
+.af-viewport {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* --- 4. Fatigue UI: segnale, non ostacolo -------------------------
+ * La desaturazione a tutta pagina dello stato "affaticato" puniva la
+ * leggibilità proprio quando ne resta di meno (vedi App.jsx, dove la
+ * classe pesante è stata sostituita da questa). Il segnale resta —
+ * bordo rosso interno e vignette — ma il testo torna pienamente
+ * leggibile: l'app deve dirti che sei stanco, non renderti più
+ * difficile leggere. */
+.af-fatigued {
+  filter: saturate(0.88);
+  box-shadow: inset 0 0 0 1px rgb(var(--af-attack-rgb) / 0.3);
+}

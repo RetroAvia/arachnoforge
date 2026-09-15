@@ -90,6 +90,86 @@ function QuotaRow({ q, today = true }) {
   );
 }
 
+/**
+ * V36.0 — "ADESSO": la prima cosa che si vede aprendo l'app.
+ *
+ * Prima di questa card la Home era una colonna lunga (briefing -> piano
+ * argomenti -> quota -> daily patrol -> protocolli -> timer): sei
+ * pannelli che reclamavano attenzione insieme per rispondere a UNA sola
+ * domanda, che in una giornata normale è sempre la stessa — *cosa studio
+ * adesso e per quanto*. Il numero di elementi che chiedono attenzione
+ * contemporaneamente è esso stesso una fonte di stress, ed è esattamente
+ * ciò che l'app esiste per togliere: qui la risposta è una riga, un
+ * numero e un pulsante. Tutto il resto resta a un click di distanza.
+ */
+function NowCard({ target, minutes, budget, canStart, onStart, onOpenDetails, detailsOpen }) {
+  return (
+    <div className={`${CARD} border-primary/25`}>
+      <div className="absolute -top-16 -right-10 w-56 h-56 rounded-full bg-primary/10 blur-3xl pointer-events-none" />
+      <div className="relative flex flex-col gap-4">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
+            <p className="text-[11px] font-mono tracking-[0.25em] text-primary">ADESSO</p>
+            {target ? (
+              <>
+                <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight leading-tight mt-1 break-words">
+                  {target.argomento}
+                </h2>
+                <p className="text-sm text-slate-400 mt-1">{target.materia}</p>
+              </>
+            ) : (
+              <>
+                <h2 className="text-2xl font-extrabold text-white tracking-tight leading-tight mt-1">Nessun bersaglio attivo</h2>
+                <p className="text-sm text-slate-400 mt-1">
+                  Apri una materia nel Web-Matrix e dalle una data d'esame: Karen sceglierà da sola cosa viene prima.
+                </p>
+              </>
+            )}
+          </div>
+          <div className="text-right shrink-0">
+            <p className="text-3xl font-mono font-bold af-mono-nums text-white leading-none">{minutes}′</p>
+            <p className="text-[11px] text-slate-500 tracking-widest mt-1">BLOCCO</p>
+          </div>
+        </div>
+
+        {target?.rationale && <p className="text-sm text-slate-400 leading-relaxed">{target.rationale}</p>}
+        {target?.metodo && (
+          <p className="text-sm text-secondary leading-relaxed border-l-2 border-secondary/40 pl-3">{target.metodo}</p>
+        )}
+
+        {/* Budget del giorno: una riga, non due numeri da sommare a mente. */}
+        {budget && budget.totalNeedHours > 0 && (
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <span className={budget.overCapacity ? BADGE.red : BADGE.blue}>
+              <Icon name="clock" className="w-3 h-3" />
+              Oggi: {formatHoursMinutes(budget.totalNeedHours)} su {formatHoursMinutes(budget.budgetHours)} disponibili
+            </span>
+            {budget.overCapacity && (
+              <span className="text-primary">
+                Deficit di {formatHoursMinutes(budget.deficitHours)}: al tuo ritmo reale il piano di oggi non ci sta.
+              </span>
+            )}
+            {budget.loadAdjustmentPct < 0 && (
+              <span className="text-accent font-mono">carico ridotto del {Math.abs(budget.loadAdjustmentPct)}% da K.A.R.E.N.</span>
+            )}
+          </div>
+        )}
+
+        <div className="flex items-center gap-3 flex-wrap">
+          <button type="button" onClick={onStart} disabled={!canStart} className={BTN_PRIMARY}>
+            <Icon name="play" className="w-5 h-5" />
+            {target ? 'Avvia su questo' : 'Avvia Focus'}
+          </button>
+          <button type="button" onClick={onOpenDetails} className={BTN_GHOST}>
+            <Icon name={detailsOpen ? 'chevronUp' : 'chevronDown'} className="w-4 h-4" />
+            {detailsOpen ? 'Nascondi il resto' : 'Briefing, quota e missioni'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function MissionControl() {
   const { state, actions, timer, derived, sensoryZero, setSensoryZero, TIMER_STATUS, spiderSenseSurgeAt } = useArachnoForge();
 
@@ -116,6 +196,13 @@ export default function MissionControl() {
   const [questNome, setQuestNome] = useState('');
   const [questReward, setQuestReward] = useState(20);
   const [questXpReward, setQuestXpReward] = useState(0);
+
+  // V36.0 — "Una cosa alla volta": briefing, piano completo, Quota Odierna
+  // e Daily Patrol partono collassati quando `settings.focusFirstHome` è
+  // attivo (default). Non spariscono — sono a un click — ma smettono di
+  // competere con la decisione del momento. Stato volutamente LOCALE alla
+  // pagina: è una preferenza di sessione, non un dato da sincronizzare.
+  const [detailsOpen, setDetailsOpen] = useState(() => state.settings.focusFirstHome === false);
 
   // Tactical Debriefing: "Sessione Completata. Valuta il tuo Focus." si
   // apre quando l'utente chiude volontariamente la sessione in sospeso
@@ -337,6 +424,88 @@ export default function MissionControl() {
     doStartFocus();
   }, [doStartFocus]);
 
+  /**
+   * V36.0 — il bersaglio della card "ADESSO", in ordine di specificità
+   * decrescente: l'argomento scelto oggi da K.A.R.E.N. (già riconciliato
+   * live con l'albero), altrimenti il Primary Target di materia, altrimenti
+   * niente — mai un suggerimento inventato quando non c'è nulla da
+   * suggerire.
+   */
+  const nowTarget = useMemo(() => {
+    if (liveStudyFocus.primary) {
+      return {
+        argomento: liveStudyFocus.primary.argomento,
+        materia: liveStudyFocus.primary.materia,
+        rationale: liveStudyFocus.primary.rationale,
+        metodo: liveStudyFocus.primary.metodo,
+        materiaId: liveStudyFocus.primary.materiaId || null,
+        sfidaId: liveStudyFocus.primary.sfidaId || null
+      };
+    }
+    if (derived.primaryTarget) {
+      return {
+        argomento: derived.primaryTarget.materia.nome,
+        materia: `Primary Target · Spider-Score ${derived.primaryTarget.spiderScore}`,
+        rationale: derived.primaryTarget.reason,
+        metodo: null,
+        materiaId: derived.primaryTarget.materia.id,
+        sfidaId: null
+      };
+    }
+    return null;
+  }, [liveStudyFocus, derived.primaryTarget]);
+
+  /** Avvio in un solo gesto dalla card "ADESSO": seleziona il bersaglio
+   * (così i due Dropdown restano coerenti con ciò che sta girando) e fa
+   * partire il blocco, passando comunque dalla stessa guardia "sessione
+   * non salvata" di handleStartFocus. */
+  const handleStartNow = useCallback(() => {
+    const materiaId = nowTarget?.materiaId || selectedMateriaId || null;
+    const sfidaId = nowTarget?.sfidaId || (nowTarget?.materiaId ? null : selectedSfidaId) || null;
+    setSelectedMateriaId(materiaId || '');
+    setSelectedSfidaId(sfidaId || '');
+    if (timer.awaitingDebrief) {
+      setConfirmRestartOpen(true);
+      return;
+    }
+    timer.startFocus(materiaId, sfidaId, false);
+  }, [nowTarget, selectedMateriaId, selectedSfidaId, timer]);
+
+  /**
+   * V36.0 — Scorciatoie da tastiera. Tre soli tasti, quelli che si usano
+   * davvero durante una sessione:
+   *   Spazio  avvia / mette in pausa / riprende il blocco corrente
+   *   Esc     entra ed esce da Sensory Zero
+   *   D       apre/chiude i pannelli informativi
+   * Ignorate quando il fuoco è su un campo di testo o è aperto un modal:
+   * premere spazio mentre si scrive un appunto non deve mai far partire
+   * un pomodoro.
+   */
+  useEffect(() => {
+    const isTypingTarget = (el) =>
+      !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+
+    const onKeyDown = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isTypingTarget(e.target)) return;
+      if (debriefOpen || questModalOpen || confirmInterruptOpen || confirmRestartOpen) return;
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (timer.status === TIMER_STATUS.IDLE && !timer.awaitingDebrief) handleStartNow();
+        else if (timer.status === TIMER_STATUS.PAUSED) timer.resume();
+        else if (timer.status === TIMER_STATUS.FOCUS || timer.status === TIMER_STATUS.BREAK) timer.pause();
+      } else if (e.key === 'Escape') {
+        setSensoryZero((v) => !v);
+      } else if (e.key === 'd' || e.key === 'D') {
+        setDetailsOpen((v) => !v);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [timer, handleStartNow, debriefOpen, questModalOpen, confirmInterruptOpen, confirmRestartOpen, setSensoryZero, TIMER_STATUS]);
+
   const handleInterrupt = useCallback(() => setConfirmInterruptOpen(true), []);
 
   const confirmInterrupt = useCallback(() => {
@@ -466,6 +635,31 @@ export default function MissionControl() {
         <p className="text-base text-slate-400 mt-1.5">Karen: sistemi operativi. Centro di comando del ciclo di studio.</p>
       </div>
 
+      {/* V36.0 — "ADESSO": la decisione operativa del momento, prima di
+          qualunque cruscotto. Visibile solo a timer fermo — durante una
+          sessione la domanda "cosa studio adesso" ha già risposta. */}
+      {timer.status === TIMER_STATUS.IDLE && !timer.awaitingDebrief ? (
+        <NowCard
+          target={nowTarget}
+          minutes={effectiveFocusMinutes}
+          budget={derived.karenBudget}
+          canStart
+          onStart={handleStartNow}
+          onOpenDetails={() => setDetailsOpen((v) => !v)}
+          detailsOpen={detailsOpen}
+        />
+      ) : (
+        // A sessione avviata la card "ADESSO" non serve (la domanda ha già
+        // risposta), ma il comando per aprire i pannelli deve restare
+        // raggiungibile: mai un toggle che scompare col suo contenuto.
+        <button type="button" onClick={() => setDetailsOpen((v) => !v)} className={BTN_GHOST}>
+          <Icon name={detailsOpen ? 'chevronUp' : 'chevronDown'} className="w-4 h-4" />
+          {detailsOpen ? 'Nascondi briefing e quota' : 'Mostra briefing e quota'}
+        </button>
+      )}
+
+      {detailsOpen && (
+        <>
       {/* V35.0 — Daily Brain: il box briefing mostra ora il vero
           briefing_text/tactical_advice generato dall'unica chiamata
           K.A.R.E.N. giornaliera, quando disponibile per oggi — se
@@ -673,6 +867,39 @@ export default function MissionControl() {
                   {derived.karenFrozenQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} />)}
                 </div>
               )}
+
+              {/* V36.0 — Budget Giornaliero Globale: il totale che prima
+                  non esisteva. Con due materie in focus l'app mostrava due
+                  "Oggi: Xh" indipendenti che sommati potevano superare
+                  qualunque giornata reale, e lo si scopriva solo a sera. */}
+              {derived.karenBudget?.totalNeedHours > 0 && (
+                <div className="pt-3 border-t border-white/10">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="text-[11px] font-mono tracking-widest text-slate-500">BUDGET DI OGGI</span>
+                    <span className={derived.karenBudget.overCapacity ? BADGE.red : BADGE.green}>
+                      {formatHoursMinutes(derived.karenBudget.totalNeedHours)} richieste /{' '}
+                      {formatHoursMinutes(derived.karenBudget.budgetHours)} disponibili
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
+                    {derived.karenBudget.overCapacity ? (
+                      <>
+                        Karen: il piano di oggi eccede di {formatHoursMinutes(derived.karenBudget.deficitHours)} la tua
+                        capacità reale misurata. Le ore qui sopra sono già state ripartite in proporzione all'urgenza —
+                        ma un deficit che si ripete significa che va spostata una data d'esame o tagliato del programma,
+                        non recuperato a forza di volontà.
+                      </>
+                    ) : (
+                      <>
+                        Margine libero: {formatHoursMinutes(derived.karenBudget.slackHours)}.
+                        {derived.calibration?.capacityConfident
+                          ? ` Capacità calcolata sulle tue ultime ${derived.calibration.observedDays} giornate reali.`
+                          : ' Capacità ancora sul valore di default: servono almeno 7 giorni di sessioni registrate per calibrarla su di te.'}
+                      </>
+                    )}
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -741,6 +968,9 @@ export default function MissionControl() {
           </div>
         </div>
       </div>
+
+        </>
+      )}
 
       {/* V28.1 — Pillar 1: griglia principale ristrutturata — split 60/40
           (invece del precedente 66/33 a xl:) che scatta già da `lg:`, cosi'

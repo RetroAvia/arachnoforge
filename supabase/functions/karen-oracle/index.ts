@@ -80,6 +80,12 @@ import {
   sanitizeDirectives,
   buildUserPrompt,
   computeHistoricalStudyWindow,
+  computeYesterdayOutcome,
+  computePersonalSleepTarget,
+  findQuizNodeContext,
+  buildQuizSystemPrompt,
+  buildQuizUserPrompt,
+  sanitizeQuiz,
   selectStudyFocusCandidates,
   HR_BASELINE_WINDOW_DAYS,
   HR_BASELINE_MIN_SAMPLES,
@@ -167,6 +173,83 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: "Body JSON mancante o non valido." }, 400);
     }
 
+    // -- 2b. V36.0 — MODALITÀ QUIZ ("Interrogazione K.A.R.E.N.").
+    //        Ramo completamente separato dal lifecycle del briefing
+    //        giornaliero: on-demand, non tocca `karen_briefings` né alcuna
+    //        altra tabella, non consuma il tetto di rigenerazioni e non
+    //        interferisce con la cache del giorno. Le domande tornano al
+    //        client, che le salva DENTRO il nodo nel Cloud State esistente
+    //        (`sfida.quiz`) — zero migrazioni di schema. Il contenuto del
+    //        nodo viene letto SEMPRE dal database, mai dal body. --
+    if ((body as Record<string, unknown>).mode === 'quiz') {
+      const materiaId = String((body as Record<string, unknown>).materiaId ?? '');
+      const sfidaId = String((body as Record<string, unknown>).sfidaId ?? '');
+      if (!materiaId || !sfidaId) {
+        return jsonResponse({ error: "Modalità quiz: 'materiaId' e 'sfidaId' sono obbligatori." }, 400);
+      }
+
+      const adminForQuiz = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+      const { data: quizUserData } = await adminForQuiz
+        .from('user_data')
+        .select('app_state')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      const quizAppState = quizUserData?.app_state as Record<string, unknown> | null | undefined;
+      const nodeCtx = findQuizNodeContext(quizAppState?.materie, materiaId, sfidaId);
+      if (!nodeCtx) {
+        return jsonResponse({ error: 'Nodo non trovato nel Web-Matrix: potrebbe essere stato rinominato o eliminato.' }, 404);
+      }
+
+      const quizRes = await fetch(ANTHROPIC_API_URL, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: ANTHROPIC_MODEL,
+          max_tokens: 1200,
+          system: buildQuizSystemPrompt(),
+          messages: [{ role: 'user', content: buildQuizUserPrompt(nodeCtx) }]
+        })
+      });
+
+      if (!quizRes.ok) {
+        const errText = await quizRes.text();
+        console.error('karen-oracle (quiz): Anthropic API error', quizRes.status, errText);
+        return jsonResponse({ error: "K.A.R.E.N. non è riuscita a contattare il nucleo tattico (Claude API)." }, 502);
+      }
+
+      const quizJson = await quizRes.json();
+      const quizText: string = (Array.isArray(quizJson?.content) ? quizJson.content : [])
+        .filter((block: { type?: string; text?: string }) => block?.type === 'text' && typeof block.text === 'string')
+        .map((block: { text?: string }) => block.text)
+        .join('\n')
+        .trim();
+
+      let quiz = null;
+      try {
+        const cleaned = quizText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '');
+        quiz = sanitizeQuiz(JSON.parse(cleaned));
+      } catch (quizParseErr) {
+        console.error('karen-oracle (quiz): parsing fallito', quizParseErr, quizText);
+      }
+
+      if (!quiz) {
+        // Nessun fallback deterministico possibile: non si inventano
+        // domande su un contenuto che il server non conosce. Meglio un
+        // errore onesto che otto domande generiche spacciate per mirate.
+        return jsonResponse({ error: "K.A.R.E.N. non è riuscita a produrre un'interrogazione valida su questo nodo. Riprova." }, 502);
+      }
+
+      return jsonResponse({
+        quiz: { ...quiz, generatedAt: new Date().toISOString(), argomento: nodeCtx.argomento },
+        thin_context: (nodeCtx.obiettivo.length + nodeCtx.blueprint.length + nodeCtx.note.length) < 40
+      });
+    }
+
     const targetDate = validateDateParam((body as Record<string, unknown>).date);
     if (!targetDate) {
       return jsonResponse(
@@ -247,14 +330,20 @@ Deno.serve(async (req: Request) => {
           .maybeSingle(),
         admin
           .from('suit_biometrics')
-          .select('resting_hr, date')
+          // V36.0 — stessa query, una colonna in più: `sleep_total_min`
+          // alimenta il target di sonno PERSONALE (vedi
+          // computePersonalSleepTarget). Zero round-trip aggiuntivi.
+          .select('resting_hr, sleep_total_min, date')
           .eq('user_id', user.id)
           .gte('date', baselineSince)
           .lt('date', targetDate)
           .not('resting_hr', 'is', null),
         admin
           .from('karen_briefings')
-          .select('briefing_text')
+          // V36.0 — anche `directives`: servono per confrontare ciò che
+          // K.A.R.E.N. aveva consigliato ieri con ciò che è successo
+          // davvero (computeYesterdayOutcome).
+          .select('briefing_text, directives')
           .eq('user_id', user.id)
           .lt('date', targetDate)
           .order('date', { ascending: false })
@@ -273,7 +362,13 @@ Deno.serve(async (req: Request) => {
         ? Math.round(hrSamples.reduce((a: number, b: number) => a + b, 0) / hrSamples.length)
         : null;
 
-    const readiness = computeReadinessScore(bioToday ?? null, baselineHr, subjectiveToday ?? null);
+    // V36.0 — Target di sonno personale, dedotto dalla stessa finestra di
+    // osservazione già usata per la baseline cardiaca. Sotto la soglia di
+    // campioni resta il 7h30 universale, dichiarato come tale.
+    const sleepSamples = (hrHistory ?? []).map((r: { sleep_total_min: number | null }) => r.sleep_total_min);
+    const sleepTarget = computePersonalSleepTarget(sleepSamples);
+
+    const readiness = computeReadinessScore(bioToday ?? null, baselineHr, subjectiveToday ?? null, sleepTarget.target);
     const band = readinessBand(readiness.score);
 
     // Lettura SOLA-LETTURA, a senso unico, di app_state.starLog — degrada
@@ -285,6 +380,10 @@ Deno.serve(async (req: Request) => {
     // query aggiuntiva. Degrada con grazia a liste vuote se `materie`
     // manca/è vuoto (vedi selectStudyFocusCandidates in _logic.ts).
     const studyFocus = selectStudyFocusCandidates(appState?.materie, targetDate);
+    // V36.0 — Chiusura del ciclo: cosa è realmente successo ieri, contro
+    // le direttive che K.A.R.E.N. aveva emesso ieri. Stessa riga app_state,
+    // nessuna query aggiuntiva.
+    const yesterdayOutcome = computeYesterdayOutcome(appState?.starLog, targetDate, yesterdayBriefing?.directives ?? null);
 
     // -- 6. Chiamata a Claude (via Supabase Edge Function — MAI dal client) --
     const anthropicRes = await fetch(ANTHROPIC_API_URL, {
@@ -300,7 +399,12 @@ Deno.serve(async (req: Request) => {
         // (argomento_principale + fino a MAX_DUE_REVIEWS ripassi, ognuno
         // con una motivazione testuale) — margine per non troncare la
         // risposta JSON di Claude a metà.
-        max_tokens: 1000,
+        // V36.0 — 1000 -> 1400: una risposta troncata NON produce un
+        // errore visibile, cade silenziosamente sul fallback deterministico
+        // e il piano della giornata perde tutta la parte pedagogica senza
+        // che nulla lo segnali. Con una chiamata al giorno il margine in
+        // più non ha alcun impatto reale sul costo.
+        max_tokens: 1400,
         system: buildSystemPrompt(),
         messages: [
           {
@@ -313,7 +417,8 @@ Deno.serve(async (req: Request) => {
               subjective: subjectiveToday ?? null,
               previousBriefing: yesterdayBriefing?.briefing_text ?? null,
               historicalWindow,
-              studyFocus
+              studyFocus,
+              yesterdayOutcome
             })
           }
         ]

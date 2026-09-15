@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect } from 'react';
 import { daysUntilDateOnly, todayDateOnlyKey, dateOnlyToUtcMs } from '../utils/dateUtils.js';
-import { computeEstimatedCompletion } from '../utils/materiaMeta.js';
+import { computeEstimatedCompletion, computeRemainingHours, HOURS_PER_CFU } from '../utils/materiaMeta.js';
+import { NEUTRAL_CALIBRATION } from '../utils/calibration.js';
 import { getMissingPrerequisites } from '../data/vanvitelliCourseMap.js';
 
 /**
@@ -67,7 +68,7 @@ import { getMissingPrerequisites } from '../data/vanvitelliCourseMap.js';
  * `CRITICAL_DISTANCE_DAYS` giorni di margine, dove ha senso dare priorità
  * a chi è più indietro rispetto a chi è comodamente in pari.
  */
-export const HOURS_PER_CFU = 10;
+export { HOURS_PER_CFU };
 export const EVENT_HORIZON_THRESHOLD_HOURS = 8;
 
 export const MAX_DAILY_FOCUS_MATERIE = 2; // limite rigido: mai più di 2 materie spinte nello stesso giorno.
@@ -111,18 +112,6 @@ export const QUOTA_STATUS_META = {
   }
 };
 
-/** Ramo Nodi: Ore Residue = Σ (oreStimate_nodo - ore già tracciate su quel nodo), solo sui nodi NON completati. */
-function computeNodeBasedLoad(materia) {
-  const sfide = Array.isArray(materia.sfide) ? materia.sfide : [];
-  const incomplete = sfide.filter((s) => s.status !== 'COMPLETED');
-  const hoursRemaining = incomplete.reduce((sum, s) => {
-    const budgetHours = Math.max(0.5, Number(s.oreStimate) || 0);
-    const trackedHours = (Number(s.focusMinutes) || 0) / 60;
-    return sum + Math.max(0, budgetHours - trackedHours);
-  }, 0);
-  return { hoursRemaining, remainingNodeCount: incomplete.length };
-}
-
 /** V29.0 — Pillar 2: propedeuticità ufficiali NON ancora soddisfatte per questa Materia (grafo Vanvitelli), sempre calcolate sullo stato REALE (`examPassed`) delle altre Materie dell'utente. */
 function computePrereqFreeze(materia, allMaterie) {
   if (!materia.courseId) return { frozen: false, missingPrereqNames: [] };
@@ -133,26 +122,25 @@ function computePrereqFreeze(materia, allMaterie) {
 /** Esportata per test unitari mirati (V35.4) — il motore di calcolo della
  * quota di una singola Materia resta comunque uso interno primario di
  * `useKarenAutoRouter`, questa non è un'API pubblica per la UI. */
-export function computeMateriaQuota(materia, allMaterie) {
+export function computeMateriaQuota(materia, allMaterie, calibration = NEUTRAL_CALIBRATION) {
   const sfide = Array.isArray(materia.sfide) ? materia.sfide : [];
   const hasNodes = sfide.length > 0;
   const daysRemaining = materia.examDate ? daysUntilDateOnly(materia.examDate) : null;
 
-  let hoursRemaining = 0;
+  // V36.0 — una sola definizione di "ore residue" per tutta l'app
+  // (utils/materiaMeta.js), già corretta dal fattore di calibrazione
+  // personale: il ramo nodi e il fallback CFU vivono lì dentro.
+  let hoursRemaining = computeRemainingHours(materia, calibration);
   let finePrevistaDateKey = null;
   let totalDaysNeeded = 0;
 
   if (hasNodes) {
-    const nodeLoad = computeNodeBasedLoad(materia);
-    hoursRemaining = nodeLoad.hoursRemaining;
     // Single source of truth: la STESSA funzione che disegna "Fine
     // Prevista" nella card Skill Tree di QuadrantHub.jsx — zero drift
     // possibile fra i due motori.
-    const estimate = computeEstimatedCompletion(materia);
+    const estimate = computeEstimatedCompletion(materia, calibration);
     finePrevistaDateKey = estimate.done ? null : estimate.dateKey;
     totalDaysNeeded = estimate.totalDaysNeeded || 0;
-  } else {
-    hoursRemaining = Math.max(0, (Number(materia.cfu) || 0) * HOURS_PER_CFU);
   }
 
   let dailyQuotaHours = null;
@@ -189,7 +177,12 @@ export function computeMateriaQuota(materia, allMaterie) {
       status = QUOTA_STATUS.CRITICO;
     }
   } else {
-    const ratio = dailyQuotaHours / EVENT_HORIZON_THRESHOLD_HOURS;
+    // V36.0 — la soglia non è più un 8h/giorno teorico uguale per tutti
+    // ma la TUA capacità reale misurata (utils/calibration.js): una quota
+    // di 5h/giorno è "ottimale" per chi ne regge 9 e "critica" per chi ne
+    // regge 3. EVENT_HORIZON_THRESHOLD_HOURS resta solo come fallback.
+    const capacity = calibration?.hoursPerDay > 0 ? calibration.hoursPerDay : EVENT_HORIZON_THRESHOLD_HOURS;
+    const ratio = dailyQuotaHours / capacity;
     if (ratio <= 0.5) status = QUOTA_STATUS.OTTIMALE;
     else if (ratio <= 1) status = QUOTA_STATUS.ATTENZIONE;
     else status = QUOTA_STATUS.CRITICO;
@@ -276,6 +269,56 @@ export function selectDailyFocus(sortedQuotas) {
 }
 
 /**
+ * V36.0 — BUDGET GIORNALIERO GLOBALE.
+ *
+ * Fino alla V35 ogni materia in focus calcolava la propria quota in modo
+ * INDIPENDENTE (ore residue / giorni residui) e la UI le mostrava
+ * affiancate. Con 2 materie in focus si arrivava tranquillamente a
+ * "Oggi: 4h" + "Oggi: 3h" = 7 ore, un totale che nessuna giornata reale
+ * contiene — e il Cadetto lo scopriva solo a fine giornata, fallendo
+ * entrambe le quote e pagandone il prezzo emotivo.
+ *
+ * Ora esiste UN budget (la capacità reale misurata, eventualmente ridotta
+ * dalla direttiva `mission_control.load_adjustment_pct` di K.A.R.E.N.) che
+ * viene RIPARTITO fra le materie in focus:
+ *  - se il budget basta, ognuna riceve esattamente quello che le serve e
+ *    l'avanzo resta libero (`slackHours`);
+ *  - se non basta, le ore vengono distribuite in proporzione al bisogno e
+ *    il deficit viene dichiarato apertamente (`deficitHours`) invece di
+ *    essere nascosto in due numeri che non tornano.
+ *
+ * Il deficit è un'informazione preziosa, non un fallimento: dice che il
+ * piano NON è eseguibile al ritmo attuale, cioè esattamente quando serve
+ * spostare una data d'esame o tagliare del programma.
+ */
+export function allocateDailyBudget(focusQuotas, budgetHours) {
+  const safeBudget = Number.isFinite(budgetHours) && budgetHours > 0 ? budgetHours : 0;
+  const needs = focusQuotas.map((q) => ({
+    materiaId: q.materiaId,
+    // Una materia senza data d'esame non ha una quota calcolabile: entra
+    // nel riparto con un bisogno nullo e riceve solo dall'avanzo.
+    need: Number.isFinite(q.dailyQuotaHours) && q.dailyQuotaHours > 0 ? q.dailyQuotaHours : 0
+  }));
+  const totalNeed = needs.reduce((sum, n) => sum + n.need, 0);
+  const fits = totalNeed <= safeBudget;
+
+  const allocation = new Map();
+  needs.forEach((n) => {
+    const assigned = fits || totalNeed === 0 ? n.need : (n.need / totalNeed) * safeBudget;
+    allocation.set(n.materiaId, Math.round(assigned * 100) / 100);
+  });
+
+  return {
+    allocation,
+    budgetHours: Math.round(safeBudget * 100) / 100,
+    totalNeedHours: Math.round(totalNeed * 100) / 100,
+    overCapacity: !fits && totalNeed > 0,
+    deficitHours: fits ? 0 : Math.round((totalNeed - safeBudget) * 100) / 100,
+    slackHours: fits ? Math.round((safeBudget - totalNeed) * 100) / 100 : 0
+  };
+}
+
+/**
  * @param {Array} materie - state.materie corrente
  * @returns {{
  *   quotas: Array, byMateriaId: Map, eventHorizonList: Array, criticalCount: number,
@@ -283,7 +326,8 @@ export function selectDailyFocus(sortedQuotas) {
  *   dailyFocusQuotas: Array, queuedQuotas: Array, frozenQuotas: Array
  * }}
  */
-export function useKarenAutoRouter(materie) {
+export function useKarenAutoRouter(materie, options = {}) {
+  const { calibration = NEUTRAL_CALIBRATION, loadAdjustmentPct = 0 } = options;
   const [dayKey, setDayKey] = useState(todayDateOnlyKey);
 
   // Heartbeat leggero: ricalcola la chiave del giorno ogni minuto, così il
@@ -302,10 +346,10 @@ export function useKarenAutoRouter(materie) {
     const safe = Array.isArray(materie) ? materie : [];
     return safe
       .filter((m) => m && !m.examPassed)
-      .map((m) => computeMateriaQuota(m, safe))
+      .map((m) => computeMateriaQuota(m, safe, calibration))
       .sort(compareByUrgency);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [materie, dayKey]);
+  }, [materie, dayKey, calibration]);
 
   const byMateriaId = useMemo(() => {
     const map = new Map();
@@ -325,6 +369,27 @@ export function useKarenAutoRouter(materie) {
 
   const eventHorizonList = useMemo(() => quotas.filter((q) => q.status === QUOTA_STATUS.CRITICO), [quotas]);
 
+  // V36.0 — la direttiva `mission_control.load_adjustment_pct` del Daily
+  // Brief MODIFICA davvero il budget del giorno. Fino alla V35 era un
+  // banner e basta: K.A.R.E.N. diceva "-30% oggi" e il numero sotto
+  // continuava a chiedere le stesse ore. Una direttiva che il sistema
+  // stesso ignora insegna a ignorare tutte le direttive.
+  const budget = useMemo(() => {
+    const safePct = Number.isFinite(loadAdjustmentPct) ? Math.max(-50, Math.min(0, loadAdjustmentPct)) : 0;
+    const base = calibration?.hoursPerDay > 0 ? calibration.hoursPerDay : EVENT_HORIZON_THRESHOLD_HOURS;
+    const adjusted = base * (1 + safePct / 100);
+    const result = allocateDailyBudget(dailyFocusQuotas, adjusted);
+    return { ...result, baseBudgetHours: Math.round(base * 100) / 100, loadAdjustmentPct: safePct };
+  }, [dailyFocusQuotas, calibration, loadAdjustmentPct]);
+
+  // Le quote in focus, arricchite con le ore REALMENTE assegnate oggi
+  // dal riparto — la UI legge `assignedHours` e non deve più sommare da
+  // sola due numeri indipendenti.
+  const dailyFocusQuotasWithBudget = useMemo(
+    () => dailyFocusQuotas.map((q) => ({ ...q, assignedHours: budget.allocation.get(q.materiaId) ?? null })),
+    [dailyFocusQuotas, budget]
+  );
+
   return {
     quotas,
     byMateriaId,
@@ -332,9 +397,10 @@ export function useKarenAutoRouter(materie) {
     criticalCount: eventHorizonList.length,
     dailyFocusIds: focusIds,
     monotaskActive,
-    dailyFocusQuotas,
+    dailyFocusQuotas: dailyFocusQuotasWithBudget,
     queuedQuotas,
-    frozenQuotas
+    frozenQuotas,
+    budget
   };
 }
 

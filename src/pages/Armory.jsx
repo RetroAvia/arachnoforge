@@ -36,7 +36,7 @@ function SkillCard({ skill, unlocked, unlockable, prereqMissing, techTokens, onU
     <div
       className={`relative rounded-2xl border p-3 sm:p-4 transition-all duration-300 overflow-hidden group ${
         unlocked
-          ? `bg-surface/70 backdrop-blur-2xl ${meta.border} shadow-[0_8px_24px_rgba(0,0,0,0.4)]`
+          ? `bg-surface/70 backdrop-blur-lg ${meta.border} shadow-[0_8px_24px_rgba(0,0,0,0.4)]`
           : prereqMissing
           ? 'bg-surface/40 backdrop-blur-md border-white/5 opacity-40 grayscale'
           : unlockable
@@ -225,7 +225,7 @@ export default function Armory() {
                 key={entry.sfida.id}
                 type="button"
                 onClick={() => openDrawer(entry)}
-                className="text-left bg-surface/70 backdrop-blur-2xl border border-secondary/20 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 hover:border-secondary/50 hover:-translate-y-1 transition-all duration-300"
+                className="text-left bg-surface/70 backdrop-blur-lg border border-secondary/20 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 hover:border-secondary/50 hover:-translate-y-1 transition-all duration-300"
               >
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-base font-medium truncate text-slate-100">{entry.sfida.nome}</p>
@@ -352,7 +352,7 @@ export default function Armory() {
                       key={t.id}
                       className={`relative rounded-2xl border p-5 text-center transition-all duration-300 overflow-hidden ${
                         t.unlocked
-                          ? `bg-surface/70 backdrop-blur-2xl ${meta.border} ${meta.glow}`
+                          ? `bg-surface/70 backdrop-blur-lg ${meta.border} ${meta.glow}`
                           : 'bg-surface/40 backdrop-blur-md border-white/5 opacity-30 grayscale'
                       }`}
                     >
@@ -524,7 +524,7 @@ export default function Armory() {
             onClick={closeDrawer}
           />
           <div
-            className={`absolute top-0 right-0 h-full w-full max-w-md bg-surface/90 backdrop-blur-2xl border-l border-secondary/20 shadow-2xl flex flex-col transition-transform duration-300 ${
+            className={`absolute top-0 right-0 h-full w-full max-w-md bg-surface/90 backdrop-blur-lg border-l border-secondary/20 shadow-2xl flex flex-col transition-transform duration-300 ${
               drawerOpen ? 'translate-x-0' : 'translate-x-full'
             }`}
           >

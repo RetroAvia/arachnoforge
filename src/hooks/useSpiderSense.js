@@ -26,12 +26,20 @@ export function useSpiderSense(materie) {
           return {
             materiaId: m.id,
             materiaNome: m.nome,
+            // V36.0 — la data d'esame viaggia con la voce di ripasso: serve
+            // all'anteprima degli intervalli (nessun ripasso schedulato
+            // oltre l'esame) nel drawer dei ripassi in sospeso, che non ha
+            // accesso all'oggetto Materia completo.
+            materiaExamDate: m.examDate || null,
             sfidaId: s.id,
             sfidaNome: s.nome,
             nextReviewDate: s.nextReviewDate,
             difficulty: s.difficulty,
             lastReviewRating: s.lastReviewRating,
             reviewCount: s.reviewCount || 0,
+            // Stato della curva SM-2 di questo nodo (vedi utils/spiderSense.js).
+            srsEase: s.srsEase,
+            srsIntervalDays: s.srsIntervalDays,
             daysUntil,
             isDue: daysUntil !== null && daysUntil <= 0
           };

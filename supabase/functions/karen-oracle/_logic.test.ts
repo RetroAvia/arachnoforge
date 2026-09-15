@@ -32,7 +32,14 @@ import {
   computeHistoricalStudyWindow,
   selectStudyFocusCandidates,
   EMPTY_STUDY_FOCUS,
-  MAX_FORCE_REGENERATIONS_PER_DAY
+  MAX_FORCE_REGENERATIONS_PER_DAY,
+  computeYesterdayOutcome,
+  computePersonalSleepTarget,
+  candidatePool,
+  buildUserPrompt,
+  SLEEP_TARGET_MIN,
+  SLEEP_TARGET_FLOOR_MIN,
+  SLEEP_TARGET_CEILING_MIN
 } from './_logic.ts';
 
 // ---------------------------------------------------------------------
@@ -654,4 +661,183 @@ Deno.test('sanitizeDirectives — study_focus: ripassi_da_non_saltare recupera a
   assertEquals(d.study_focus.ripassi_da_non_saltare.length, 1);
   assertEquals(d.study_focus.ripassi_da_non_saltare[0].sfidaId, 'sR');
   assertEquals(d.study_focus.ripassi_da_non_saltare[0].materiaId, 'mF');
+});
+
+
+// =====================================================================
+// V36.0 — computePersonalSleepTarget
+// =====================================================================
+Deno.test('computePersonalSleepTarget — sotto la soglia di campioni resta il target universale', () => {
+  const r = computePersonalSleepTarget([420, 430, 400]);
+  assertEquals(r.personalized, false);
+  assertEquals(r.target, SLEEP_TARGET_MIN);
+});
+
+Deno.test('computePersonalSleepTarget — con abbastanza notti usa la mediana reale', () => {
+  const notti = [400, 410, 420, 420, 430, 430, 440, 450, 460, 470];
+  const r = computePersonalSleepTarget(notti);
+  assertEquals(r.personalized, true);
+  assertEquals(r.target, 430);
+});
+
+Deno.test('computePersonalSleepTarget — un sonno cronicamente scarso NON abbassa il target sotto il pavimento fisiologico', () => {
+  // Il difetto classico di questa calibrazione: se il target seguisse la
+  // mediana senza limiti, dormire 4h per un mese "normalizzerebbe" le 4h
+  // e il punteggio smetterebbe di segnalare il problema.
+  const r = computePersonalSleepTarget(new Array(20).fill(240));
+  assertEquals(r.target, SLEEP_TARGET_FLOOR_MIN);
+});
+
+Deno.test('computePersonalSleepTarget — e non lo alza oltre il tetto', () => {
+  const r = computePersonalSleepTarget(new Array(20).fill(700));
+  assertEquals(r.target, SLEEP_TARGET_CEILING_MIN);
+});
+
+Deno.test('scoreSleep — con target personale più basso, la stessa notte vale di più', () => {
+  const notte = { sleep_total_min: 400, sleep_deep_min: 60, sleep_rem_min: 60 };
+  const conTargetStandard = scoreSleep(notte, SLEEP_TARGET_MIN)!;
+  const conTargetPersonale = scoreSleep(notte, 400)!;
+  assertEquals(conTargetPersonale > conTargetStandard, true);
+});
+
+// =====================================================================
+// V36.0 — computeYesterdayOutcome (chiusura del ciclo)
+// =====================================================================
+const DIRETTIVE_IERI = {
+  mission_control: { load_adjustment_pct: -10, rationale: '' },
+  study_window: { start_hour: 15, end_hour: 18, label: '15:00–18:00', rationale: '' }
+};
+
+Deno.test('computeYesterdayOutcome — nessuna sessione ieri: null, mai un oggetto vuoto e fuorviante', () => {
+  const log = [{ type: 'FOCUS_SESSION', dateKey: '2026-09-01', minutes: 50, hour: 16, quality: 'FLOW' }];
+  assertEquals(computeYesterdayOutcome(log, '2026-09-11', DIRETTIVE_IERI), null);
+});
+
+Deno.test('computeYesterdayOutcome — somma i minuti e conta le sessioni del solo giorno precedente', () => {
+  const log = [
+    { type: 'FOCUS_SESSION', dateKey: '2026-09-10', minutes: 50, hour: 16, quality: 'FLOW' },
+    { type: 'FOCUS_SESSION', dateKey: '2026-09-10', minutes: 25, hour: 21, quality: 'DISTRACTED' },
+    { type: 'FOCUS_SESSION', dateKey: '2026-09-09', minutes: 90, hour: 16, quality: 'FLOW' }
+  ];
+  const r = computeYesterdayOutcome(log, '2026-09-11', DIRETTIVE_IERI)!;
+  assertEquals(r.data, '2026-09-10');
+  assertEquals(r.minuti_studiati, 75);
+  assertEquals(r.sessioni, 2);
+});
+
+Deno.test('computeYesterdayOutcome — misura quante sessioni sono cadute nella finestra consigliata', () => {
+  const log = [
+    { type: 'FOCUS_SESSION', dateKey: '2026-09-10', minutes: 50, hour: 16, quality: 'FLOW' },
+    { type: 'FOCUS_SESSION', dateKey: '2026-09-10', minutes: 50, hour: 23, quality: 'NORMAL' },
+    { type: 'FOCUS_SESSION', dateKey: '2026-09-10', minutes: 50, hour: 9, quality: 'NORMAL' }
+  ];
+  const r = computeYesterdayOutcome(log, '2026-09-11', DIRETTIVE_IERI)!;
+  assertEquals(r.sessioni_in_finestra_consigliata, 1);
+  assertEquals(r.finestra_consigliata, '15:00–18:00');
+  assertEquals(r.carico_consigliato_pct, -10);
+});
+
+Deno.test('computeYesterdayOutcome — finestra a cavallo di mezzanotte gestita col wrap-around', () => {
+  const direttive = { study_window: { start_hour: 22, end_hour: 2, label: '22:00–02:00' } };
+  const log = [
+    { type: 'FOCUS_SESSION', dateKey: '2026-09-10', minutes: 50, hour: 23, quality: 'FLOW' },
+    { type: 'FOCUS_SESSION', dateKey: '2026-09-10', minutes: 50, hour: 1, quality: 'FLOW' },
+    { type: 'FOCUS_SESSION', dateKey: '2026-09-10', minutes: 50, hour: 12, quality: 'FLOW' }
+  ];
+  const r = computeYesterdayOutcome(log, '2026-09-11', direttive)!;
+  assertEquals(r.sessioni_in_finestra_consigliata, 2);
+});
+
+Deno.test('computeYesterdayOutcome — qualità prevalente = la più frequente, non la prima', () => {
+  const log = [
+    { type: 'FOCUS_SESSION', dateKey: '2026-09-10', minutes: 25, hour: 10, quality: 'FLOW' },
+    { type: 'FOCUS_SESSION', dateKey: '2026-09-10', minutes: 25, hour: 11, quality: 'DISTRACTED' },
+    { type: 'FOCUS_SESSION', dateKey: '2026-09-10', minutes: 25, hour: 12, quality: 'DISTRACTED' }
+  ];
+  const r = computeYesterdayOutcome(log, '2026-09-11', DIRETTIVE_IERI)!;
+  assertEquals(r.qualita_prevalente, 'DISTRACTED');
+});
+
+Deno.test('computeYesterdayOutcome — senza direttive di ieri riporta comunque i minuti, con finestra null', () => {
+  const log = [{ type: 'FOCUS_SESSION', dateKey: '2026-09-10', minutes: 40, hour: 16, quality: 'NORMAL' }];
+  const r = computeYesterdayOutcome(log, '2026-09-11', null)!;
+  assertEquals(r.minuti_studiati, 40);
+  assertEquals(r.sessioni_in_finestra_consigliata, null);
+  assertEquals(r.finestra_consigliata, null);
+});
+
+// =====================================================================
+// V36.0 — Paniere numerato: l'aggancio per INDICE
+// =====================================================================
+const MATERIE_DEMO = [
+  {
+    id: 'm1',
+    nome: 'Analisi 1',
+    examDate: '2026-09-20',
+    examPassed: false,
+    perceivedDifficulty: 4,
+    sfide: [
+      { id: 's1', nome: 'Limiti', obiettivo: 'o', blueprint: '', difficulty: 'MEDIUM', status: 'PENDING', parentId: null },
+      { id: 's2', nome: 'Derivate', obiettivo: 'o', blueprint: '', difficulty: 'HARD', status: 'PENDING', parentId: null }
+    ]
+  }
+];
+
+Deno.test('candidatePool — ordine stabile: prima i disponibili, poi i ripassi scaduti', () => {
+  const focus = selectStudyFocusCandidates(MATERIE_DEMO, '2026-09-11');
+  const pool = candidatePool(focus);
+  assertEquals(pool.length, 2);
+  assertEquals(pool[0].argomento, 'Limiti');
+  assertEquals(pool[1].argomento, 'Derivate');
+});
+
+Deno.test('buildUserPrompt — i candidati arrivano a Claude NUMERATI e senza id interni', () => {
+  const focus = selectStudyFocusCandidates(MATERIE_DEMO, '2026-09-11');
+  const readiness = computeReadinessScore(null, null, null);
+  const prompt = JSON.parse(
+    buildUserPrompt({
+      date: '2026-09-11',
+      readiness,
+      band: 'OTTIMALE',
+      bio: null,
+      subjective: null,
+      previousBriefing: null,
+      studyFocus: focus
+    })
+  );
+  const candidati = prompt.argomenti_e_materie_oggi.candidati;
+  assertEquals(candidati[0].id, 0);
+  assertEquals(candidati[1].id, 1);
+  // Gli id interni restano dati di servizio del client: mai nel prompt.
+  assertEquals(candidati[0].sfidaId, undefined);
+  assertEquals(candidati[0].materiaId, undefined);
+});
+
+Deno.test('sanitizeDirectives — un indice risolve il candidato esatto, anche se Claude non scrive il nome', () => {
+  const focus = selectStudyFocusCandidates(MATERIE_DEMO, '2026-09-11');
+  const raw = {
+    briefing_text: 'x',
+    tactical_advice: 'y',
+    study_focus: {
+      argomento_principale: { candidato: 1, metodo: 'Worked examples.', rationale: 'Più ostico.' },
+      ripassi_da_non_saltare: []
+    }
+  };
+  const d = sanitizeDirectives(raw, 'OTTIMALE', null, focus);
+  assertEquals(d.study_focus.argomento_principale?.argomento, 'Derivate');
+  assertEquals(d.study_focus.argomento_principale?.sfidaId, 's2');
+  assertEquals(d.study_focus.argomento_principale?.materiaId, 'm1');
+});
+
+Deno.test('sanitizeDirectives — un indice fuori range non aggancia nulla e si ricade sul fallback', () => {
+  const focus = selectStudyFocusCandidates(MATERIE_DEMO, '2026-09-11');
+  const raw = {
+    study_focus: {
+      argomento_principale: { candidato: 99, metodo: 'Boh.', rationale: '' },
+      ripassi_da_non_saltare: []
+    }
+  };
+  const d = sanitizeDirectives(raw, 'OTTIMALE', null, focus);
+  // Il fallback deterministico sceglie il primo disponibile.
+  assertEquals(d.study_focus.argomento_principale?.argomento, 'Limiti');
 });

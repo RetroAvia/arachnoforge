@@ -2,7 +2,28 @@
 <html lang="it">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <!-- V36.0 — viewport-fit=cover: sui telefoni con notch/dynamic island la
+         Shell può usare l'intera altezza e gestire il notch via env(safe-area-*)
+         in index.css, invece di lasciare due bande nere. `maximum-scale=1` resta
+         (l'app è una UI applicativa, non un documento da zoomare) ma NON si
+         usa user-scalable=no, che bloccherebbe anche lo zoom di accessibilità. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover"
+    />
+    <meta name="description" content="Karen OS — centro di comando del ciclo di studio." />
+    <meta name="theme-color" content="#0b0d14" />
+    <meta name="color-scheme" content="dark" />
+
+    <!-- PWA: installabile in home screen, a schermo intero, con la sua icona. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ArachnoForge" />
+    <meta name="mobile-web-app-capable" content="yes" />
+
     <title>ArachnoForge // Mission Control</title>
   </head>
   <body class="bg-af-bg text-af-text">

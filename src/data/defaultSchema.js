@@ -1,13 +1,15 @@
 import { PERSISTED_STATUS } from '../utils/skillTree.js';
 import { DIFFICULTY } from '../utils/xpEngine.js';
-import { computeInitialReviewDate } from '../utils/spiderSense.js';
+import { computeInitialReview, DEFAULT_EASE, INITIAL_REVIEW_INTERVAL_DAYS } from '../utils/spiderSense.js';
 import { HOURS_PER_NODE_DAY } from '../utils/materiaMeta.js';
 
 /**
- * Schema di default ArachnoForge — versione dati 7.0.0 "The Quantum Router"
- * (V23.0). Iniettato silenziosamente alla prima esecuzione (Safe Hydration).
+ * Schema di default ArachnoForge — versione dati 9.0.0 "Karen impara da te"
+ * (V36.0). Iniettato silenziosamente alla prima esecuzione (Safe Hydration);
+ * ogni campo nuovo ha una migrazione non distruttiva in migrateSfida/
+ * hydrateState, mai un reset del profilo.
  */
-export const SCHEMA_VERSION = '8.0.0';
+export const SCHEMA_VERSION = '9.0.0';
 export const SUITS = { CLASSIC: 'classic', SYMBIOTE: 'symbiote', Y2099: '2099' };
 export const DEFAULT_CFU = 6;
 
@@ -103,7 +105,28 @@ export function createDefaultState() {
       // Brief K.A.R.E.N. odierno (se disponibile) invece dei valori
       // manuali qui sopra — mai un override silenzioso e non
       // disattivabile: l'utente può spegnerlo in Karen OS Settings.
-      karenAdaptiveTimer: true
+      karenAdaptiveTimer: true,
+      // V36.0 — Notifiche di sistema a fine blocco Focus/pausa. Default
+      // `false` per costruzione: il permesso del browser va chiesto da un
+      // gesto esplicito dell'utente (vedi utils/systemNotify.js), mai da
+      // solo al primo caricamento.
+      systemNotifications: false,
+      // V36.0 — Wake Lock durante il Focus: default attivo, è il
+      // comportamento che ci si aspetta da un timer di studio.
+      keepScreenAwake: true,
+      // V36.0 — Modalità "Una cosa alla volta": Mission Control si apre
+      // sulla sola decisione operativa (argomento + minuti + Avvia), con
+      // tutto il resto collassato. Default attivo: il numero di pannelli
+      // che reclamano attenzione insieme È esso stesso una fonte di
+      // stress, e l'app nasce per toglierlo.
+      focusFirstHome: true,
+      // V36.0 — Effetti pesanti (blur profondi, grana, particelle,
+      // interferenza). Disattivabili in blocco: su mobile sono il primo
+      // posto dove si perdono frame e batteria durante un pomodoro.
+      heavyEffects: true,
+      // V36.0 — data dell'ultimo export locale del profilo ("YYYY-MM-DD"),
+      // usata solo per il promemoria di backup in Karen OS Settings.
+      lastExportDateKey: null
     },
     materie: [],
     starLog: [],
@@ -160,8 +183,21 @@ function migrateSfida(raw, index, arr) {
   const status = legacyStatus === 'COMPLETED' ? PERSISTED_STATUS.COMPLETED : PERSISTED_STATUS.PENDING;
   const parentId = 'parentId' in raw ? raw.parentId : (index > 0 ? arr[index - 1].id : null);
   const nextReviewDate = status === PERSISTED_STATUS.COMPLETED
-    ? (raw.nextReviewDate || computeInitialReviewDate())
+    ? (raw.nextReviewDate || computeInitialReview().nextReviewDate)
     : null;
+  // V36.0 — migrazione SM-2 lite. Un nodo salvato prima della V36 non ha
+  // né ease né intervallo: riceve l'ease di default e, come intervallo di
+  // partenza, quello che il vecchio motore a intervalli fissi gli avrebbe
+  // dato per il suo ultimo giudizio (7 se mai ripassato). Così la curva
+  // riparte da dove il nodo si trovava davvero, invece di azzerare
+  // mesi di ripassi già fatti.
+  const LEGACY_FIXED_INTERVALS = { EASY: 4, MEDIUM: 2, HARD: 1 };
+  const srsEase = Number.isFinite(raw.srsEase) && raw.srsEase > 0 ? raw.srsEase : DEFAULT_EASE;
+  const srsIntervalDays = Number.isFinite(raw.srsIntervalDays) && raw.srsIntervalDays > 0
+    ? raw.srsIntervalDays
+    : (status === PERSISTED_STATUS.COMPLETED
+      ? (LEGACY_FIXED_INTERVALS[raw.lastReviewRating] || INITIAL_REVIEW_INTERVAL_DAYS)
+      : 0);
   return {
     id: raw.id,
     nome: raw.nome,
@@ -187,6 +223,15 @@ function migrateSfida(raw, index, arr) {
     reviewCount: typeof raw.reviewCount === 'number' ? raw.reviewCount : 0,
     focusMinutes: raw.focusMinutes || 0,
     blueprint: raw.blueprint || '',
+    // V36.0 — Appunti del nodo (markdown leggero) e stato della curva SRS.
+    note: typeof raw.note === 'string' ? raw.note : '',
+    srsEase,
+    srsIntervalDays,
+    // V36.0 — "Interrogazione K.A.R.E.N.": le domande di richiamo attivo
+    // generate una volta sul contenuto di QUESTO nodo, conservate qui
+    // dentro (nessuna tabella nuova) così restano disponibili offline ad
+    // ogni ripasso successivo. `null` finché non ne è stata generata una.
+    quiz: raw.quiz && typeof raw.quiz === 'object' && Array.isArray(raw.quiz.domande) ? raw.quiz : null,
     // V31.3 — Bounty Board (Friction Analytics): contatori di ripasso
     // Facile/Medio vs Difficile per nodo, alimentano `utils/friction.js`.
     // Blindati a interi >= 0 anche da un import/salvataggio corrotto.
@@ -211,6 +256,9 @@ function migrateMateria(raw) {
     // default neutri qui sotto senza mai lanciare un'eccezione.
     courseId: raw.courseId || null,
     perceivedDifficulty: Number.isFinite(raw.perceivedDifficulty) ? raw.perceivedDifficulty : 3,
+    // Campo legacy pre-V20.0 (slider manuale di Urgenza, sostituito dal
+    // calcolo automatico sulla data d'esame): conservato per non alterare
+    // i profili salvati, non letto da nessun motore.
     urgency: Number.isFinite(raw.urgency) ? raw.urgency : 3,
     examPassed: !!raw.examPassed,
     // V18.0 — Multiverse Simulator (GPA Engine): voto registrato all'esame

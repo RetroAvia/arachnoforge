@@ -33,7 +33,9 @@ import {
 } from '../utils/xpEngine.js';
 import { NODE_STATUS, PERSISTED_STATUS, deriveNodeStatus, orphanChildren, createSfida, markFirstCompletion } from '../utils/skillTree.js';
 import { getSkillDef, canUnlockSkill, computeSkillEffects } from '../data/techTree.js';
-import { computeNextReviewDate, REVIEW_RATING } from '../utils/spiderSense.js';
+import { scheduleNextReview, REVIEW_RATING } from '../utils/spiderSense.js';
+import { computeCalibration } from '../utils/calibration.js';
+import { computeExamReadiness } from '../utils/examReadiness.js';
 import { isBountyTarget, computeFriction } from '../utils/friction.js';
 import { isGoblinProtocol } from '../utils/materiaMeta.js';
 import { computeWeightedAverage, isGradedMateria } from '../utils/gpaEngine.js';
@@ -396,14 +398,17 @@ function reducer(state, action) {
         isMaxCarnage
       });
 
-      const completedSfide = materia.sfide.map((s) => (s.id === sfidaId ? markFirstCompletion(s) : s));
+      // V36.0 — la data d'esame entra nella schedulazione: nessun primo
+      // ripasso oltre l'esame (vedi capIntervalToExam in spiderSense.js).
+      const completedSfide = materia.sfide.map((s) => (s.id === sfidaId ? markFirstCompletion(s, materia.examDate) : s));
+      const firstReviewDate = completedSfide.find((s) => s.id === sfidaId)?.nextReviewDate;
 
       let profile = applyXpDeltaWithTokens(state.profile, xpGain);
       profile = { ...profile, hardNodesCompleted: profile.hardNodesCompleted + (isHard ? 1 : 0) };
 
       let combatLog = pushLog(
         state.combatLog,
-        `Nodo "${target.nome}" completato in ${materia.nome}. +${xpGain} XP${isMaxCarnage ? ' [MAXIMUM CARNAGE x2]' : ''}. Prossimo Spider-Sense tra 7 giorni.`,
+        `Nodo "${target.nome}" completato in ${materia.nome}. +${xpGain} XP${isMaxCarnage ? ' [MAXIMUM CARNAGE x2]' : ''}. Primo Spider-Sense il ${firstReviewDate}.`,
         'SUCCESS'
       );
 
@@ -463,7 +468,12 @@ function reducer(state, action) {
               status: PERSISTED_STATUS.PENDING,
               completionTimestamp: null,
               nextReviewDate: null,
-              lastReviewRating: null
+              lastReviewRating: null,
+              // V36.0 — la curva SRS riparte da zero (nessun ripasso
+              // pendente su un nodo riaperto) ma l'ease appreso resta:
+              // quanto QUEL contenuto ti è facile non cambia perché hai
+              // annullato un click.
+              srsIntervalDays: 0
             }
           : s
       );
@@ -491,7 +501,10 @@ function reducer(state, action) {
       if (target.status !== PERSISTED_STATUS.COMPLETED) return state; // Blindatura: nessun ripasso su nodo non completato.
       const wasDue = deriveNodeStatus(target, materia.sfide) === NODE_STATUS.NEEDS_REVIEW;
 
-      const nextReviewDate = computeNextReviewDate(rating);
+      // V36.0 — SM-2 lite: l'intervallo non è più una costante per
+      // giudizio (4/2/1 giorni a vita) ma cresce moltiplicativamente
+      // sull'ease personale del nodo, e non supera mai la data d'esame.
+      const { nextReviewDate, srsEase, srsIntervalDays } = scheduleNextReview(target, rating, materia.examDate);
       // V31.3 — Bounty Board (Friction Analytics): un giudizio "Difficile"
       // conta come tentativo fallito (segnale di attrito reale sul nodo),
       // "Facile"/"Medio" come tentativo riuscito — alimenta isBountyTarget
@@ -501,6 +514,8 @@ function reducer(state, action) {
           ? {
               ...s,
               nextReviewDate,
+              srsEase,
+              srsIntervalDays,
               lastReviewRating: rating,
               reviewCount: (s.reviewCount || 0) + 1,
               tentativiSuccessi: (s.tentativiSuccessi || 0) + (rating === REVIEW_RATING.HARD ? 0 : 1),
@@ -518,8 +533,8 @@ function reducer(state, action) {
       let combatLog = pushLog(
         state.combatLog,
         wasDue
-          ? `Spider-Sense placato su "${target.nome}": prossimo ripasso ${nextReviewDate}. +${reviewXp} XP.`
-          : `Ripasso Manuale forzato su "${target.nome}": prossimo ripasso ${nextReviewDate}. +${reviewXp} XP.`,
+          ? `Spider-Sense placato su "${target.nome}": prossimo ripasso fra ${srsIntervalDays}gg (${nextReviewDate}). +${reviewXp} XP.`
+          : `Ripasso Manuale forzato su "${target.nome}": prossimo ripasso fra ${srsIntervalDays}gg (${nextReviewDate}). +${reviewXp} XP.`,
         'SUCCESS'
       );
 
@@ -1183,7 +1198,12 @@ export function ArachnoForgeProvider({ children }) {
     dispatch,
     audio,
     pushToast,
-    userId: user.id
+    userId: user.id,
+    // V36.0 — notifiche di sistema e Wake Lock, governati da Karen OS
+    // Settings. Entrambi best effort dentro l'hook: un permesso negato o
+    // un browser senza le API non cambia nulla del resto del timer.
+    notificationsEnabled: state.settings.systemNotifications === true,
+    keepScreenAwake: state.settings.keepScreenAwake !== false
   });
 
   // V26.0 — Cloud State Sync (Pillar 3): boot fetch. Un'unica query alla
@@ -1431,16 +1451,44 @@ export function ArachnoForgeProvider({ children }) {
   // un custom hook dedicato.
   const spiderSense = useSpiderSense(state.materie);
 
+  // V36.0 — "Karen impara da te": capacità giornaliera reale e fattore di
+  // calibrazione delle stime, misurati sul TUO storico (utils/calibration.js)
+  // e calcolati UNA volta sola qui, a livello di Provider. Da qui in giù
+  // ogni motore (Quota Odierna, Spider-Score, Fine Prevista, Exam
+  // Readiness) parte dagli stessi due numeri: nessun consumatore li
+  // ricalcola per conto proprio, quindi non possono divergere.
+  const calibration = useMemo(
+    () => computeCalibration(state),
+    // Dipendenze minime reali: la capacità viene dallo storico sessioni,
+    // il bias dai nodi completati — non da tutto lo stato.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.starLog, state.materie]
+  );
+
+  // V36.0 — la riduzione di carico consigliata dal Daily Brief smette di
+  // essere un banner decorativo e diventa il moltiplicatore REALE del
+  // budget di studio del giorno (vedi allocateDailyBudget).
+  const karenLoadAdjustmentPct =
+    karenBrain.directives && Number.isFinite(karenBrain.directives.mission_control?.load_adjustment_pct)
+      ? karenBrain.directives.mission_control.load_adjustment_pct
+      : 0;
+
   // "Il Cervello" del K.A.R.E.N. Auto-Router / Quantum Router (V23.0,
   // Modulo 1): Daily Quota + status a 3 livelli per ogni Materia aperta,
   // isolato in un custom hook dedicato.
-  const karenAutoRouter = useKarenAutoRouter(state.materie);
+  const karenAutoRouter = useKarenAutoRouter(state.materie, {
+    calibration,
+    loadAdjustmentPct: karenLoadAdjustmentPct
+  });
 
   // Karen's Tactical Suggestor (Primary Target): ricalcolato qui, a
   // livello di Provider, così sia Mission Control (Daily Patrol HUD) sia
   // il Web-Matrix possono leggerlo da `derived` senza calcolarlo due volte
   // con risultati potenzialmente disallineati.
-  const primaryTarget = useMemo(() => computePrimaryTarget(state.materie), [state.materie]);
+  const primaryTarget = useMemo(
+    () => computePrimaryTarget(state.materie, calibration),
+    [state.materie, calibration]
+  );
 
   // Daily Patrol Engine (V23.0, Modulo 2) — Rigenerazione giornaliera:
   // quando la dateKey persistita non corrisponde a "oggi" (primo avvio,
@@ -1751,6 +1799,18 @@ export function ArachnoForgeProvider({ children }) {
       .reduce((sum, e) => sum + e.minutes, 0);
     const burnoutRisk = todayMinutes > BURNOUT_MINUTES_THRESHOLD;
 
+    // V36.0 — EXAM READINESS INDEX: il verdetto "sostieni / rimanda" per
+    // ogni materia ancora aperta, calcolato una sola volta qui e letto
+    // sia dal Web-Matrix sia da Mission Control. `byMateriaId` perché è
+    // così che lo consuma la UI (lookup su una card, non scorrimento).
+    const radarByMateriaId = new Map(spiderSense.memoryRadar.byMateria.map((r) => [r.materiaId, r]));
+    const examReadinessByMateriaId = new Map(
+      state.materie
+        .filter((m) => !m.examPassed)
+        .map((m) => [m.id, computeExamReadiness(m, radarByMateriaId.get(m.id) || null, calibration)])
+    );
+    const nextExamReadiness = nextExam ? examReadinessByMateriaId.get(nextExam.id) || null : null;
+
     return {
       fatigued,
       nextExam,
@@ -1799,10 +1859,18 @@ export function ArachnoForgeProvider({ children }) {
       // V35.0 — K.A.R.E.N. Daily Brain: Focus Timer Adattivo, letto dal
       // widget del Tactical Timer per il badge "Preset Adattivo K.A.R.E.N.".
       karenAdaptiveTimerActive: !!karenFocusDirective,
-      karenFocusDirective
+      karenFocusDirective,
+      // V36.0 — Budget Giornaliero Globale: ore realmente assegnate oggi,
+      // deficit dichiarato, riduzione di carico applicata davvero.
+      karenBudget: karenAutoRouter.budget,
+      // V36.0 — "Karen impara da te": capacità reale e bias delle stime.
+      calibration,
+      // V36.0 — Exam Readiness Index.
+      examReadinessByMateriaId,
+      nextExamReadiness
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, nowTick, spiderSense, progression, karenAutoRouter, primaryTarget, skillEffects, karenFocusDirective]);
+  }, [state, nowTick, spiderSense, progression, karenAutoRouter, primaryTarget, skillEffects, karenFocusDirective, calibration]);
 
   const value = useMemo(
     () => ({

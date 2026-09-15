@@ -430,7 +430,7 @@ export default function StarLog() {
       </div>
 
       {derived.burnoutRisk && (
-        <div className="relative bg-surface/70 backdrop-blur-2xl border border-primary/40 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] px-5 py-4 flex items-start gap-3 overflow-hidden">
+        <div className="relative bg-surface/70 backdrop-blur-lg border border-primary/40 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] px-5 py-4 flex items-start gap-3 overflow-hidden">
           <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-primary/15 blur-3xl pointer-events-none" />
           <Icon name="alertTriangle" className="relative w-6 h-6 text-primary shrink-0 mt-0.5" />
           <div className="relative flex-1">

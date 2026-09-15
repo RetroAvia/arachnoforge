@@ -117,6 +117,22 @@ function Shell() {
     };
   }, [derived.isMaxCarnageActive]);
 
+  // V36.0 — Effetti Leggeri: stesso identico pattern dei due attributi
+  // qui sopra. [data-effects="lite"] su <body> spegne in blocco
+  // backdrop-filter, grana, interferenza e animazioni cicliche (vedi
+  // index.css) senza toccare un solo componente — su telefoni meno
+  // recenti è la differenza fra un timer fluido e uno che scatta.
+  useEffect(() => {
+    if (state.settings.heavyEffects === false) {
+      document.body.dataset.effects = 'lite';
+    } else {
+      delete document.body.dataset.effects;
+    }
+    return () => {
+      delete document.body.dataset.effects;
+    };
+  }, [state.settings.heavyEffects]);
+
   const showInterference = derived.fatigued && !state.settings.calmMode;
 
   return (
@@ -130,14 +146,21 @@ function Shell() {
     // orizzontale, tagliato/traballante in verticale". La Dynamic Viewport
     // Height si ricalcola invece SEMPRE sullo spazio realmente visibile.
     <div className={`flex min-h-[100dvh] relative af-shell-fade-in ${APP_BG}`}>
-      <div className="af-grain" />
+      {/* V36.0 — la grana esiste solo quando gli effetti pesanti sono
+          attivi: è un <div> fisso a schermo intero con una texture SVG,
+          ripagato in fluidità appena lo si toglie. */}
+      {state.settings.heavyEffects !== false && <div className="af-grain" />}
       {/* V27.0 — Pillar 3: vignette simbionte a schermo intero, sopra ogni
           pagina ma sotto toast/modali — Feedback Sensoriale Completo. */}
       {derived.isMaxCarnageActive && <div className="af-carnage-overlay" />}
       <Sidebar currentPage={currentPage} navigate={navigate} />
       <main
         className={`flex-1 min-w-0 h-[100dvh] overflow-y-auto af-viewport px-4 py-6 md:px-8 md:py-8 transition-all duration-500 relative ${
-          derived.fatigued ? 'saturate-[0.4] brightness-90 ring-1 ring-inset ring-af-attack/30' : ''
+          // V36.0 — vedi .af-fatigued in index.css: il segnale di fatica
+          // resta (vignette + bordo interno) ma smette di desaturare e
+          // scurire l'INTERA pagina, cioè di rendere più difficile leggere
+          // proprio quando hai meno risorse per farlo.
+          derived.fatigued ? 'af-fatigued' : ''
         }`}
       >
         {showInterference && <div className="af-interference" />}

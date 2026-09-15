@@ -1,4 +1,5 @@
 import { daysUntilDateOnly } from '../utils/dateUtils.js';
+import { computeRemainingHours } from '../utils/materiaMeta.js';
 
 /**
  * WEB-PATH PLANNER — Piano di Studi UFFICIALE "Ingegneria Aerospaziale"
@@ -106,45 +107,92 @@ export function getMissingPrerequisites(courseId, materie, excludeMateriaId = nu
 }
 
 /**
- * THE TIME-WEAVER FORMULA — V20.0 "The Master Control" (Pillar 2).
+ * THE PRESSURE FORMULA — V36.0 (sostituisce la Time-Weaver Formula).
  *
- * Il vecchio Spider-Score (Difficoltà + Urgenza manuale + Peso esami
- * sbloccati) sottostimava sistematicamente il fattore tempo: un esame a
- * 90 giorni con propedeuticità pesanti poteva scavalcare un esame a 10
- * giorni. Karen ora pesa il TEMPO come fattore dominante assoluto,
- * calcolato automaticamente dalla data d'esame reale (mai più uno slider
- * manuale soggettivo di "Urgenza" — la scadenza parla da sola):
+ * La V20.0 calcolava `Difficoltà + Esami Sbloccati + 1000/Giorni`. Due
+ * difetti strutturali:
  *
- *   SpiderScore = Difficoltà Percepita (1-5)
- *               + Esami Sbloccati (conteggio diretto dal grafo ufficiale)
- *               + 1000 / Giorni Mancanti all'esame
+ *  1. Ignorava COMPLETAMENTE il lavoro residuo. Una materia a 20 giorni
+ *     con 3 ore rimaste scavalcava una a 25 giorni con 80 ore da fare —
+ *     cioè il contrario di quello che serve.
+ *  2. Conviveva con un SECONDO motore di priorità (il paceRatio della
+ *     Quota Odierna, useKarenAutoRouter.js) che usava criteri diversi:
+ *     "Primary Target" e "In focus oggi" potevano quindi indicare due
+ *     materie differenti nello stesso momento, senza che nulla nell'app
+ *     spiegasse perché.
  *
- * A 30 giorni il termine tempo vale 33.3, a 90 giorni vale 11.1: un
- * esame vicino scavalca sempre uno lontano, anche se quest'ultimo
- * sblocca più propedeuticità — esattamente la Direttiva Suprema
- * richiesta ("il tempo scavalca ogni altra priorità"). Se l'esame non ha
- * ancora una data impostata, il termine tempo è 0 (Karen non inventa
- * pressione temporale che non esiste): il punteggio resta comunque
- * calcolabile da Difficoltà + Esami Sbloccati.
+ * La nuova formula misura UNA cosa sola, la stessa che guarda la Quota
+ * Odierna — quanto sei in ritardo rispetto al tempo che ti resta:
+ *
+ *   pressione   = ore residue / (giorni mancanti × capacità giornaliera)
+ *   importanza  = 1 + peso esami sbloccati/4 + (difficoltà-3)/10 + CFU/30
+ *   SpiderScore = 10 × pressione × importanza + termine strutturale
+ *
+ * `pressione` > 1 significa letteralmente "al tuo ritmo reale non ci
+ * arrivi". Il tempo resta il fattore dominante (è al denominatore) ma
+ * ora domina PER UN MOTIVO misurabile, non per una iperbole 1/x. Il
+ * termine strutturale (piccolo, 0-10) serve solo a ordinare in modo
+ * sensato le materie SENZA data d'esame, dove la pressione è per
+ * definizione nulla: Karen non inventa urgenza che non esiste, ma
+ * nemmeno le tratta tutte come equivalenti.
+ *
+ * `computeUnlockWeight` (peso in CFU degli esami sbloccati) era già
+ * scritto dalla V18.0 e non veniva usato da nessuno: qui rientra in
+ * gioco al posto del conteggio grezzo, così superare uno snodo come
+ * Analisi 1 pesa più che superare un esame terminale.
  */
-const TIME_WEAVER_NUMERATOR = 1000;
+export const PRESSURE_SCALE = 10;
 
-/** Termine tempo puro della Time-Weaver Formula, isolato per riuso (HUD, Event Horizon, debug). */
-export function computeTimeWeight(examDate) {
-  if (!examDate) return 0;
-  const daysRemaining = daysUntilDateOnly(examDate);
-  if (daysRemaining == null) return 0;
-  if (daysRemaining <= 0) return TIME_WEAVER_NUMERATOR; // esame oggi/scaduto: massima pressione temporale.
-  return TIME_WEAVER_NUMERATOR / daysRemaining;
+/** Capacità giornaliera di fallback, identica a HOURS_PER_NODE_DAY: la
+ * copia locale evita una dipendenza del data layer verso utils/ per un
+ * solo numero. Il valore REALE arriva sempre da `calibration.hoursPerDay`
+ * quando il chiamante lo passa (vedi utils/calibration.js). */
+const FALLBACK_CAPACITY_HOURS = 4.5;
+
+/** Quanto pesa strategicamente una materia, a prescindere dalla scadenza. */
+export function computeImportanceFactor(materia) {
+  const difficulty = Number(materia?.perceivedDifficulty) || 3;
+  const cfu = Number(materia?.cfu) || 0;
+  return 1 + computeUnlockWeight(materia?.courseId) / 4 + (difficulty - 3) / 10 + cfu / 30;
 }
 
-export function computeSpiderScore(materia) {
+/**
+ * Pressione temporale pura: ore residue su ore realmente disponibili
+ * prima dell'esame. `null` quando non esiste una data d'esame — chi
+ * chiama decide come trattarla (qui: termine azzerato).
+ */
+export function computePressure(remainingHours, examDate, capacityHours = FALLBACK_CAPACITY_HOURS) {
+  if (!examDate || remainingHours <= 0) return 0;
+  const daysRemaining = daysUntilDateOnly(examDate);
+  if (daysRemaining == null) return 0;
+  // Esame oggi o già scaduto con lavoro aperto: mezza giornata di
+  // margine residuo, così la pressione esplode invece di dividere per 0.
+  const effectiveDays = Math.max(0.5, daysRemaining);
+  const capacity = capacityHours > 0 ? capacityHours : FALLBACK_CAPACITY_HOURS;
+  return remainingHours / (effectiveDays * capacity);
+}
+
+/**
+ * @param {object} materia
+ * @param {object|null} calibration pacchetto di utils/calibration.js.
+ *        Omesso = comportamento neutro (capacità 4.5 h/g, bias 1.0).
+ */
+export function computeSpiderScore(materia, calibration = null) {
   if (!materia) return 0;
+  const capacity = Number(calibration?.hoursPerDay) > 0 ? Number(calibration.hoursPerDay) : FALLBACK_CAPACITY_HOURS;
+  const remainingHours = computeRemainingHours(materia, calibration);
+  const pressure = computePressure(remainingHours, materia.examDate, capacity);
+  const importance = computeImportanceFactor(materia);
+
   const difficulty = Number(materia.perceivedDifficulty) || 3;
-  const unlocksCount = computeDirectUnlockCount(materia.courseId);
-  const timeWeight = computeTimeWeight(materia.examDate);
-  return Math.round((difficulty + unlocksCount + timeWeight) * 10) / 10;
+  const structural = computeUnlockWeight(materia.courseId) + (difficulty - 3) * 0.5 + (Number(materia.cfu) || 0) / 6;
+
+  return Math.round((PRESSURE_SCALE * pressure * importance + structural) * 10) / 10;
 }
 
 export const DIFFICULTY_SLIDER_LABELS = ['Banale', 'Gestibile', 'Media', 'Ostica', 'Incubo'];
-export const URGENCY_SLIDER_LABELS = ['Nessuna Fretta', 'Bassa', 'Media', 'Alta', 'Critica'];
+// V36.0 — `URGENCY_SLIDER_LABELS` rimosso: lo slider manuale di Urgenza
+// non esiste più dalla V20.0 (la pressione temporale si calcola dalla data
+// d'esame reale) e le sue etichette erano rimaste qui senza un solo
+// consumatore. Il campo `urgency` sopravvive nello schema dati solo per
+// non rompere i profili salvati: non entra in nessun calcolo.

@@ -1,4 +1,4 @@
-import { isReviewDue, computeInitialReviewDate } from './spiderSense.js';
+import { isReviewDue, computeInitialReview, DEFAULT_EASE } from './spiderSense.js';
 import { DIFFICULTY } from './xpEngine.js';
 
 export const NODE_STATUS = {
@@ -108,19 +108,39 @@ export function createSfida({ nome, obiettivo, oreStimate, parentId = null, diff
     reviewCount: 0,
     focusMinutes: 0,
     blueprint: '',
+    // V36.0 — Appunti del nodo: il posto dove finalmente vive il
+    // CONTENUTO (formule, passaggi, link alla dispensa, errori tipici).
+    // Senza questo campo un ripasso obbligava a uscire dall'app e
+    // ritrovare gli appunti altrove — l'attrito che faceva saltare i
+    // ripassi brevi.
+    note: '',
+    // V36.0 — Spaced Repetition SM-2 lite (vedi utils/spiderSense.js):
+    // stato personale della curva di memoria di QUESTO nodo.
+    srsEase: DEFAULT_EASE,
+    srsIntervalDays: 0,
+    // V36.0 — Interrogazione K.A.R.E.N., generata on-demand (vedi
+    // QuadrantHub): `null` finché il Cadetto non la chiede.
+    quiz: null,
     // V31.3 — Bounty Board (Friction Analytics), vedi utils/friction.js.
     tentativiSuccessi: 0,
     tentativiFalliti: 0
   };
 }
 
-/** Marca un nodo come completato per la prima volta: prima nextReviewDate a +7gg. */
-export function markFirstCompletion(sfida) {
+/**
+ * Marca un nodo come completato per la prima volta.
+ * V36.0 — `examDate` della materia viene passata per non schedulare mai
+ * il primo ripasso oltre la data d'esame (vedi capIntervalToExam).
+ */
+export function markFirstCompletion(sfida, examDate = null) {
+  const { nextReviewDate, srsEase, srsIntervalDays } = computeInitialReview(examDate);
   return {
     ...sfida,
     status: PERSISTED_STATUS.COMPLETED,
     completionTimestamp: new Date().toISOString(),
-    nextReviewDate: computeInitialReviewDate()
+    nextReviewDate,
+    srsEase,
+    srsIntervalDays
   };
 }
 

@@ -89,9 +89,40 @@ export type Subjective = {
   caffeine_mg?: number | null;
 } | null;
 
-export function scoreSleep(bio: Biometrics): number | null {
+/**
+ * V36.0 — Target di sonno PERSONALE.
+ *
+ * `SLEEP_TARGET_MIN = 450` (7h30) è un numero da manuale, uguale per
+ * chiunque, in un'app a singolo utente che ha mesi di notti registrate.
+ * Qui il target diventa la mediana reale delle notti osservate, purché
+ * ce ne siano abbastanza e purché resti in un intervallo fisiologico
+ * sensato (6h-9h): senza quei paletti, un periodo prolungato di sonno
+ * scarso ri-normalizzerebbe il target verso il basso e il punteggio
+ * smetterebbe di segnalare il problema proprio quando è cronico —
+ * l'errore classico di questo tipo di calibrazione.
+ */
+export const SLEEP_TARGET_MIN_SAMPLES = 10;
+export const SLEEP_TARGET_FLOOR_MIN = 360; // 6h
+export const SLEEP_TARGET_CEILING_MIN = 540; // 9h
+
+export function computePersonalSleepTarget(samples: (number | null | undefined)[]): { target: number; personalized: boolean; sampleSize: number } {
+  const valid = (samples ?? []).filter((n): n is number => Number.isFinite(n as number) && (n as number) > 0);
+  if (valid.length < SLEEP_TARGET_MIN_SAMPLES) {
+    return { target: SLEEP_TARGET_MIN, personalized: false, sampleSize: valid.length };
+  }
+  const sorted = [...valid].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  return {
+    target: Math.round(clamp(median, SLEEP_TARGET_FLOOR_MIN, SLEEP_TARGET_CEILING_MIN)),
+    personalized: true,
+    sampleSize: valid.length
+  };
+}
+
+export function scoreSleep(bio: Biometrics, sleepTargetMin: number = SLEEP_TARGET_MIN): number | null {
   if (bio?.sleep_total_min == null) return null;
-  const durationRatio = bio.sleep_total_min / SLEEP_TARGET_MIN;
+  const durationRatio = bio.sleep_total_min / (sleepTargetMin > 0 ? sleepTargetMin : SLEEP_TARGET_MIN);
   const durationScore =
     durationRatio <= 1 ? clamp(durationRatio, 0, 1) : clamp(1 - (durationRatio - 1) * 0.5, 0.7, 1);
 
@@ -158,9 +189,16 @@ export function caffeinePenalty(subj: Subjective): number {
   return clamp((mg - CAFFEINE_SOFT_CAP_MG) / 40, 0, 10);
 }
 
-export function computeReadinessScore(bio: Biometrics, baselineHr: number | null, subjective: Subjective) {
+export function computeReadinessScore(
+  bio: Biometrics,
+  baselineHr: number | null,
+  subjective: Subjective,
+  // V36.0 — opzionale: omesso, il comportamento è identico al pre-V36.0
+  // (target 7h30 universale).
+  sleepTargetMin: number = SLEEP_TARGET_MIN
+) {
   const parts: Record<keyof typeof MAX_POINTS, number | null> = {
-    sleep: scoreSleep(bio),
+    sleep: scoreSleep(bio, sleepTargetMin),
     cardio: scoreCardio(bio, baselineHr),
     activity: scoreActivity(bio),
     focus: scoreFocus(subjective),
@@ -212,7 +250,12 @@ export function computeReadinessScore(bio: Biometrics, baselineHr: number | null
       dataCompleteness: Number((available.length / Object.keys(MAX_POINTS).length).toFixed(2)),
       objectiveCompleteness: Number((objectiveAvailable.length / objectiveKeys.length).toFixed(2)),
       subjectiveCompleteness: Number((subjectiveAvailable.length / subjectiveKeys.length).toFixed(2)),
-      baselineHr
+      baselineHr,
+      // V36.0 — reso esplicito nel breakdown: se il target di sonno è
+      // stato personalizzato sullo storico, deve essere visibile sia a
+      // Claude sia nella Diagnostica Neurale, mai una calibrazione
+      // silenziosa che cambia il punteggio senza dirlo.
+      sleepTargetMin
     }
   };
 }
@@ -303,6 +346,104 @@ export function computeHistoricalStudyWindow(starLog: unknown, targetDate: strin
     start_hour: bestStart,
     end_hour: endHour,
     label: `${formatHourLabel(bestStart)}–${formatHourLabel(endHour)}`
+  };
+}
+
+// ---------------------------------------------------------------------
+// V36.0 — ESITO DI IERI: la chiusura del ciclo.
+//
+// Fino alla V35 K.A.R.E.N. emetteva ogni mattina quattro direttive
+// (carico, preset timer, finestra di picco, argomento) e NESSUNO
+// verificava mai se avessero funzionato. Il prompt riceveva il testo del
+// briefing precedente, ma non il suo esito: ogni giorno l'IA ripartiva
+// da zero, incapace per costruzione di accorgersi che — poniamo — la
+// finestra 15:00-18:00 che consiglia da due settimane è proprio quella
+// in cui non studi mai.
+//
+// Qui l'esito viene ricostruito dallo stesso `starLog` già letto per la
+// finestra storica (zero query aggiuntive): quanto hai studiato davvero
+// ieri, con quale qualità dichiarata al Tactical Debriefing, e quanta
+// parte di quelle sessioni è caduta dentro la finestra consigliata. Il
+// confronto fra direttiva e realtà entra nel prompt, e da lì i consigli
+// possono correggersi invece di ripetersi.
+//
+// Degrado con grazia identico al resto: nessuna sessione ieri -> `null`,
+// e il prompt semplicemente non riceve la sezione.
+// ---------------------------------------------------------------------
+export type YesterdayOutcome = {
+  data: string;
+  minuti_studiati: number;
+  sessioni: number;
+  qualita_prevalente: string | null;
+  sessioni_in_finestra_consigliata: number | null;
+  finestra_consigliata: string | null;
+  carico_consigliato_pct: number | null;
+};
+
+export function computeYesterdayOutcome(
+  starLog: unknown,
+  targetDate: string,
+  previousDirectives: unknown
+): YesterdayOutcome | null {
+  if (!Array.isArray(starLog)) return null;
+  const yesterday = isoDateNDaysBefore(targetDate, 1);
+
+  const sessions = starLog.filter((e): e is { type: string; dateKey: string; minutes?: number; hour?: number; quality?: string } => {
+    if (!e || typeof e !== 'object') return false;
+    const entry = e as Record<string, unknown>;
+    return entry.type === 'FOCUS_SESSION' && entry.dateKey === yesterday;
+  });
+  if (sessions.length === 0) return null;
+
+  const minuti = sessions.reduce((sum, s) => sum + (Number(s.minutes) || 0), 0);
+
+  // Qualità prevalente = la più frequente fra FLOW / NORMAL / DISTRACTED.
+  const qualityCounts = new Map<string, number>();
+  sessions.forEach((s) => {
+    if (typeof s.quality === 'string') qualityCounts.set(s.quality, (qualityCounts.get(s.quality) ?? 0) + 1);
+  });
+  let qualitaPrevalente: string | null = null;
+  let bestCount = 0;
+  qualityCounts.forEach((count, quality) => {
+    if (count > bestCount) {
+      bestCount = count;
+      qualitaPrevalente = quality;
+    }
+  });
+
+  // Aderenza alla finestra consigliata ieri (se esisteva una direttiva).
+  const directives = previousDirectives && typeof previousDirectives === 'object' ? (previousDirectives as Record<string, unknown>) : null;
+  const studyWindow = directives?.study_window && typeof directives.study_window === 'object'
+    ? (directives.study_window as Record<string, unknown>)
+    : null;
+  const missionControl = directives?.mission_control && typeof directives.mission_control === 'object'
+    ? (directives.mission_control as Record<string, unknown>)
+    : null;
+
+  let inWindow: number | null = null;
+  let windowLabel: string | null = null;
+  if (studyWindow && Number.isFinite(Number(studyWindow.start_hour)) && Number.isFinite(Number(studyWindow.end_hour))) {
+    const start = Number(studyWindow.start_hour);
+    const end = Number(studyWindow.end_hour);
+    windowLabel = typeof studyWindow.label === 'string' ? studyWindow.label : `${start}:00–${end}:00`;
+    inWindow = sessions.filter((s) => {
+      const hour = Number(s.hour);
+      if (!Number.isFinite(hour)) return false;
+      // Wrap-around su mezzanotte gestito come in computeHistoricalStudyWindow.
+      return start <= end ? hour >= start && hour < end : hour >= start || hour < end;
+    }).length;
+  }
+
+  return {
+    data: yesterday,
+    minuti_studiati: minuti,
+    sessioni: sessions.length,
+    qualita_prevalente: qualitaPrevalente,
+    sessioni_in_finestra_consigliata: inWindow,
+    finestra_consigliata: windowLabel,
+    carico_consigliato_pct: missionControl && Number.isFinite(Number(missionControl.load_adjustment_pct))
+      ? Number(missionControl.load_adjustment_pct)
+      : null
   };
 }
 
@@ -584,8 +725,8 @@ Regole ferree:
   "focus_timer": { "focus_minutes": number, "break_minutes": number, "preset_label": string, "rationale": string },
   "study_window": { "start_hour": number, "end_hour": number, "label": string, "rationale": string },
   "study_focus": {
-    "argomento_principale": { "materia": string, "argomento": string, "metodo": string, "rationale": string } | null,
-    "ripassi_da_non_saltare": [ { "materia": string, "argomento": string, "nota": string } ]
+    "argomento_principale": { "candidato": number, "metodo": string, "rationale": string } | null,
+    "ripassi_da_non_saltare": [ { "candidato": number, "nota": string } ]
   }
 }
 3. "briefing_text": 2-4 frasi, tono da log di missione, che riassumono lo stato del Cadetto SENZA elencare i numeri grezzi (non dire "hai dormito 420 minuti" o "stress 7/10", di' cosa significa operativamente).
@@ -593,11 +734,12 @@ Regole ferree:
 5. "mission_control.load_adjustment_pct": intero fra -50 e 0 — quanto ridurre visivamente il carico di studio consigliato oggi rispetto al piano standard (0 = nessuna riduzione, banda OTTIMALE; fra -10 e -20 per ATTENZIONE; fra -25 e -40 per CRITICO). "rationale": una frase, il motivo dominante.
 6. "focus_timer.focus_minutes"/"break_minutes": il preset Pomodoro più adatto allo stato odierno del Cadetto — intervalli realistici (focus 20-55 min, pausa 5-15 min): tipicamente 25/5 in banda CRITICO o ATTENZIONE (sessioni brevi, meno rischio di crollo a metà blocco), fino a 50/10 in banda OTTIMALE (deep work sostenuto). "preset_label": stringa breve tipo "25/5 — Recupero" o "50/10 — Deep Work". "rationale": una frase.
 7. "study_window.start_hour"/"end_hour": interi 0-23 (ora locale, formato 24h) — la finestra di 2-4 ore in cui il Cadetto dovrebbe affrontare gli argomenti più ostici oggi. Se nel messaggio utente è presente "storico_finestra_produttiva_utente", trattalo come segnale FORTE (ma non vincolante) sull'orario in cui il Cadetto rende storicamente di più, e preferiscilo salvo che lo stato soggettivo odierno suggerisca chiaramente il contrario; altrimenti deducila dal suo stato di energia/focus soggettivo quando disponibile (es. energia bassa la mattina -> finestra pomeridiana), o infine una finestra pomeridiana ragionevole di default. "label": stringa tipo "15:00–18:00". "rationale": una frase — se hai usato lo storico, dillo esplicitamente.
-8. "study_focus" — il cuore del piano operativo di oggi. Nel messaggio utente trovi "argomenti_e_materie_oggi": { materie_in_focus, argomenti_disponibili, ripassi_scaduti } — un piccolo paniere REALE di materie/argomenti del Web-Matrix del Cadetto, ognuno con nome, obiettivo, eventuali note (blueprint) e difficoltà percepita. Leggi il CONTENUTO di ogni candidato (non solo il nome) e scegli:
-   - "argomento_principale": IL candidato più sensato da affrontare oggi come lavoro di studio vero e proprio (di norma un argomento "DISPONIBILE" nuovo, non un ripasso — i ripassi sono in genere rapidi e vanno nella lista separata). "metodo": 1-3 frasi che NOMINANO ESPLICITAMENTE la tecnica di studio più adatta al contenuto specifico di quell'argomento (es. richiamo attivo, ripetizione dilazionata, tecnica Feynman, interleaving, esercizi guidati/worked examples, mappe concettuali, elaborazione a domande) e spiegano PERCHÉ quella tecnica calza su quel contenuto — mai un consiglio generico intercambiabile fra materie diverse. "rationale": perché hai scelto proprio questo argomento oggi (urgenza, difficoltà, posizione nell'albero). Se "argomenti_disponibili" e "ripassi_scaduti" sono ENTRAMBI vuoti, "argomento_principale" è il valore null — dillo con naturalezza nel briefing invece di inventare un argomento inesistente.
-   - "ripassi_da_non_saltare": un elemento per ciascun ripasso scaduto ricevuto (anche se "argomento_principale" è già un ripasso — non duplicarlo comunque nella lista in quel caso), con "nota" che dice in una frase il metodo di richiamo attivo più adatto e, se disponibile, cosa segnala lo storico di quell'argomento (es. tentativi falliti ripetuti = serve un ripasso più profondo, non solo una scorsa veloce). Array vuoto se non ci sono ripassi scaduti.
+8. "study_focus" — il cuore del piano operativo di oggi. Nel messaggio utente trovi "argomenti_e_materie_oggi": { materie_in_focus, candidati } — un piccolo paniere REALE di argomenti del Web-Matrix del Cadetto. Ogni candidato ha un campo "id" NUMERICO, più nome, materia, obiettivo, eventuali note (blueprint), difficoltà e tipo ("DISPONIBILE" = argomento nuovo, "RIPASSO_SCADUTO" = ripasso arretrato). Leggi il CONTENUTO di ogni candidato (non solo il nome) e scegli riferendoti SEMPRE al suo "id", mai riscrivendo il nome dell'argomento:
+   - "argomento_principale": { "candidato": <id del candidato scelto>, "metodo": ..., "rationale": ... } — il candidato più sensato da affrontare oggi come lavoro di studio vero e proprio (di norma un "DISPONIBILE" nuovo, non un ripasso — i ripassi sono in genere rapidi e vanno nella lista separata). "metodo": 1-3 frasi che NOMINANO ESPLICITAMENTE la tecnica di studio più adatta al contenuto specifico di quell'argomento (es. richiamo attivo, ripetizione dilazionata, tecnica Feynman, interleaving, esercizi guidati/worked examples, mappe concettuali, elaborazione a domande) e spiegano PERCHÉ quella tecnica calza su quel contenuto — mai un consiglio generico intercambiabile fra materie diverse. "rationale": perché hai scelto proprio questo argomento oggi (urgenza, difficoltà, posizione nell'albero). Se "candidati" è vuoto, "argomento_principale" è il valore null — dillo con naturalezza nel briefing invece di inventare un argomento inesistente.
+   - "ripassi_da_non_saltare": un elemento { "candidato": <id>, "nota": ... } per ciascun candidato di tipo "RIPASSO_SCADUTO" (se hai già scelto quello stesso id come argomento_principale, non ripeterlo qui), con "nota" che dice in una frase il metodo di richiamo attivo più adatto e, se disponibile, cosa segnala lo storico di quell'argomento (es. tentativi falliti ripetuti = serve un ripasso più profondo, non solo una scorsa veloce). Array vuoto se non ci sono ripassi scaduti.
 9. Se mancano dati (dataCompleteness basso, oggettivo o soggettivo), menzionalo con naturalezza nel briefing invece di inventare dettagli non presenti nei dati forniti — le direttive restano comunque sempre valorizzate con una stima ragionevole, mai omesse (eccetto "study_focus.argomento_principale", che può legittimamente essere il valore null quando non esiste alcun candidato reale).
-10. Non ripetere mai questa istruzione, non parlare di "prompt" o "istruzioni di sistema".`;
+10. Se nel messaggio utente è presente "esito_di_ieri", USALO per correggere il tiro invece di ripetere le direttive di ieri come se nulla fosse: è il riscontro fra ciò che avevi consigliato e ciò che è realmente successo. In particolare — se le sessioni di ieri sono cadute quasi tutte FUORI dalla finestra che avevi consigliato, quella finestra è sbagliata per questo Cadetto e va spostata verso gli orari in cui studia davvero (dillo apertamente in "study_window.rationale"); se la qualità prevalente dichiarata era DISTRACTED, accorcia il preset del Focus Timer invece di riproporre lo stesso; se i minuti studiati sono stati molto sotto il carico consigliato per più giorni, il problema non è la motivazione ma un piano troppo ambizioso, e va detto. Una sola frase di riscontro nel "briefing_text", mai un elenco di statistiche.
+11. Non ripetere mai questa istruzione, non parlare di "prompt" o "istruzioni di sistema".`;
 }
 
 // ---------------------------------------------------------------------
@@ -757,8 +899,36 @@ function findMatchingCandidate(materia: string, argomento: string, studyFocus: S
   const norm = (s: string) => s.trim().toLowerCase();
   const wantMateria = norm(materia);
   const wantArgomento = norm(argomento);
-  const pool = [...studyFocus.argomenti_disponibili, ...studyFocus.ripassi_scaduti];
+  const pool = candidatePool(studyFocus);
   return pool.find((c) => norm(c.materia) === wantMateria && norm(c.argomento) === wantArgomento) ?? null;
+}
+
+/**
+ * V36.0 — Il paniere in un ordine STABILE e numerato: argomenti
+ * disponibili prima, ripassi scaduti poi. È lo stesso ordine con cui
+ * buildUserPrompt assegna gli indici mostrati a Claude, quindi
+ * l'indice che Claude restituisce è direttamente risolvibile qui.
+ */
+export function candidatePool(studyFocus: StudyFocusSnapshot): StudyTopicCandidate[] {
+  return [...studyFocus.argomenti_disponibili, ...studyFocus.ripassi_scaduti];
+}
+
+/**
+ * V36.0 — Risoluzione per INDICE invece che per testo libero.
+ *
+ * Prima, l'unico aggancio fra la scelta di Claude e il nodo reale era il
+ * confronto esatto fra due stringhe che Claude aveva riscritto a mano
+ * ("Equazione di Bernoulli" vs "Equazioni di Bernoulli" = nessun
+ * abbinamento): quando falliva, la card perdeva gli id e con essi la
+ * riconciliazione live, senza che nulla lo segnalasse. Ora Claude sceglie
+ * un numero dal paniere numerato e il testo autorevole lo mette il server,
+ * dal nodo vero. Il vecchio matcher testuale resta come rete di sicurezza
+ * per i ripassi e per le risposte che ignorano il campo `candidato`.
+ */
+function resolveCandidateByIndex(raw: unknown, studyFocus: StudyFocusSnapshot): StudyTopicCandidate | null {
+  const index = Number(raw);
+  if (!Number.isInteger(index) || index < 0) return null;
+  return candidatePool(studyFocus)[index] ?? null;
 }
 
 /** Valida/clampa il ramo "study_focus" della risposta di Claude — come
@@ -780,12 +950,15 @@ function sanitizeStudyFocus(raw: unknown, studyFocus: StudyFocusSnapshot, fallba
     argomentoPrincipale = hadCandidates ? fallback.argomento_principale : null;
   } else if (r.argomento_principale && typeof r.argomento_principale === 'object') {
     const ap = r.argomento_principale as Record<string, unknown>;
-    const materia = typeof ap.materia === 'string' ? ap.materia.trim() : '';
-    const argomento = typeof ap.argomento === 'string' ? ap.argomento.trim() : '';
     const metodo = typeof ap.metodo === 'string' ? ap.metodo.trim() : '';
     const rationale = typeof ap.rationale === 'string' ? ap.rationale.trim() : '';
+    // V36.0 — l'indice ha la precedenza: è l'aggancio esatto. Il testo
+    // libero resta accettato come ripiego per compatibilità.
+    const byIndex = resolveCandidateByIndex(ap.candidato, studyFocus);
+    const materia = byIndex ? byIndex.materia : typeof ap.materia === 'string' ? ap.materia.trim() : '';
+    const argomento = byIndex ? byIndex.argomento : typeof ap.argomento === 'string' ? ap.argomento.trim() : '';
     if (materia && argomento && metodo) {
-      const matched = findMatchingCandidate(materia, argomento, studyFocus);
+      const matched = byIndex ?? findMatchingCandidate(materia, argomento, studyFocus);
       argomentoPrincipale = {
         materia: materia.slice(0, 120),
         argomento: argomento.slice(0, 160),
@@ -805,9 +978,17 @@ function sanitizeStudyFocus(raw: unknown, studyFocus: StudyFocusSnapshot, fallba
         .map(sanitizeRipassoEntry)
         .filter((e): e is { materia: string; argomento: string; nota: string } => e !== null)
         .slice(0, MAX_DUE_REVIEWS)
-        .map((e) => {
-          const matched = findMatchingCandidate(e.materia, e.argomento, studyFocus);
-          return { ...e, sfidaId: matched ? matched.sfidaId : null, materiaId: matched ? matched.materiaId : null };
+        .map((e, idx) => {
+          // Stessa logica del principale: indice se fornito, testo come rete.
+          const rawEntry = ripassiRaw[idx] as Record<string, unknown> | undefined;
+          const matched = resolveCandidateByIndex(rawEntry?.candidato, studyFocus) ?? findMatchingCandidate(e.materia, e.argomento, studyFocus);
+          return {
+            ...e,
+            materia: matched ? matched.materia : e.materia,
+            argomento: matched ? matched.argomento : e.argomento,
+            sfidaId: matched ? matched.sfidaId : null,
+            materiaId: matched ? matched.materiaId : null
+          };
         })
     : fallback.ripassi_da_non_saltare;
 
@@ -894,8 +1075,29 @@ export function buildUserPrompt(params: {
   previousBriefing: string | null;
   historicalWindow?: HistoricalStudyWindow | null;
   studyFocus?: StudyFocusSnapshot;
+  yesterdayOutcome?: YesterdayOutcome | null;
 }) {
-  const { date, readiness, band, bio, subjective, previousBriefing, historicalWindow, studyFocus } = params;
+  const { date, readiness, band, bio, subjective, previousBriefing, historicalWindow, studyFocus, yesterdayOutcome } = params;
+  const focus = studyFocus ?? EMPTY_STUDY_FOCUS;
+  // V36.0 — il paniere viaggia NUMERATO, in un ordine stabile che
+  // sanitizeStudyFocus riproduce identico (vedi candidatePool): Claude
+  // sceglie un id, non riscrive un nome, e l'aggancio al nodo reale non
+  // può più fallire per una lettera di differenza. `sfidaId`/`materiaId`
+  // restano deliberatamente FUORI dal prompt: sono dati di servizio del
+  // client, non informazione su cui ragionare.
+  const candidati = candidatePool(focus).map((c, id) => ({
+    id,
+    tipo: c.tipo,
+    materia: c.materia,
+    argomento: c.argomento,
+    obiettivo: c.obiettivo,
+    blueprint: c.blueprint,
+    difficulty: c.difficulty,
+    giorni_ripasso_scaduto: c.giorni_ripasso_scaduto,
+    lastReviewRating: c.lastReviewRating,
+    tentativiSuccessi: c.tentativiSuccessi,
+    tentativiFalliti: c.tentativiFalliti
+  }));
   return JSON.stringify(
     {
       data: date,
@@ -918,12 +1120,19 @@ export function buildUserPrompt(params: {
       // computeHistoricalStudyWindow): in quel caso Claude non riceve
       // alcuna indicazione fuorviante e ricade sulle regole generiche.
       storico_finestra_produttiva_utente: historicalWindow ?? null,
-      // V35.3 — paniere di argomenti/materie reali (Study Focus Engine,
-      // vedi selectStudyFocusCandidates) — mai l'intero Web-Matrix, solo
-      // i candidati rilevanti per oggi. `null` di ogni singolo campo non
-      // esiste qui: con nessun candidato, le liste sono semplicemente
-      // vuote (EMPTY_STUDY_FOCUS).
-      argomenti_e_materie_oggi: studyFocus ?? EMPTY_STUDY_FOCUS
+      // V36.0 — esito reale della giornata precedente: quanto hai
+      // studiato, con che qualità, e quanto è caduto nella finestra che
+      // K.A.R.E.N. aveva consigliato. È ciò che trasforma il briefing da
+      // monologo quotidiano in un ciclo che si corregge. `null` quando
+      // ieri non c'è stata nessuna sessione registrata.
+      esito_di_ieri: yesterdayOutcome ?? null,
+      // V35.3/V36.0 — paniere di argomenti reali (Study Focus Engine, vedi
+      // selectStudyFocusCandidates) — mai l'intero Web-Matrix, solo i
+      // candidati rilevanti per oggi, numerati per id.
+      argomenti_e_materie_oggi: {
+        materie_in_focus: focus.materie_in_focus,
+        candidati
+      }
     },
     null,
     2
@@ -948,3 +1157,138 @@ export function buildUserPrompt(params: {
 // (es. un bottone premuto ripetutamente per errore), non a contenere la
 // spesa — alzato da 5 a 20/giorno.
 export const MAX_FORCE_REGENERATIONS_PER_DAY = 20;
+
+// =====================================================================
+// V36.0 — INTERROGAZIONE K.A.R.E.N. (modalità `quiz`, on-demand)
+//
+// Il difetto strutturale che questa modalità attacca: tutta la
+// ripetizione dilazionata dell'app poggiava su UNA autovalutazione
+// soggettiva — i tre pulsanti Facile / Medio / Difficile premuti dopo
+// aver riletto gli appunti. È il punto debole classico di ogni sistema
+// SRS: la sensazione di "sì, lo so" dopo una rilettura è notoriamente
+// scollegata dalla capacità di richiamare davvero quel contenuto, e
+// quando sei stanco è sistematicamente generosa.
+//
+// Qui K.A.R.E.N. legge il CONTENUTO reale del nodo (titolo, obiettivo,
+// blueprint e appunti scritti dal Cadetto) e produce 6-8 domande di
+// richiamo attivo. Il giudizio che segue non nasce più da una
+// sensazione ma da un tentativo di risposta andato bene o male.
+//
+// Differenze deliberate rispetto al briefing giornaliero:
+//  - è ON-DEMAND (un click esplicito), non schedulata: nessun costo
+//    ricorrente, nessuna chiamata che parte da sola;
+//  - non tocca `karen_briefings` né alcuna tabella: le domande tornano
+//    al client, che le salva DENTRO il nodo nel Cloud State esistente
+//    (`sfida.quiz`) — zero migrazioni di schema, e una volta generate
+//    restano disponibili offline ad ogni ripasso successivo;
+//  - il nodo viene letto SEMPRE dal database (user_data.app_state), mai
+//    dal body della richiesta: stessa postura di sicurezza del resto
+//    della function.
+// =====================================================================
+export const MAX_QUIZ_QUESTIONS = 8;
+
+export type QuizQuestion = { domanda: string; tipo: string; traccia: string };
+export type Quiz = { domande: QuizQuestion[] };
+
+export type QuizNodeContext = {
+  materia: string;
+  argomento: string;
+  obiettivo: string;
+  blueprint: string;
+  note: string;
+  difficulty: string;
+};
+
+/** Recupera il contesto testuale di UN nodo da `app_state.materie`, con
+ * la stessa diffidenza di normalizeMaterie: nessun campo dato per
+ * scontato, `null` se materia o nodo non esistono più. */
+export function findQuizNodeContext(rawMaterie: unknown, materiaId: string, sfidaId: string): QuizNodeContext | null {
+  if (!Array.isArray(rawMaterie) || !materiaId || !sfidaId) return null;
+  const materia = rawMaterie.find(
+    (m) => m && typeof m === 'object' && (m as Record<string, unknown>).id === materiaId
+  ) as Record<string, unknown> | undefined;
+  if (!materia) return null;
+  const sfide = Array.isArray(materia.sfide) ? materia.sfide : [];
+  const sfida = sfide.find(
+    (s) => s && typeof s === 'object' && (s as Record<string, unknown>).id === sfidaId
+  ) as Record<string, unknown> | undefined;
+  if (!sfida) return null;
+
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  return {
+    materia: str(materia.nome) || 'Materia senza nome',
+    argomento: str(sfida.nome) || 'Argomento senza nome',
+    obiettivo: str(sfida.obiettivo),
+    blueprint: str(sfida.blueprint),
+    note: str(sfida.note).slice(0, 4000),
+    difficulty: str(sfida.difficulty) || 'MEDIUM'
+  };
+}
+
+/** Quanto materiale reale abbiamo su questo nodo? Con solo un titolo le
+ * domande sarebbero inevitabilmente generiche, ed è più onesto dirlo al
+ * Cadetto (e suggerirgli di scrivere due righe di appunti) che produrre
+ * otto domande vuote che sembrano personalizzate. */
+export function quizContextIsThin(ctx: QuizNodeContext): boolean {
+  return (ctx.obiettivo.length + ctx.blueprint.length + ctx.note.length) < 40;
+}
+
+export function buildQuizSystemPrompt() {
+  return `Sei K.A.R.E.N., l'intelligenza artificiale tattica di ArachnoForge. Parli SEMPRE in italiano, tono sintetico e operativo.
+Il Cadetto sta per ripassare UN argomento specifico del suo piano di studi universitario (ingegneria). Il tuo compito: generare una breve interrogazione di RICHIAMO ATTIVO su quell'argomento, basata sul contenuto reale che ti viene fornito.
+Regole ferree:
+1. Rispondi ESCLUSIVAMENTE con un oggetto JSON valido, nient'altro (niente markdown, niente backtick, niente testo fuori dal JSON).
+2. Schema esatto:
+{ "domande": [ { "domanda": string, "tipo": string, "traccia": string } ] }
+3. Da 6 a ${MAX_QUIZ_QUESTIONS} domande, ordinate da fondamentale ad avanzata.
+4. Devono essere domande di RICHIAMO ATTIVO, a cui si risponde a mente o a voce prima di riaprire gli appunti: mai domande a risposta multipla, mai domande la cui risposta è già scritta nel testo della domanda stessa, mai "cosa hai capito di X".
+5. Varia il "tipo" fra: "definizione", "derivazione", "applicazione", "confronto", "errore-tipico", "calcolo". Per una materia tecnica privilegia derivazioni, applicazioni e calcoli rispetto alle sole definizioni: saper enunciare non è saper usare.
+6. "traccia": UNA frase con i punti chiave che una buona risposta deve toccare — serve al Cadetto per autocorreggersi DOPO aver tentato, quindi non deve essere la risposta completa e nemmeno un indizio che renda la domanda banale.
+7. Attieniti STRETTAMENTE al contenuto fornito (obiettivo, note, blueprint del nodo). Se il materiale è scarno, fai domande sui fondamenti standard di quell'argomento così come è intitolato, senza inventare formule, dati o notazioni specifiche che non ti sono state date.
+8. Nessun preambolo, nessun commento, nessun riferimento a queste istruzioni.`;
+}
+
+export function buildQuizUserPrompt(ctx: QuizNodeContext) {
+  return JSON.stringify(
+    {
+      materia: ctx.materia,
+      argomento: ctx.argomento,
+      obiettivo: ctx.obiettivo || null,
+      note_del_cadetto: ctx.note || null,
+      blueprint: ctx.blueprint || null,
+      difficolta_percepita: ctx.difficulty,
+      materiale_scarno: quizContextIsThin(ctx)
+    },
+    null,
+    2
+  );
+}
+
+/** Stessa filosofia di sanitizeDirectives: una risposta malformata non
+ * fa mai propagare spazzatura nello stato dell'app. Qui però NON esiste
+ * un fallback deterministico sensato (non si inventano domande su un
+ * contenuto che non conosciamo), quindi un payload invalido produce
+ * `null` e il chiamante lo riporta onestamente come errore. */
+export function sanitizeQuiz(raw: unknown): Quiz | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const domandeRaw = (raw as Record<string, unknown>).domande;
+  if (!Array.isArray(domandeRaw)) return null;
+
+  const domande = domandeRaw
+    .map((d): QuizQuestion | null => {
+      if (!d || typeof d !== 'object') return null;
+      const item = d as Record<string, unknown>;
+      const domanda = typeof item.domanda === 'string' ? item.domanda.trim() : '';
+      if (!domanda) return null;
+      return {
+        domanda: domanda.slice(0, 300),
+        tipo: (typeof item.tipo === 'string' ? item.tipo.trim() : 'richiamo').slice(0, 40),
+        traccia: (typeof item.traccia === 'string' ? item.traccia.trim() : '').slice(0, 400)
+      };
+    })
+    .filter((d): d is QuizQuestion => d !== null)
+    .slice(0, MAX_QUIZ_QUESTIONS);
+
+  if (domande.length === 0) return null;
+  return { domande };
+}

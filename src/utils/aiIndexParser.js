@@ -27,6 +27,7 @@
  * alcuna migrazione: si riconoscono direttamente le chiavi "ore".
  */
 import { PERSISTED_STATUS } from './skillTree.js';
+import { DEFAULT_EASE } from './spiderSense.js';
 import { DIFFICULTY } from './xpEngine.js';
 
 /** Tetto di sicurezza sul numero totale di nodi importabili in un colpo
@@ -205,7 +206,16 @@ export function flattenAiIndexTree(tree) {
       lastReviewRating: null,
       reviewCount: 0,
       focusMinutes: 0,
-      blueprint: ''
+      blueprint: '',
+      // V36.0 — stessi campi di createSfida (skillTree.js): appunti del
+      // nodo e stato della curva SM-2. Senza, un nodo importato dall'AI
+      // Index Matrix resterebbe incompleto fino al primo reload (dove
+      // hydrateState lo migrerebbe comunque) — meglio nascerlo completo.
+      note: '',
+      srsEase: DEFAULT_EASE,
+      srsIntervalDays: 0,
+      tentativiSuccessi: 0,
+      tentativiFalliti: 0
     });
     (node.children || []).forEach((child) => visit(child, id));
   }

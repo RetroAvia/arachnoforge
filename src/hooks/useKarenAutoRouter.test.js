@@ -6,7 +6,14 @@
 // =====================================================================
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeMateriaQuota, compareByUrgency, selectDailyFocus, CRITICAL_DISTANCE_DAYS, QUOTA_STATUS } from './useKarenAutoRouter.js';
+import {
+  computeMateriaQuota,
+  compareByUrgency,
+  selectDailyFocus,
+  allocateDailyBudget,
+  CRITICAL_DISTANCE_DAYS,
+  QUOTA_STATUS
+} from './useKarenAutoRouter.js';
 
 function isoInDays(days) {
   const d = new Date();
@@ -99,5 +106,56 @@ describe('computeMateriaQuota — invarianti di base (nessuna modifica alla mate
     const q = computeMateriaQuota(mkMateria({ cfu: 6, examDate: isoInDays(CRITICAL_DISTANCE_DAYS - 2) }), []);
     assert.equal(q.daysRemaining, CRITICAL_DISTANCE_DAYS - 2);
     assert.ok(q.dailyQuotaHours > 0);
+  });
+});
+
+
+// =====================================================================
+// V36.0 — Budget Giornaliero Globale
+// Il difetto che questa funzione chiude: fino alla V35 due materie in
+// focus mostravano due "Oggi: Xh" calcolati in totale isolamento, la cui
+// somma poteva superare qualunque giornata reale — e lo si scopriva solo
+// a sera, avendo fallito entrambe le quote.
+// =====================================================================
+describe('allocateDailyBudget', () => {
+  const q = (materiaId, dailyQuotaHours) => ({ materiaId, dailyQuotaHours });
+
+  test('quando il budget basta, ogni materia riceve esattamente ciò che le serve', () => {
+    const r = allocateDailyBudget([q('a', 2), q('b', 1.5)], 5);
+    assert.equal(r.overCapacity, false);
+    assert.equal(r.allocation.get('a'), 2);
+    assert.equal(r.allocation.get('b'), 1.5);
+    assert.equal(r.slackHours, 1.5);
+    assert.equal(r.deficitHours, 0);
+  });
+
+  test('quando il budget NON basta, le ore si ripartiscono in proporzione e il deficit viene dichiarato', () => {
+    const r = allocateDailyBudget([q('a', 6), q('b', 2)], 4);
+    assert.equal(r.overCapacity, true);
+    assert.equal(r.deficitHours, 4);
+    assert.equal(r.allocation.get('a'), 3);
+    assert.equal(r.allocation.get('b'), 1);
+    // La somma del riparto non supera mai il budget: è l'invariante.
+    const somma = r.allocation.get('a') + r.allocation.get('b');
+    assert.ok(somma <= r.budgetHours + 0.01, `riparto ${somma} oltre il budget ${r.budgetHours}`);
+  });
+
+  test('una materia senza data d\'esame (quota non calcolabile) entra con bisogno nullo', () => {
+    const r = allocateDailyBudget([q('a', 2), q('b', null)], 5);
+    assert.equal(r.allocation.get('b'), 0);
+    assert.equal(r.totalNeedHours, 2);
+  });
+
+  test('nessuna materia in focus: nessun deficit, nessuna divisione per zero', () => {
+    const r = allocateDailyBudget([], 4);
+    assert.equal(r.totalNeedHours, 0);
+    assert.equal(r.overCapacity, false);
+    assert.equal(r.slackHours, 4);
+  });
+
+  test('un budget non valido non produce NaN', () => {
+    const r = allocateDailyBudget([q('a', 2)], NaN);
+    assert.equal(r.budgetHours, 0);
+    assert.equal(Number.isFinite(r.allocation.get('a')), true);
   });
 });

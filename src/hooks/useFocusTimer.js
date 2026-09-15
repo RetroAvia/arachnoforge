@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useTimerEngine, TIMER_STATUS } from './useTimerEngine.js';
 import { BLOOD_PACT_PENALTY, FOCUS_QUALITY, DEFAULT_FOCUS_QUALITY } from '../utils/xpEngine.js';
 import { saveFocusCheckpoint, loadFocusCheckpoint, clearFocusCheckpoint } from '../utils/focusRecovery.js';
+import { notify, vibrate, requestWakeLock, releaseWakeLock } from '../utils/systemNotify.js';
 
 /**
  * useFocusTimer — "Il Cervello" del Tactical Timer.
@@ -33,7 +34,20 @@ import { saveFocusCheckpoint, loadFocusCheckpoint, clearFocusCheckpoint } from '
  * collaudata: zero nuovo canale di scrittura remota, il recupero
  * converge sulla pipeline Cloud Sync esistente.
  */
-export function useFocusTimer({ focusTime, shortBreakTime, longBreakTime, dispatch, audio, pushToast, userId }) {
+export function useFocusTimer({
+  focusTime,
+  shortBreakTime,
+  longBreakTime,
+  dispatch,
+  audio,
+  pushToast,
+  userId,
+  // V36.0 — entrambi governati da Karen OS Settings, entrambi best
+  // effort: un permesso negato o un browser senza l'API non cambia una
+  // riga del comportamento del timer.
+  notificationsEnabled = false,
+  keepScreenAwake = true
+}) {
   const [activeFocusMateriaId, setActiveFocusMateriaId] = useState(null);
   const [activeFocusSfidaId, setActiveFocusSfidaId] = useState(null);
   const [pendingFocus, setPendingFocus] = useState({
@@ -145,22 +159,58 @@ export function useFocusTimer({ focusTime, shortBreakTime, longBreakTime, dispat
   useEffect(() => { shortBreakRef.current = shortBreakTime; }, [shortBreakTime]);
   useEffect(() => { longBreakRef.current = longBreakTime; }, [longBreakTime]);
 
+  // V36.0 — le preferenze di notifica/wake lock viaggiano su ref: i
+  // callback del motore timer non devono essere ricreati (e quindi il
+  // countdown non deve essere ri-agganciato) solo perché l'utente ha
+  // toccato un toggle in Karen OS Settings.
+  const notifyRef = useRef(notificationsEnabled);
+  const wakeRef = useRef(keepScreenAwake);
+  useEffect(() => { notifyRef.current = notificationsEnabled; }, [notificationsEnabled]);
+  useEffect(() => { wakeRef.current = keepScreenAwake; }, [keepScreenAwake]);
+
   const handleFocusComplete = useCallback(({ wasOverdrive }) => {
     const { materiaId, sfidaId } = activeFocusRef.current;
+    const minutes = focusTimeRef.current;
     setPendingFocus((prev) => ({
-      totalMinutes: prev.totalMinutes + focusTimeRef.current,
+      totalMinutes: prev.totalMinutes + minutes,
       overdriveOccurred: prev.overdriveOccurred || wasOverdrive,
       materiaId: prev.materiaId || materiaId,
       sfidaId: prev.sfidaId || sfidaId
     }));
+    // V36.0 — il momento esatto in cui il vecchio timer diventava muto:
+    // blocco finito, schermo bloccato, nessuno te lo diceva.
+    if (notifyRef.current) {
+      notify('Blocco Focus completato', {
+        body: `${minutes} minuti registrati. Avvia la pausa o concatena un Overdrive.`,
+        tag: 'af-focus'
+      });
+      vibrate();
+    }
   }, []);
 
   const handleBreakComplete = useCallback(() => {
     pushToast('Pausa terminata — pronto per il prossimo blocco di Focus.', 'info');
+    if (notifyRef.current) {
+      notify('Pausa terminata', { body: 'Karen: pronto per il prossimo blocco di Focus.', tag: 'af-break' });
+      vibrate([90]);
+    }
   }, [pushToast]);
 
   const rawTimer = useTimerEngine({ onFocusComplete: handleFocusComplete, onBreakComplete: handleBreakComplete });
   const { start: timerStart, stop: timerStop, pause: timerPause, resume: timerResume } = rawTimer;
+
+  // V36.0 — Wake Lock: lo schermo resta acceso per tutta la durata di un
+  // blocco di Focus (mai durante una pausa: lì spegnere è il punto), e
+  // viene rilasciato appena il blocco finisce o l'hook si smonta. Senza
+  // questo, Sensory Zero si spegneva da solo dopo 30 secondi.
+  useEffect(() => {
+    if (rawTimer.status === TIMER_STATUS.FOCUS && wakeRef.current) {
+      requestWakeLock();
+    } else {
+      releaseWakeLock();
+    }
+    return () => releaseWakeLock();
+  }, [rawTimer.status]);
 
   useEffect(() => {
     if (rawTimer.status !== TIMER_STATUS.FOCUS) return;

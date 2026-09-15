@@ -1,4 +1,5 @@
-import { computeSpiderScore, computeDirectUnlockCount, getMissingPrerequisites } from '../data/vanvitelliCourseMap.js';
+import { computeSpiderScore, computeDirectUnlockCount, getMissingPrerequisites, computePressure } from '../data/vanvitelliCourseMap.js';
+import { computeRemainingHours } from './materiaMeta.js';
 import { daysUntilDateOnly } from './dateUtils.js';
 
 /**
@@ -6,37 +7,47 @@ import { daysUntilDateOnly } from './dateUtils.js';
  *
  * L'IA della tuta scansiona ogni Materia del Web-Matrix ancora NON
  * superata (`examPassed !== true`) e decreta il "Primary Target": la
- * materia con lo Spider-Score più alto secondo la Time-Weaver Formula
- * (Difficoltà + Esami Sbloccati + 1000/Giorni Mancanti). Non è un secondo
+ * materia con lo Spider-Score più alto secondo la Pressure Formula
+ * (V36.0 — ore residue calibrate contro ore realmente disponibili prima
+ * dell'esame, vedi data/vanvitelliCourseMap.js). Non è un secondo
  * algoritmo — riusa esattamente lo stesso Spider-Score già mostrato in
- * ogni card del Web-Matrix, così il consiglio di Karen è sempre coerente
- * con l'ordinamento visibile all'utente, mai un numero calcolato "a
- * parte". La motivazione ora parla di GIORNI reali, non più di uno
- * slider soggettivo di "Urgenza": il tempo è il fattore dominante.
+ * ogni card del Web-Matrix, e la stessa nozione di "ore residue" della
+ * Quota Odierna: dalla V36.0 "Primary Target" e "In focus oggi" non
+ * possono più indicare due materie diverse per criteri diversi.
  */
-function buildReason(materia, unlocksCount, daysRemaining) {
+/**
+ * V36.0 — la motivazione parla ora la stessa lingua del punteggio:
+ * ore residue contro ore disponibili. "Mancano 12 giorni" da solo non
+ * dice se sei in ritardo; "38 ore da fare in 12 giorni, ne hai 50
+ * disponibili al tuo ritmo" sì.
+ */
+function buildReason(materia, { unlocksCount, daysRemaining, remainingHours, pressure, capacityHours }) {
   const difficulty = Number(materia.perceivedDifficulty) || 3;
+  const oreLabel = `${Math.round(remainingHours)}h di lavoro residuo`;
 
+  if (daysRemaining != null && daysRemaining <= 0) {
+    return `EVENT HORIZON: l'esame di ${materia.nome} è oggi o già scaduto e restano ${oreLabel}. Nient'altro ha priorità.`;
+  }
+  if (pressure > 1) {
+    const disponibili = Math.round(daysRemaining * capacityHours);
+    return `IN DEFICIT: ${materia.nome} ha ${oreLabel} ma solo ~${disponibili}h disponibili in ${daysRemaining} giorni al tuo ritmo reale. Serve recuperare terreno adesso.`;
+  }
+  if (pressure > 0.7) {
+    return `Margine sottile: ${oreLabel} in ${daysRemaining} giorni — sei in pari, ma senza riserva. Un giorno saltato ti porta in deficit.`;
+  }
   if (daysRemaining != null && daysRemaining <= 30) {
-    const dayLabel = daysRemaining <= 0 ? 'è SCADUTO o è oggi' : `mancano solo ${daysRemaining} giorni`;
-    return `EVENT HORIZON TEMPORALE: per ${materia.nome} ${dayLabel}. Il tempo scavalca ogni altra priorità del piano di studi.`;
+    return `Scadenza vicina (${daysRemaining} giorni, ${oreLabel}): Karen la tiene in testa alla coda finché il margine non torna ampio.`;
   }
-  if (unlocksCount >= 3) {
-    return `Priorità Massima: ${materia.nome} sblocca ${unlocksCount} esami successivi del piano di studi.`;
-  }
-  if (unlocksCount >= 1 && daysRemaining != null && daysRemaining <= 60) {
-    return `Nodo strategico e temporalmente vicino: sblocca ${unlocksCount} esame/i e mancano ${daysRemaining} giorni.`;
-  }
-  if (unlocksCount >= 1) {
-    return `Sblocca ${unlocksCount} esame/i successivo/i: propedeuticità chiave del piano di studi.`;
+  if (unlocksCount >= 2) {
+    return `Nodo strategico: ${materia.nome} sblocca ${unlocksCount} esami successivi del piano di studi (${oreLabel}).`;
   }
   if (daysRemaining == null) {
-    return 'Nessuna data d\'esame impostata: Karen valuta solo Difficoltà e propedeuticità. Imposta una data per attivare la pressione temporale della Time-Weaver Formula.';
+    return 'Nessuna data d\'esame impostata: senza scadenza la pressione temporale è nulla e Karen può valutare solo CFU, difficoltà e propedeuticità. Imposta una data per attivare il calcolo completo.';
   }
   if (difficulty >= 4) {
-    return `Difficoltà elevata (mancano ${daysRemaining} giorni): Karen consiglia di affrontarlo con il margine temporale più ampio possibile.`;
+    return `Difficoltà elevata con ${daysRemaining} giorni di margine: affrontala ora, finché il margine esiste.`;
   }
-  return `Spider-Score più alto del Web-Matrix (mancano ${daysRemaining} giorni): il miglior bilancio fra difficoltà, tempo e impatto strategico.`;
+  return `Pressione più alta del Web-Matrix: ${oreLabel} in ${daysRemaining} giorni.`;
 }
 
 /** V29.0 — Pillar 2 (Automatic Precedence Engine): una Materia con propedeuticità ufficiali del piano di studi non ancora superate è "congelata" per il planner automatico. */
@@ -49,7 +60,7 @@ function isPrereqFrozen(materia, allMaterie) {
  * @param {Array} materie - state.materie corrente
  * @returns {null|{materia, spiderScore, unlocksCount, daysRemaining, reason}} null se non ci sono materie da superare (o se sono tutte congelate).
  */
-export function computePrimaryTarget(materie) {
+export function computePrimaryTarget(materie, calibration = null) {
   const safeMaterie = Array.isArray(materie) ? materie : [];
   const pending = safeMaterie.filter((m) => m && !m.examPassed);
   if (pending.length === 0) return null;
@@ -66,7 +77,7 @@ export function computePrimaryTarget(materie) {
   let best = null;
   let bestScore = -Infinity;
   eligible.forEach((m) => {
-    const score = computeSpiderScore(m);
+    const score = computeSpiderScore(m, calibration);
     if (score > bestScore) {
       bestScore = score;
       best = m;
@@ -74,14 +85,20 @@ export function computePrimaryTarget(materie) {
   });
   if (!best) return null;
 
+  const capacityHours = Number(calibration?.hoursPerDay) > 0 ? Number(calibration.hoursPerDay) : 4.5;
   const unlocksCount = computeDirectUnlockCount(best.courseId);
   const daysRemaining = best.examDate ? daysUntilDateOnly(best.examDate) : null;
+  const remainingHours = computeRemainingHours(best, calibration);
+  const pressure = computePressure(remainingHours, best.examDate, capacityHours);
+
   return {
     materia: best,
     spiderScore: bestScore,
     unlocksCount,
     daysRemaining,
-    reason: buildReason(best, unlocksCount, daysRemaining)
+    remainingHours: Math.round(remainingHours * 10) / 10,
+    pressure: Math.round(pressure * 100) / 100,
+    reason: buildReason(best, { unlocksCount, daysRemaining, remainingHours, pressure, capacityHours })
   };
 }
 

@@ -33,6 +33,20 @@ window.addEventListener('unhandledrejection', (event) => {
   });
 });
 
+// V36.0 — PWA: registrazione del Service Worker (public/sw.js). Solo in
+// produzione — in `vite dev` un SW attivo serve asset in cache e rompe
+// l'hot reload, sintomo classico "ho salvato ma non cambia niente".
+// Registrazione dopo il `load` per non competere con il primo render, e
+// interamente best-effort: un fallimento qui non deve mai impedire
+// all'app di partire (browser senza SW, contesto non sicuro, permessi).
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((err) => {
+      console.warn('[ArachnoForge] Service Worker non registrato:', err);
+    });
+  });
+}
+
 // V26.0 — "The Nexus Gate": AuthProvider vive alla radice, FUORI da
 // ArachnoForgeProvider — governa la sessione Supabase indipendentemente
 // dal fatto che l'utente sia autenticato o meno (App.jsx decide poi se

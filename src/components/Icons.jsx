@@ -51,6 +51,12 @@ const PATHS = {
   speaker: ['M4 9v6h4l5 4V5L8 9H4Z', 'M17 8a5 5 0 0 1 0 8', 'M19.5 5.5a9 9 0 0 1 0 13'],
   flag: ['M5 21V4', 'M5 4h13l-3 4 3 4H5'],
   chevronDown: ['M6 9l6 6 6-6'],
+  // V36.0 — icone aggiunte per la card "ADESSO", gli appunti dei nodi e
+  // l'Exam Readiness Index.
+  chevronUp: ['M6 15l6-6 6 6'],
+  clock: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M12 7v5l3.5 2'],
+  note: ['M5 3h9l5 5v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z', 'M14 3v5h5', 'M8 13h8', 'M8 17h5'],
+  gauge: ['M12 21a9 9 0 1 1 9-9', 'M12 12l5-3'],
   // V17.0 — "Insomniac Overhaul": iconografia più aggressiva/tech per la
   // nuova identità Stark-Web Terminal / Web-Matrix / Karen OS.
   web: [
