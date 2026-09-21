@@ -1,0 +1,48 @@
+import React from 'react';
+import Modal from './Modal.jsx';
+import { Icon } from './Icons.jsx';
+import { BTN_PRIMARY, BTN_SECONDARY, BTN_GHOST } from '../utils/designSystem.js';
+import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
+
+/**
+ * V34.0 — "God-Tier Pass": la conferma DISTRUTTIVA (danger=true) riproduce
+ * ora il Delete Whoosh dedicato invece del solo Web-Click generico già
+ * scatenato dal listener globale su ogni bottone — un singolo punto di
+ * innesto che copre automaticamente ogni eliminazione dell'app (Materie,
+ * Nodi, Daily Protocol, Ricompense Shop...) senza toccare le singole
+ * pagine chiamanti.
+ */
+export default function ConfirmDialog({ open, onClose, onConfirm, title, message, confirmLabel = 'Conferma', danger = true }) {
+  const { audio } = useArachnoForge();
+
+  return (
+    // V35.2 — Accessibilita': "alertdialog" (non il generico "dialog" di
+    // Modal) e' il ruolo ARIA corretto per una conferma che richiede una
+    // decisione immediata dell'utente — annuncio piu' preciso per chi usa
+    // uno screen reader, zero cambio di comportamento visivo.
+    <Modal open={open} onClose={onClose} title={title} maxWidth="max-w-sm" role="alertdialog">
+      <div className="flex items-start gap-3 mb-6">
+        <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${danger ? 'bg-primary/10 text-primary' : 'bg-secondary/10 text-secondary'}`}>
+          <Icon name="alertTriangle" className="w-6 h-6" />
+        </div>
+        <p className="text-base text-slate-300 leading-relaxed pt-1.5">{message}</p>
+      </div>
+      <div className="flex justify-end gap-3">
+        <button type="button" onClick={onClose} className={BTN_GHOST}>
+          Annulla
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (danger) audio.playDeleteWhoosh();
+            onConfirm();
+            onClose();
+          }}
+          className={danger ? BTN_PRIMARY : BTN_SECONDARY}
+        >
+          {confirmLabel}
+        </button>
+      </div>
+    </Modal>
+  );
+}

@@ -1,0 +1,799 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------ *
+ * V16.0 — True Theme Engine (Pillar 3). Terne RGB (senza rgb()) consumate
+ * da Tailwind via rgb(var(--x-rgb) / <alpha-value>), esposte anche come
+ * token semantici `primary` / `secondary` / `accent` / `surface` in
+ * tailwind.config.js. Cambiare [data-theme] su <body> ritinteggia
+ * ISTANTANEAMENTE ogni pulsante, hover, ombra e bordo dell'intera app,
+ * incluse le opacità (/15, /50...) — nessun hex statico deve mai bypassare
+ * queste variabili: è l'unica fonte di verità del colore in ArachnoForge.
+ * ------------------------------------------------------------------ */
+:root {
+  /* Classic Suit — Rosso Cremisi #E23636 + Blu Elettrico profondo #1D83F0 */
+  --af-attack-rgb: 226 54 54;
+  --af-attack-dark-rgb: 153 27 27;
+  --af-refuel-rgb: 29 131 240;
+  --af-refuel-dark-rgb: 14 90 168;
+  --af-decay-rgb: 251 191 36;
+  /* Superficie glass profonda, equivalente a slate-950 (#020617) leggermente
+     riscaldato per restare in armonia con af-bg. */
+  --af-surface-rgb: 8 9 16;
+}
+
+[data-theme='symbiote'] {
+  /* Symbiote Suit — nero inchiostro + argento, bagliore violaceo. Niente
+     rosso: il ruolo "primary/attack" diventa viola, "secondary/refuel"
+     diventa argento (testi/accenti), superficie quasi nero puro. */
+  --af-attack-rgb: 139 92 246;
+  --af-attack-dark-rgb: 76 29 149;
+  --af-refuel-rgb: 203 213 225;
+  --af-refuel-dark-rgb: 100 116 139;
+  --af-decay-rgb: 74 222 128;
+  --af-surface-rgb: 3 3 8;
+}
+
+[data-theme='2099'] {
+  /* 2099 Suit — ciano neon + magenta/viola scuro futuristico. */
+  --af-attack-rgb: 217 70 239;
+  --af-attack-dark-rgb: 112 26 117;
+  --af-refuel-rgb: 34 211 238;
+  --af-refuel-dark-rgb: 14 116 144;
+  --af-decay-rgb: 250 204 21;
+  --af-surface-rgb: 10 4 22;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  /* V34.3 — Dynamic Viewport Height: sui browser mobili "100%"/100vh non
+     tengono conto in modo coerente dell'ingombro reale della barra degli
+     indirizzi, che cambia comportamento fra orientamento verticale e
+     orizzontale — sintomo tipico "funziona in orizzontale, tagliato o
+     traballante in verticale". Dichiarazione successiva, mai un fallback
+     rotto: i browser che non riconoscono l'unità "dvh" ignorano questa
+     riga e mantengono "height: 100%" sopra, quelli che la riconoscono la
+     applicano al posto della precedente. */
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+}
+
+/* ------------------------------------------------------------------ *
+ * V34.0 — "God-Tier Pass": Accessibilita' globale + coerenza tattile.
+ * ------------------------------------------------------------------ */
+
+/* Focus da tastiera SEMPRE visibile su ogni elemento interattivo (bottoni
+   HUD, card cliccabili, opzioni di Dropdown...), ma mai un anello a schermo
+   intero quando l'interazione avviene col mouse/touch — solo `:focus-visible`
+   (supportato da ogni browser moderno) mostra l'anello, coerente col resto
+   dei bagliori al neon dell'app invece del contorno blu di sistema. */
+:focus-visible {
+  outline: 2px solid rgb(var(--af-refuel-rgb) / 0.9);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+body[data-carnage='true'] :focus-visible {
+  outline-color: rgb(var(--af-attack-rgb) / 0.9);
+}
+
+/* V39.0 — Frecce native dei campi numerici nascoste. Su questo tema
+   scuro erano due rettangoli chiari incollati dentro ogni input, e in un
+   campo stretto rubavano spazio alle cifre. Il campo resta numerico a
+   tutti gli effetti: tastierino numerico su telefono, frecce ↑/↓ da
+   tastiera e rotella su desktop continuano a funzionare. */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* V39.0 — Selettori nativi di data e ora in tema scuro. Senza, il
+   calendario a comparsa era bianco su un'app nera e l'icona del
+   calendario, scura su scuro, era praticamente invisibile. */
+input[type='date'],
+input[type='time'] {
+  color-scheme: dark;
+}
+
+/* Rispetto di "Riduci Animazioni" di sistema (prefers-reduced-motion):
+   l'app usa animazioni CSS diffusamente per il feedback sensoriale (shake,
+   flicker, pulsazioni, drone visivi) — chi ha disabilitato le animazioni a
+   livello di sistema (spesso per motivi vestibolari/di accessibilita') deve
+   vederle spente per davvero, non solo rallentate. Le transizioni "utili"
+   (hover, apertura menu) restano quasi istantanee anziche' sparire del
+   tutto, cosi' l'interfaccia resta comunque reattiva al tocco/click. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+body {
+  background-color: #050508;
+  background-image:
+    radial-gradient(circle at 15% 20%, rgb(var(--af-attack-rgb) / 0.06), transparent 35%),
+    radial-gradient(circle at 85% 80%, rgb(var(--af-refuel-rgb) / 0.06), transparent 35%);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 17px; /* +~6% sulla base rem: ulteriore rifinitura di leggibilita' oltre allo swap di classi già applicato, senza sovradimensionare titoli e HUD numerici. */
+  -webkit-font-smoothing: antialiased;
+  transition: background-image 0.6s ease;
+}
+
+/* Scrollbar invisibile ma funzionale */
+.af-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.af-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.af-scroll::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.25);
+  border-radius: 3px;
+}
+.af-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.45);
+}
+.af-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.25) transparent;
+}
+
+/* Overscroll invisibile per il main viewport */
+.af-viewport::-webkit-scrollbar {
+  width: 0px;
+  background: transparent;
+}
+.af-viewport {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+@keyframes af-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.af-cursor-blink {
+  animation: af-blink 1s step-end infinite;
+}
+
+.af-mono-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+.af-grain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.025;
+  z-index: 999;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Gadget da web-shooter: pattern diagonale sottile sopra le progress bar,
+   per richiamare la texture delle "tele" di Spidey. */
+.af-web-bar {
+  position: relative;
+  overflow: hidden;
+}
+.af-web-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 255, 255, 0.35) 0px,
+    rgba(255, 255, 255, 0.35) 1.5px,
+    transparent 1.5px,
+    transparent 8px
+  );
+  mix-blend-mode: overlay;
+  opacity: 0.5;
+}
+
+/* Fatigue UI avanzata: vignette rossastra pulsante + flicker, quando la
+   Stamina scende sotto la soglia critica (Mission Control e globale). */
+.af-interference {
+  /* V39 — fixed (non più absolute dentro <main>): il livello vive ora
+     nella Shell, fuori dal contenitore che scorre, e copre sempre lo
+     schermo visibile invece del solo primo schermo della pagina. */
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
+  background: radial-gradient(ellipse at center, transparent 50%, rgb(var(--af-attack-rgb) / 0.18) 100%);
+  mix-blend-mode: screen;
+  animation: af-interference-flicker 4.5s ease-in-out infinite;
+}
+@keyframes af-interference-flicker {
+  0%, 100% { opacity: 0.55; }
+  42% { opacity: 0.85; }
+  48% { opacity: 0.25; }
+  54% { opacity: 0.8; }
+  70% { opacity: 0.5; }
+}
+
+/* Boss Fight: screen shake su penalità e flash rosso a schermo intero. */
+@keyframes af-screen-shake {
+  0%, 100% { transform: translate(0, 0); }
+  20% { transform: translate(-6px, 3px); }
+  40% { transform: translate(5px, -4px); }
+  60% { transform: translate(-4px, -2px); }
+  80% { transform: translate(6px, 3px); }
+}
+.af-shake {
+  animation: af-screen-shake 0.4s ease-in-out;
+}
+@keyframes af-red-flash {
+  0% { opacity: 0.55; }
+  100% { opacity: 0; }
+}
+.af-flash {
+  animation: af-red-flash 0.5s ease-out forwards;
+}
+
+/* Boss Fight: fase Enrage sotto il 15% del tempo residuo. */
+@keyframes af-enrage-pulse {
+  0%, 100% { text-shadow: 0 0 12px rgb(var(--af-attack-rgb) / 0.6); }
+  50% { text-shadow: 0 0 28px rgb(var(--af-attack-rgb) / 1); }
+}
+.af-enrage {
+  animation: af-enrage-pulse 0.9s ease-in-out infinite;
+}
+
+/* Goblin Protocol: bordi rosso fuoco pulsanti per materie a ridosso dell'esame. */
+@keyframes af-goblin-pulse {
+  0%, 100% { box-shadow: 0 0 14px rgb(var(--af-attack-rgb) / 0.5); }
+  50% { box-shadow: 0 0 26px rgb(var(--af-attack-rgb) / 0.9); }
+}
+.af-goblin {
+  animation: af-goblin-pulse 1.6s ease-in-out infinite;
+}
+
+/* V20.0 — K.A.R.E.N. Auto-Router: EVENT HORIZON (DEFCON 1). Traiettoria
+   matematicamente insostenibile (Quota Odierna > 8h/giorno): lampeggio
+   rosso più rapido e aggressivo del Goblin Protocol (che segnala solo
+   "esame vicino", non "impossibile da recuperare in tempo"), doppio
+   strato box-shadow + leggero flash di opacità del bordo. */
+@keyframes af-event-horizon-blink {
+  0%, 100% { box-shadow: 0 0 16px rgb(var(--af-attack-rgb) / 0.55), 0 0 36px rgb(var(--af-attack-rgb) / 0.25); border-color: rgb(var(--af-attack-rgb) / 0.9); }
+  50% { box-shadow: 0 0 30px rgb(var(--af-attack-rgb) / 1), 0 0 60px rgb(var(--af-attack-rgb) / 0.5); border-color: rgb(var(--af-attack-rgb) / 0.4); }
+}
+.af-event-horizon {
+  animation: af-event-horizon-blink 0.9s ease-in-out infinite;
+}
+
+/* V23.0 — Quantum Router: stato "Attenzione" (giallo/Decay), un respiro
+   molto più lento e morbido dell'Event Horizon — segnala una traiettoria
+   da tenere d'occhio, MAI un allarme vero e proprio. */
+@keyframes af-attenzione-glow {
+  0%, 100% { box-shadow: 0 0 10px rgb(var(--af-decay-rgb) / 0.35); }
+  50% { box-shadow: 0 0 18px rgb(var(--af-decay-rgb) / 0.6); }
+}
+.af-attenzione-pulse {
+  animation: af-attenzione-glow 2.6s ease-in-out infinite;
+}
+
+/* V23.0 — Daily Patrol Engine: "burst" di completamento missione — scale
+   pop + breve flash del bordo, per un feedback davvero "spettacolare"
+   quando una Progress Bar tocca il 100% e la quest si auto-completa. */
+@keyframes af-quest-pop {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.045); }
+  60% { transform: scale(0.985); }
+  100% { transform: scale(1); }
+}
+.af-quest-pop {
+  animation: af-quest-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes af-quest-bar-shimmer {
+  0% { background-position: -120px 0; }
+  100% { background-position: 120px 0; }
+}
+.af-quest-bar-complete::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 255, 255, 0.3) 0px,
+    rgba(255, 255, 255, 0.3) 6px,
+    transparent 6px,
+    transparent 14px
+  );
+  background-size: 240px 100%;
+  animation: af-quest-bar-shimmer 1.4s linear infinite;
+  opacity: 0.6;
+}
+
+/* ------------------------------------------------------------------ *
+ * V11 "Web-Master Dashboard" — Elite Aesthetics layer.
+ * Pannelli in vetro tecnologico, bordi ad alta definizione sfumati,
+ * micro-interazioni reattive su ogni pulsante dell'app.
+ * ------------------------------------------------------------------ */
+
+/* Micro-interazioni globali sui pulsanti: hover piu' morbido, tap reattivo. */
+button {
+  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.3s ease,
+    border-color 0.3s ease, color 0.3s ease, box-shadow 0.3s ease, opacity 0.3s ease;
+}
+button:not(:disabled):active {
+  transform: scale(0.96);
+}
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* Anello HUD del Web-Matrix Radar: leggero respiro luminoso continuo. */
+@keyframes af-radar-glow {
+  0%, 100% { filter: drop-shadow(0 0 4px rgb(var(--af-refuel-rgb) / 0.35)); }
+  50% { filter: drop-shadow(0 0 10px rgb(var(--af-refuel-rgb) / 0.6)); }
+}
+.af-radar-ring {
+  animation: af-radar-glow 3s ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------------ *
+ * "Symbiote Awakening" — Custom Dropdown + Tactical Debriefing layer.
+ * ------------------------------------------------------------------ */
+
+/* Apertura del menu Dropdown: scala + fade dall'alto, coerente con le
+   micro-interazioni (duration-300) del resto dell'app. */
+@keyframes af-dropdown-in {
+  from { opacity: 0; transform: translateY(-6px) scaleY(0.96); }
+  to { opacity: 1; transform: translateY(0) scaleY(1); }
+}
+.af-dropdown-in {
+  transform-origin: top center;
+  animation: af-dropdown-in 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Ingresso delle card di rating nel Debriefing Modal: leggero stagger
+   verticale, per non far apparire le tre opzioni tutte insieme di scatto. */
+@keyframes af-debrief-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.af-debrief-card {
+  animation: af-debrief-in 0.3s ease-out backwards;
+}
+
+/* ------------------------------------------------------------------ *
+ * V25.0 — "The Endgame": Dynamic Titles Engine, rango Lv.50+.
+ * ------------------------------------------------------------------ */
+
+/* "Difensore del Multiverso" — l'unico titolo dell'intera app con un
+   filtro drop-shadow animato in tandem col gradiente in movimento
+   (animate-gradient-shift, Tailwind): il testo sembra letteralmente
+   "vibrare" di energia multiversale, coerente con l'essere il traguardo
+   di fine gioco più alto raggiungibile. */
+@keyframes af-title-epic-glow {
+  0%, 100% { filter: drop-shadow(0 0 6px rgba(217, 70, 239, 0.5)); }
+  33% { filter: drop-shadow(0 0 10px rgba(34, 211, 238, 0.55)); }
+  66% { filter: drop-shadow(0 0 10px rgba(250, 204, 21, 0.5)); }
+}
+.af-title-epic {
+  letter-spacing: 0.02em;
+  animation: af-title-epic-glow 3.5s ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------------ *
+ * V26.0 — "The Nexus Gate": ingresso della card di login/signup, degli
+ * alert olografici e del crossfade fra i due form, più la transizione
+ * epica di ingresso alla Shell una volta autenticati.
+ * ------------------------------------------------------------------ */
+@keyframes af-nexus-card-in {
+  from { opacity: 0; transform: translateY(18px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.af-nexus-card-in {
+  animation: af-nexus-card-in 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes af-nexus-form-in {
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.af-nexus-form-in {
+  animation: af-nexus-form-in 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes af-holo-alert-in {
+  0% { opacity: 0; transform: translateY(-6px) scaleY(0.9); }
+  60% { opacity: 1; transform: translateY(1px) scaleY(1.02); }
+  100% { opacity: 1; transform: translateY(0) scaleY(1); }
+}
+.af-holo-alert-in {
+  transform-origin: top center;
+  animation: af-holo-alert-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Ingresso epico nella Shell principale dopo un login riuscito (App.jsx). */
+@keyframes af-shell-fade-in {
+  0% { opacity: 0; transform: scale(1.015); filter: blur(6px); }
+  100% { opacity: 1; transform: scale(1); filter: blur(0); }
+}
+.af-shell-fade-in {
+  animation: af-shell-fade-in 0.9s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Rotazione icona Cloud durante la sincronizzazione (Pillar 4 — Sync HUD). */
+@keyframes af-cloud-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.af-cloud-syncing {
+  animation: af-cloud-spin 1.2s linear infinite;
+}
+
+@keyframes af-sync-error-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.af-sync-error {
+  animation: af-sync-error-blink 1.1s ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------------ *
+ * V27.0 — Pillar 3: "MAXIMUM CARNAGE MODE" (Symbiote Dopamine Surge).
+ *
+ * Riusa esattamente la stessa architettura del True Theme Engine: quando
+ * [data-carnage='true'] è impostato su <body> (accanto a [data-theme]),
+ * le terne RGB di ruolo vengono sovrascritte con la palette simbionte
+ * nero/argento/rosso — l'intera app (ogni card, bordo, glow, badge)
+ * ritinteggia ISTANTANEAMENTE, senza dover toccare un solo componente.
+ * Specificità CSS: `body[data-carnage='true']` (0,1,1) batte sempre
+ * `[data-theme='...']` (0,1,0), qualunque costume sia attivo sotto.
+ * ------------------------------------------------------------------ */
+body[data-carnage='true'] {
+  --af-attack-rgb: 220 38 38;
+  --af-attack-dark-rgb: 69 10 10;
+  --af-refuel-rgb: 161 161 170;
+  --af-refuel-dark-rgb: 63 63 70;
+  --af-decay-rgb: 244 244 245;
+  --af-surface-rgb: 3 3 3;
+}
+
+/* Vignette pulsante nero/rosso a schermo intero — più aggressiva e più
+   rapida dell'Interference da Fatica (che è rossastra e "stanca"): qui è
+   pura furia simbionte, doppio strato radiale con un leggero flicker. */
+@keyframes af-carnage-vignette {
+  0%, 100% { opacity: 0.55; }
+  45% { opacity: 0.85; }
+  50% { opacity: 0.4; }
+  100% { opacity: 0.55; }
+}
+.af-carnage-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30;
+  background:
+    radial-gradient(ellipse at center, transparent 35%, rgb(var(--af-attack-rgb) / 0.22) 100%),
+    linear-gradient(rgb(0 0 0 / 0.15), transparent 15%, transparent 85%, rgb(0 0 0 / 0.15));
+  mix-blend-mode: screen;
+  animation: af-carnage-vignette 2.2s ease-in-out infinite;
+}
+
+/* Banner/HUD chip Maximum Carnage: bordo che "respira" rosso/argento. */
+@keyframes af-carnage-pulse {
+  0%, 100% { box-shadow: 0 0 14px rgb(var(--af-attack-rgb) / 0.55), 0 0 4px rgb(var(--af-refuel-rgb) / 0.4) inset; }
+  50% { box-shadow: 0 0 30px rgb(var(--af-attack-rgb) / 0.9), 0 0 8px rgb(var(--af-refuel-rgb) / 0.6) inset; }
+}
+.af-carnage-pulse {
+  animation: af-carnage-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes af-carnage-in {
+  0% { opacity: 0; transform: translateY(-14px) scale(0.94); }
+  60% { opacity: 1; transform: translateY(2px) scale(1.015); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.af-carnage-in {
+  animation: af-carnage-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ------------------------------------------------------------------ *
+ * V27.0 — Pillar 4: "Daily Web-Sling" (Il Forziere di Parker).
+ * ------------------------------------------------------------------ */
+
+/* Lancio di ragnatela: una linea diagonale che si "estende" dall'angolo
+   verso il forziere, poi si dissolve — puro CSS (scaleX + transform-origin),
+   nessun asset esterno. */
+@keyframes af-web-shoot {
+  0% { transform: scaleX(0); opacity: 0; }
+  15% { opacity: 1; }
+  55% { transform: scaleX(1); opacity: 1; }
+  100% { transform: scaleX(1); opacity: 0; }
+}
+.af-web-shoot-line {
+  transform-origin: left center;
+  animation: af-web-shoot 0.9s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Il forziere olografico fluttua leggermente prima di essere aperto. */
+@keyframes af-chest-float {
+  0%, 100% { transform: translateY(0) rotate(-1deg); }
+  50% { transform: translateY(-8px) rotate(1deg); }
+}
+.af-chest-float {
+  animation: af-chest-float 3s ease-in-out infinite;
+}
+
+/* Apertura del forziere: scatto + leggero rimbalzo, mai un semplice fade. */
+@keyframes af-chest-pop {
+  0% { transform: scale(1) rotate(0deg); }
+  30% { transform: scale(1.18) rotate(-3deg); }
+  55% { transform: scale(0.94) rotate(2deg); }
+  100% { transform: scale(1.06) rotate(0deg); }
+}
+.af-chest-pop {
+  animation: af-chest-pop 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+/* Burst di particelle dorate/olografiche: ogni particella (span) riceve
+   una direzione via CSS custom property `--tx`/`--ty` inline dal
+   componente, questo keyframe gestisce solo scala + fade condivisi. */
+@keyframes af-chest-particle {
+  0% { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(var(--tx, 40px), var(--ty, -40px)) scale(0); opacity: 0; }
+}
+.af-chest-particle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border-radius: 9999px;
+  pointer-events: none;
+  animation: af-chest-particle 0.85s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes af-reward-reveal {
+  0% { opacity: 0; transform: translateY(10px) scale(0.9); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.af-reward-reveal {
+  animation: af-reward-reveal 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) 0.35s both;
+}
+
+/* ------------------------------------------------------------------ *
+ * V28.1 — Pillar 3: "Spider-Sense Focus Surge".
+ * ------------------------------------------------------------------ */
+
+/* Pulsazione olografica di tensione HUD — respiro irregolare (doppio
+   battito, come un "formicolio" nervoso) sul bordo/glow del Tactical
+   Timer durante una sessione di Focus agganciata a una Materia. Più
+   rapida e "nervosa" del respiro calmo di af-radar-glow, ma senza mai
+   sconfinare nell'allarme rosso dell'Event Horizon — è tensione
+   produttiva, non pericolo. */
+@keyframes af-spidersense-tension {
+  0%, 100% { box-shadow: 0 0 10px rgb(var(--af-refuel-rgb) / 0.3); }
+  20% { box-shadow: 0 0 22px rgb(var(--af-refuel-rgb) / 0.65); }
+  35% { box-shadow: 0 0 12px rgb(var(--af-refuel-rgb) / 0.35); }
+  55% { box-shadow: 0 0 26px rgb(var(--af-refuel-rgb) / 0.7); }
+  75% { box-shadow: 0 0 10px rgb(var(--af-refuel-rgb) / 0.3); }
+}
+.af-spidersense-pulse {
+  animation: af-spidersense-tension 2.4s ease-in-out infinite;
+}
+
+/* Sblocco — al completamento pulito: espansione anulare luminosa + flash
+   breve, un solo ciclo (mai in loop). */
+@keyframes af-spidersense-unlock-ring {
+  0% { box-shadow: 0 0 0 0 rgb(var(--af-refuel-rgb) / 0.55), 0 0 14px rgb(var(--af-refuel-rgb) / 0.4); }
+  60% { box-shadow: 0 0 0 18px rgb(var(--af-refuel-rgb) / 0), 0 0 34px rgb(var(--af-refuel-rgb) / 0.75); }
+  100% { box-shadow: 0 0 0 0 rgb(var(--af-refuel-rgb) / 0), 0 0 10px rgb(var(--af-refuel-rgb) / 0.25); }
+}
+.af-spidersense-unlock {
+  animation: af-spidersense-unlock-ring 1.1s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ------------------------------------------------------------------ *
+ * V31.2 — Pillar 1: "Ultimate Node Customization" — ingresso fluido
+ * dell'Editor di Personalizzazione dentro la modale di dettaglio nodo.
+ * Stessa grammatica cubic-bezier "pop" già in uso per Daily Patrol/Web-
+ * Sling, applicata qui al morph campi statici -> pannello interattivo.
+ * ------------------------------------------------------------------ */
+@keyframes af-edit-mode-in {
+  0% { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  60% { opacity: 1; transform: translateY(1px) scale(1.002); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.af-edit-mode-in {
+  transform-origin: top center;
+  animation: af-edit-mode-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ------------------------------------------------------------------ *
+ * V33.0 — "Aesthetic Level-Up": rifinitura visiva delle feature V32.0
+ * (Storico Media Ponderata, Sinister Six Gauntlet, Suit Unlock Gating),
+ * che finora erano rimaste statiche mentre il resto dell'app celebra
+ * ogni momento rilevante con una micro-animazione dedicata.
+ * ------------------------------------------------------------------ */
+
+/* Multiverse Simulator: ingresso del grafico storico — leggero disegno
+   dal basso, mai un semplice pop-in piatto per un dato che rappresenta
+   un intero percorso accademico. Ri-triggerata (via key sulla lunghezza
+   dello storico) ad ogni nuovo esame votato, cosi' il grafico "respira"
+   quando cresce, non solo al primo mount della pagina. */
+@keyframes af-chart-reveal {
+  0% { opacity: 0; transform: translateY(10px) scale(0.985); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.af-chart-reveal {
+  animation: af-chart-reveal 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Sinister Six Gauntlet: piccolo "pop" sul badge VILLAIN X/6 ad ogni
+   cambio round — stessa grammatica di af-quest-pop (Daily Patrol), qui
+   applicata al segnaposto di progressione della Gauntlet. */
+@keyframes af-gauntlet-round-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.18); }
+  70% { transform: scale(0.96); }
+  100% { transform: scale(1); }
+}
+.af-gauntlet-round-pop {
+  animation: af-gauntlet-round-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Karen OS Settings: shake breve sulla card di una Spider-Suit ancora
+   bloccata quando l'utente ci clicca sopra — lo stesso af-screen-shake
+   della Boss Fight, riusato qui come "no" tattile al posto del solo
+   toast informativo. */
+.af-locked-shake {
+  animation: af-screen-shake 0.4s ease-in-out;
+}
+
+/* ================================================================== *
+ * V36.0 — PRESTAZIONI, CONTRASTO E NOTCH
+ * ================================================================== */
+
+/* --- 1. Modalità Effetti Leggeri -----------------------------------
+ * `settings.heavyEffects: false` mette [data-effects="lite"] su <body>
+ * (stesso identico pattern di [data-theme] e [data-carnage]) e da qui
+ * una manciata di regole spegne in blocco ciò che costa davvero:
+ * ogni backdrop-filter (una sfocatura a schermo intero per CARD, e le
+ * card sono decine), la grana fissa a tutto schermo, la vignette di
+ * interferenza e le animazioni infinite. Nessuna INFORMAZIONE sparisce
+ * — cambia solo l'atmosfera: bordi, colori, stati e testo restano
+ * identici. Su telefoni meno recenti è la differenza fra un timer
+ * fluido e un timer che scatta. */
+body[data-effects='lite'] *,
+body[data-effects='lite'] *::before,
+body[data-effects='lite'] *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+body[data-effects='lite'] .af-grain,
+body[data-effects='lite'] .af-interference,
+body[data-effects='lite'] .af-carnage-overlay {
+  display: none !important;
+}
+/* Le animazioni cicliche (drone visivi) si fermano; quelle "una tantum"
+   di feedback (pop, shake, reveal) restano: sono informazione, non
+   decorazione, e durano poche centinaia di millisecondi. */
+body[data-effects='lite'] .af-event-horizon,
+body[data-effects='lite'] .af-attenzione-pulse,
+body[data-effects='lite'] .af-goblin,
+body[data-effects='lite'] .af-spidersense-pulse,
+body[data-effects='lite'] .af-carnage-pulse,
+body[data-effects='lite'] .af-chest-float,
+body[data-effects='lite'] .af-radar-ring,
+body[data-effects='lite'] .af-cursor-blink,
+/* V39 — anche le animazioni infinite di Tailwind e i titoli pulsanti:
+   prima restavano accese in modalità leggera (lo spinner di caricamento
+   no: quello è informazione). */
+body[data-effects='lite'] .animate-pulse,
+body[data-effects='lite'] .animate-pulse-slow,
+body[data-effects='lite'] .animate-scanline,
+body[data-effects='lite'] .animate-token-pulse,
+body[data-effects='lite'] .animate-gradient-shift,
+body[data-effects='lite'] .af-title-epic,
+body[data-effects='lite'] .af-enrage {
+  animation: none !important;
+}
+/* Gli stati critici devono restare riconoscibili anche senza la loro
+   animazione: il colore del bordo prende il posto del lampeggio. */
+body[data-effects='lite'] .af-event-horizon {
+  border-color: rgb(var(--af-attack-rgb) / 0.8) !important;
+}
+body[data-effects='lite'] .af-attenzione-pulse {
+  border-color: rgb(var(--af-decay-rgb) / 0.7) !important;
+}
+
+/* --- 2. Contrasto del testo informativo ---------------------------
+ * `text-slate-500` (#64748b) su superficie #0b0d14 sta sotto la soglia
+ * di leggibilità AA per testo piccolo: è il colore usato in tutta l'app
+ * per le righe esplicative sotto ai dati, cioè proprio quelle da
+ * leggere su un telefono, di sera, o con lo schermo al sole. Viene
+ * alzato di uno scalino (verso slate-400) MANTENENDO la gerarchia:
+ * resta chiaramente secondario rispetto a slate-300 e al bianco.
+ * Override deliberato di una utility Tailwind, in un solo punto e
+ * reversibile cancellando questo blocco — la alternativa era riscrivere
+ * la classe in qualche centinaio di punti del codice. */
+@layer utilities {
+  .text-slate-500 {
+    color: #8496ad;
+  }
+  .text-slate-600 {
+    color: #6b7c93;
+  }
+}
+
+/* --- 3. Notch e barre di sistema ----------------------------------
+ * Con viewport-fit=cover (index.html) la Shell usa tutta l'altezza reale
+ * del telefono: senza questi padding, su iPhone il contenuto finirebbe
+ * sotto la dynamic island e sopra la barra gesti. */
+/* V37.0 — FIX: queste tre righe stanno DOPO `@tailwind utilities` e
+ * hanno la stessa specificità di `.px-4` / `.py-6`, quindi vincevano per
+ * ordine di sorgente e azzeravano il gutter ovunque `env()` vale 0 —
+ * cioè su desktop, Android e iPhone in verticale: il contenuto toccava i
+ * bordi e il padding inferiore spariva. `max()` rende queste regole
+ * l'unica fonte di verità del padding del viewport (le utility
+ * corrispondenti sono state tolte dal JSX in App.jsx): il notch aggiunge
+ * spazio, non lo toglie mai. */
+.af-viewport {
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+}
+@media (min-width: 768px) {
+  .af-viewport {
+    padding-left: max(2rem, env(safe-area-inset-left));
+    padding-right: max(2rem, env(safe-area-inset-right));
+    padding-bottom: max(2rem, env(safe-area-inset-bottom));
+  }
+}
+
+/* --- 4. Fatigue UI: segnale, non ostacolo -------------------------
+ * La desaturazione a tutta pagina dello stato "affaticato" puniva la
+ * leggibilità proprio quando ne resta di meno (vedi App.jsx, dove la
+ * classe pesante è stata sostituita da questa). Il segnale resta —
+ * bordo rosso interno e vignette — ma il testo torna pienamente
+ * leggibile: l'app deve dirti che sei stanco, non renderti più
+ * difficile leggere. */
+.af-fatigued {
+  /* V39 — niente più `filter`: un filtro su <main> diventa il blocco
+   * contenitore di OGNI discendente `position: fixed` (drawer, overlay,
+   * Last Stand) — che smettevano di coprire lo schermo e scorrevano
+   * con la pagina proprio nello stato di fatica. Resta il bordo. */
+  box-shadow: inset 0 0 0 1px rgb(var(--af-attack-rgb) / 0.3);
+}
+
+/* --- 5. Toast stack: keyframe di ingresso -------------------------
+ * `CyberToast.jsx` usava `animate-[toastIn_...]` con i keyframe
+ * dichiarati in un tag <style> montato dentro lo stack: quel tag
+ * veniva rimontato ad ogni cambio della lista dei toast e, dopo la
+ * riscrittura dello stack (tetto ai toast visibili), era sparito del
+ * tutto — la classe restava ma puntava a un'animazione inesistente e
+ * le notifiche comparivano di scatto. I keyframe stanno qui, dove
+ * vengono caricati una volta sola col foglio di stile. */
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

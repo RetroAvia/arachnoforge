@@ -1,0 +1,176 @@
+import { isReviewDue, computeInitialReview, DEFAULT_EASE } from './spiderSense.js';
+import { DIFFICULTY } from './xpEngine.js';
+
+export const NODE_STATUS = {
+  LOCKED: 'LOCKED',
+  AVAILABLE: 'AVAILABLE',
+  // V35.5 — "In Corso": stato puramente DERIVATO (mai persistito — nessuna
+  // migrazione di schema necessaria), attivato in automatico dal primo
+  // minuto di Focus Timer investito sul nodo (`sfida.focusMinutes > 0`,
+  // già tracciato dal V16.0 per tutt'altro scopo). Sostituisce AVAILABLE
+  // ovunque il nodo sarebbe altrimenti liberamente completabile, e torna
+  // automaticamente ad AVAILABLE se `focusMinutes` viene azzerato (nessun
+  // flag manuale da disattivare, nessuno stato "bloccato").
+  IN_PROGRESS: 'IN_PROGRESS',
+  COMPLETED: 'COMPLETED',
+  NEEDS_REVIEW: 'NEEDS_REVIEW'
+};
+
+/** Stato persistito: solo questi due valori vivono su disco. Tutto il resto
+ * (LOCKED / AVAILABLE / NEEDS_REVIEW) è derivato al volo da deriveNodeStatus
+ * in base alla catena di prerequisiti e alla data di prossima revisione —
+ * niente sincronizzazione manuale da mantenere. */
+export const PERSISTED_STATUS = {
+  PENDING: 'PENDING',
+  COMPLETED: 'COMPLETED'
+};
+
+/** Restituisce i figli DIRETTI di un nodo (non l'intera discendenza). */
+export function directChildrenOf(sfida, siblings) {
+  return siblings.filter((s) => s && s.parentId === sfida.id);
+}
+
+/**
+ * V16.0 — Reverse Dependency Skill Tree ("Boss Fight" logic).
+ *
+ * I nodi Figli ("argomenti") sono SEMPRE liberamente completabili: non
+ * dipendono più dallo stato del proprio nodo Padre. Il nodo Padre
+ * ("Modulo/Macro-argomento") si comporta invece come un vero e proprio
+ * "Boss": può essere marcato Completato solo quando TUTTI i suoi nodi
+ * figli diretti risultano già COMPLETED. Un nodo senza figli (foglia, o
+ * Nodo Padre ancora senza discendenza) è sempre libero — nessun "Boss"
+ * da abbattere prima. Un nodo COMPLETED torna NEEDS_REVIEW ("Spider-Sense")
+ * quando la sua nextReviewDate è scaduta, indipendentemente da tutto il
+ * resto (retroattivo: un Boss già sconfitto resta sconfitto anche se in
+ * seguito gli si aggiungono nuovi sotto-argomenti).
+ */
+export function deriveNodeStatus(sfida, siblings = []) {
+  if (sfida.status === PERSISTED_STATUS.COMPLETED) {
+    return isReviewDue(sfida.nextReviewDate) ? NODE_STATUS.NEEDS_REVIEW : NODE_STATUS.COMPLETED;
+  }
+
+  // V35.5 — "In Corso": un nodo altrimenti libero (foglia, o Boss già
+  // sbloccato) passa a IN_PROGRESS non appena porta minuti di Focus
+  // registrati — zero costo di calcolo aggiuntivo, stesso identico campo
+  // già scritto da FOCUS_COMPLETED. Un Boss ancora LOCKED resta LOCKED a
+  // prescindere: i suoi eventuali minuti propri non lo sbloccano prima
+  // che i figli siano completati.
+  const isOpen = (status) => (sfida.focusMinutes > 0 ? NODE_STATUS.IN_PROGRESS : status);
+
+  const children = directChildrenOf(sfida, siblings);
+  if (children.length > 0) {
+    const allChildrenDone = children.every((c) => c.status === PERSISTED_STATUS.COMPLETED);
+    return allChildrenDone ? isOpen(NODE_STATUS.AVAILABLE) : NODE_STATUS.LOCKED;
+  }
+
+  return isOpen(NODE_STATUS.AVAILABLE);
+}
+
+/**
+ * Alla cancellazione di un nodo, i figli diretti vengono "orfanizzati"
+ * (parentId azzerato, promossi a radice) invece di essere cancellati a
+ * cascata: nessuna perdita distruttiva di progressi già registrati.
+ */
+export function orphanChildren(sfide, deletedId) {
+  return sfide.map((s) => (s.parentId === deletedId ? { ...s, parentId: null } : s));
+}
+
+/** Restituisce true se `candidateParentId` è un discendente di `nodeId` (previene cicli nel form). */
+export function isDescendant(sfide, nodeId, candidateParentId) {
+  let current = sfide.find((s) => s.id === candidateParentId);
+  const visited = new Set();
+  while (current && current.parentId) {
+    if (current.parentId === nodeId) return true;
+    if (visited.has(current.id)) break; // guardia anti-loop difensiva
+    visited.add(current.id);
+    current = sfide.find((s) => s.id === current.parentId);
+  }
+  return false;
+}
+
+export function createSfida({
+  nome,
+  obiettivo,
+  oreStimate,
+  pagine,
+  pagineAppunti,
+  fonti,
+  appuntiCompleti = false,
+  parentId = null,
+  difficulty = DIFFICULTY.MEDIUM
+}) {
+  const parsedOre = Number(oreStimate);
+  // V38.0 — `pagineAppunti` è il nome nuovo di quello che `pagine` già
+  // significava (le pagine dei TUOI appunti). Entrambi accettati: i
+  // chiamanti vecchi non vanno rincorsi uno per uno.
+  const parsedPagine = Number(pagineAppunti ?? pagine);
+  return {
+    id: `sfida_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    nome,
+    obiettivo: obiettivo || '',
+    // V34.2 — "Ore Previste": il nodo stima direttamente le ore di studio
+    // necessarie (non più i "giorni previsti") — unità più precisa sia per
+    // la proiezione di Karen (Fine Prevista, Quota Odierna) sia per
+    // l'utente stesso, che ragiona naturalmente in ore di sessione.
+    oreStimate: Number.isFinite(parsedOre) && parsedOre > 0 ? parsedOre : 2,
+    // V37.0 — "Ore previste" resta la stima a occhio; `pagine` è invece
+    // un dato OGGETTIVO che conosci con precisione ("i Limiti sono 20
+    // pagine di appunti"). Quando c'è, e quando l'app ha misurato il tuo
+    // ritmo reale di pagine/ora, la stima delle ore viene ricavata da
+    // qui invece che dal numero dichiarato — vedi calibratedNodeHours in
+    // utils/calibration.js. `0` significa "non dichiarate".
+    // V38.0 — "La Forgia degli Appunti": `pagineAppunti` sono le pagine
+    // dei TUOI appunti definitivi (quelle che studierai davvero), le
+    // `fonti` sono il materiale grezzo da cui le ricavi. Due bilanci
+    // distinti, vedi utils/sintesiEngine.js. Le fonti arrivano già
+    // normalizzate dal chiamante (`createFonte`): questo modulo non può
+    // importare sintesiEngine, che importa lui.
+    pagineAppunti: Number.isFinite(parsedPagine) && parsedPagine > 0 ? Math.round(parsedPagine) : 0,
+    fonti: Array.isArray(fonti) ? fonti.filter((f) => f && Number(f.pagine) > 0) : [],
+    appuntiCompleti: appuntiCompleti === true,
+    focusMinutesSintesi: 0,
+    focusMinutesStudio: 0,
+    parentId: parentId || null,
+    difficulty,
+    status: PERSISTED_STATUS.PENDING,
+    completionTimestamp: null,
+    nextReviewDate: null,
+    lastReviewRating: null,
+    reviewCount: 0,
+    focusMinutes: 0,
+    blueprint: '',
+    // V36.0 — Appunti del nodo: il posto dove finalmente vive il
+    // CONTENUTO (formule, passaggi, link alla dispensa, errori tipici).
+    // Senza questo campo un ripasso obbligava a uscire dall'app e
+    // ritrovare gli appunti altrove — l'attrito che faceva saltare i
+    // ripassi brevi.
+    note: '',
+    // V36.0 — Spaced Repetition SM-2 lite (vedi utils/spiderSense.js):
+    // stato personale della curva di memoria di QUESTO nodo.
+    srsEase: DEFAULT_EASE,
+    srsIntervalDays: 0,
+    // V36.0 — Interrogazione K.A.R.E.N., generata on-demand (vedi
+    // QuadrantHub): `null` finché il Cadetto non la chiede.
+    quiz: null,
+    // V31.3 — Bounty Board (Friction Analytics), vedi utils/friction.js.
+    tentativiSuccessi: 0,
+    tentativiFalliti: 0
+  };
+}
+
+/**
+ * Marca un nodo come completato per la prima volta.
+ * V36.0 — `examDate` della materia viene passata per non schedulare mai
+ * il primo ripasso oltre la data d'esame (vedi capIntervalToExam).
+ */
+export function markFirstCompletion(sfida, examDate = null) {
+  const { nextReviewDate, srsEase, srsIntervalDays } = computeInitialReview(examDate);
+  return {
+    ...sfida,
+    status: PERSISTED_STATUS.COMPLETED,
+    completionTimestamp: new Date().toISOString(),
+    nextReviewDate,
+    srsEase,
+    srsIntervalDays
+  };
+}

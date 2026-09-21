@@ -1,0 +1,247 @@
+import React, { useEffect, useRef, Suspense, lazy } from 'react';
+import { ArachnoForgeProvider, useArachnoForge } from './context/ArachnoForgeContext.jsx';
+import { KarenBrainProvider, useKarenBrain } from './context/KarenBrainContext.jsx';
+import { readinessBand } from './services/karenEngine/useSuitTelemetry.js';
+import { useAuthContext } from './context/AuthContext.jsx';
+import { useArachnoForgeRouter, ROUTES } from './hooks/useArachnoForgeRouter.js';
+import Sidebar from './components/Sidebar.jsx';
+import CyberToastStack from './components/CyberToast.jsx';
+import PageErrorBoundary from './components/PageErrorBoundary.jsx';
+import NexusGate from './components/NexusGate.jsx';
+import BootScreen from './components/BootScreen.jsx';
+import MaxCarnageBanner from './components/MaxCarnageBanner.jsx';
+import { APP_BG } from './utils/designSystem.js';
+
+// V34.3 — Code-splitting per rotta (risolve il warning Vite/Vercel "Some
+// chunks are larger than 500 kB after minification"): ognuna delle 7
+// pagine viene scaricata SOLO al primo accesso a quella rotta, invece di
+// finire tutte nell'unico bundle iniziale — bundle di primo caricamento
+// molto più leggero, decisivo su rete mobile. `PageErrorBoundary` +
+// `Suspense` (vedi Shell più sotto) restano gli unici due punti che
+// reagiscono rispettivamente a un errore di rendering o al breve
+// caricamento del chunk.
+const MissionControl = lazy(() => import('./pages/MissionControl.jsx'));
+const QuadrantHub = lazy(() => import('./pages/QuadrantHub.jsx'));
+const Campus = lazy(() => import('./pages/Campus.jsx'));
+const BossFight = lazy(() => import('./pages/BossFight.jsx'));
+const StarLog = lazy(() => import('./pages/StarLog.jsx'));
+const Armory = lazy(() => import('./pages/Armory.jsx'));
+const CoreConfig = lazy(() => import('./pages/CoreConfig.jsx'));
+const MultiverseSimulator = lazy(() => import('./pages/MultiverseSimulator.jsx'));
+const SuitTelemetryView = lazy(() => import('./modules/suit-telemetry/SuitTelemetryView.jsx'));
+
+function PageSwitch({ currentPage }) {
+  switch (currentPage) {
+    case ROUTES.QUADRANT_HUB:
+      return <QuadrantHub />;
+    case ROUTES.CAMPUS:
+      return <Campus />;
+    case ROUTES.BOSS_FIGHT:
+      return <BossFight />;
+    case ROUTES.STAR_LOG:
+      return <StarLog />;
+    case ROUTES.ARMORY:
+      return <Armory />;
+    case ROUTES.MULTIVERSE_SIMULATOR:
+      return <MultiverseSimulator />;
+    case ROUTES.SUIT_TELEMETRY:
+      return <SuitTelemetryView />;
+    case ROUTES.CORE_CONFIG:
+      return <CoreConfig />;
+    case ROUTES.MISSION_CONTROL:
+    default:
+      return <MissionControl />;
+  }
+}
+
+/** Fallback leggero durante il caricamento del chunk di una pagina — mai il
+ * BootScreen a schermo intero (quello resta riservato al boot di sessione/
+ * Cloud Sync): qui basta un piccolo respiro visivo coerente con l'HUD, la
+ * Sidebar e il resto della Shell restano sempre visibili e interattivi. */
+function PageLoadingFallback() {
+  return (
+    <div className="flex items-center justify-center py-24">
+      <span className="w-10 h-10 rounded-full border-[3px] border-secondary/25 border-t-secondary animate-spin" />
+    </div>
+  );
+}
+
+/**
+ * V35.0 — K.A.R.E.N. Daily Brain: componente-ponte SENZA UI propria fra
+ * KarenBrainContext (telemetria biometrica, compartimenti stagni) e
+ * ArachnoForgeContext (Cloud State) — l'UNICO punto in cui i due mondi si
+ * toccano, e solo per il bookkeeping della Sala Trofei ("Aderenza alla
+ * Readiness Biometrica"): un dispatch silenzioso al giorno quando il
+ * briefing odierno diventa disponibile, dedup lato reducer
+ * (lastReadinessLogDateKey). Nessuna tabella biometrica viene letta o
+ * scritta da ArachnoForgeContext, nessun campo di `user_data` viene letto
+ * o scritto da KarenBrainContext — l'isolamento resta strutturale, il
+ * ponte vive qui, nella UI.
+ */
+function KarenTrophyBridge() {
+  const { briefing, todayStr } = useKarenBrain();
+  const { actions } = useArachnoForge();
+
+  useEffect(() => {
+    if (!briefing || briefing.date !== todayStr) return;
+    actions.logReadinessSnapshot(todayStr, readinessBand(briefing.readiness_score));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [briefing, todayStr]);
+
+  return null;
+}
+
+function Shell() {
+  const { currentPage, navigate } = useArachnoForgeRouter();
+  const { state, derived, toasts, dismissToast } = useArachnoForge();
+
+  // V16.0 True Theme Engine (Pillar 3): l'attributo vive su <body>, non
+  // più su <html> — le variabili CSS del costume attivo (index.css,
+  // [data-theme=...]) cascano comunque su tutto l'albero React sottostante.
+  useEffect(() => {
+    document.body.dataset.theme = state.settings.suit || 'classic';
+    return () => {
+      delete document.body.dataset.theme;
+    };
+  }, [state.settings.suit]);
+
+  // V27.0 — Pillar 3 (Maximum Carnage Mode): stesso pattern del True Theme
+  // Engine — [data-carnage] su <body> ritinteggia istantaneamente l'intera
+  // app in nero/argento/rosso simbionte (vedi index.css), senza toccare
+  // un solo componente esistente.
+  useEffect(() => {
+    if (derived.isMaxCarnageActive) {
+      document.body.dataset.carnage = 'true';
+    } else {
+      delete document.body.dataset.carnage;
+    }
+    return () => {
+      delete document.body.dataset.carnage;
+    };
+  }, [derived.isMaxCarnageActive]);
+
+  // V36.0 — Effetti Leggeri: stesso identico pattern dei due attributi
+  // qui sopra. [data-effects="lite"] su <body> spegne in blocco
+  // backdrop-filter, grana, interferenza e animazioni cicliche (vedi
+  // index.css) senza toccare un solo componente — su telefoni meno
+  // recenti è la differenza fra un timer fluido e uno che scatta.
+  useEffect(() => {
+    if (state.settings.heavyEffects === false) {
+      document.body.dataset.effects = 'lite';
+    } else {
+      delete document.body.dataset.effects;
+    }
+    return () => {
+      delete document.body.dataset.effects;
+    };
+  }, [state.settings.heavyEffects]);
+
+  const showInterference = derived.fatigued && !state.settings.calmMode;
+
+  // V37.0 — Scroll-to-top al cambio pagina.
+  //
+  // Il contenitore che scorre NON è la finestra ma questo <main>
+  // (`overflow-y-auto`, `h-[100dvh]`): cambiando rotta React sostituiva il
+  // contenuto lasciando però `scrollTop` dov'era. Chi arrivava in fondo a
+  // Star Log e apriva Web-Matrix atterrava a metà pagina, spesso su un
+  // punto vuoto, con l'impressione che la pagina non si fosse caricata.
+  // `behavior: 'auto'` (non 'smooth') perché una pagina nuova deve
+  // cominciare dall'alto, non scorrervi davanti.
+  const mainScrollRef = useRef(null);
+  useEffect(() => {
+    mainScrollRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+  }, [currentPage]);
+
+  return (
+    // V26.0 — "The Nexus Gate": ingresso in fade-in + blur-out (af-shell-fade-in,
+    // vedi index.css) ogni volta che la Shell viene montata per la prima
+    // volta dopo un login riuscito — la "porta che si apre sull'hub".
+    // V34.3 — "100dvh" al posto di "100vh"/h-screen: sui browser mobili la
+    // viewport unit classica include (o esclude, a seconda del motore)
+    // l'ingombro reale della barra degli indirizzi in modo incoerente fra
+    // orientamento verticale/orizzontale — sintomo tipico "funziona in
+    // orizzontale, tagliato/traballante in verticale". La Dynamic Viewport
+    // Height si ricalcola invece SEMPRE sullo spazio realmente visibile.
+    <div className={`flex min-h-[100dvh] relative af-shell-fade-in ${APP_BG}`}>
+      {/* V36.0 — la grana esiste solo quando gli effetti pesanti sono
+          attivi: è un <div> fisso a schermo intero con una texture SVG,
+          ripagato in fluidità appena lo si toglie. */}
+      {state.settings.heavyEffects !== false && <div className="af-grain" />}
+      {/* V27.0 — Pillar 3: vignette simbionte a schermo intero, sopra ogni
+          pagina ma sotto toast/modali — Feedback Sensoriale Completo. */}
+      {derived.isMaxCarnageActive && <div className="af-carnage-overlay" />}
+      {/* V39 — interferenza da fatica a livello di Shell (fixed), non più
+          dentro <main>: prima copriva solo il primo schermo e scorreva
+          via col contenuto. */}
+      {showInterference && <div className="af-interference" />}
+      <Sidebar currentPage={currentPage} navigate={navigate} />
+      <main
+        ref={mainScrollRef}
+        // V37.0 — il padding orizzontale e inferiore vive ora TUTTO in
+        // `.af-viewport` (index.css) con `max(…, env(safe-area-*))`: due
+        // fonti in conflitto azzeravano il gutter su ogni dispositivo
+        // senza notch. Qui resta solo il padding superiore.
+        className={`flex-1 min-w-0 h-[100dvh] overflow-y-auto af-viewport pt-6 md:pt-8 transition-shadow duration-500 relative ${
+          // V36.0 — vedi .af-fatigued in index.css: il segnale di fatica
+          // resta (vignette + bordo interno) ma smette di desaturare e
+          // scurire l'INTERA pagina, cioè di rendere più difficile leggere
+          // proprio quando hai meno risorse per farlo.
+          derived.fatigued ? 'af-fatigued' : ''
+        }`}
+      >
+        <div className="max-w-[1400px] mx-auto pt-10 md:pt-0">
+          <KarenTrophyBridge />
+          <MaxCarnageBanner />
+          <PageErrorBoundary key={currentPage} onRecover={() => navigate(ROUTES.MISSION_CONTROL)}>
+            <Suspense fallback={<PageLoadingFallback />}>
+              <PageSwitch currentPage={currentPage} />
+            </Suspense>
+          </PageErrorBoundary>
+        </div>
+      </main>
+      <CyberToastStack toasts={toasts} onDismiss={dismissToast} />
+    </div>
+  );
+}
+
+/**
+ * V26.0 — "The Nexus Gate" (Pillar 2: Authentication Logic). App è ora il
+ * "portiere" dell'intera esperienza:
+ *   - sessione in bootstrap (`loading`)         -> BootScreen
+ *   - nessuna sessione attiva (`session === null`) -> SOLO il NexusGate
+ *   - sessione valida                            -> ArachnoForgeProvider + Shell
+ * `key={session.user.id}` forza un ArachnoForgeProvider completamente
+ * nuovo ad ogni cambio di utente (logout + login con account diverso):
+ * nessuno stato/ref del provider precedente può mai sopravvivere e
+ * "trapelare" nella sessione successiva.
+ */
+export default function App() {
+  const { session, loading, isGuest } = useAuthContext();
+
+  if (loading) {
+    return <BootScreen message="Verifica sessione Nexus in corso..." />;
+  }
+
+  // V28.1 — Pillar 2: Modalità Ospite monta lo stesso Provider di una
+  // sessione reale (stessa Shell, stesse pagine) — cambia solo il backend
+  // di persistenza scelto DENTRO ArachnoForgeProvider (vedi `storageMode`),
+  // mai la logica di routing/gating qui.
+  if (!session && !isGuest) {
+    return <NexusGate />;
+  }
+
+  // V35.0 — K.A.R.E.N. Daily Brain: KarenBrainProvider monta come
+  // ANTENATO di ArachnoForgeProvider (non il contrario) perché
+  // ArachnoForgeContext.jsx legge `useKarenBrain()` per calcolare gli
+  // "effective" minuti del Focus Timer Adattivo. Stesso `key` di
+  // ArachnoForgeProvider: un cambio utente smonta e rimonta ENTRAMBI i
+  // Provider, cosi' nessuno stato/telemetria del profilo precedente può
+  // mai "trapelare" nella sessione successiva.
+  return (
+    <KarenBrainProvider key={session ? session.user.id : 'guest-local'}>
+      <ArachnoForgeProvider key={session ? session.user.id : 'guest-local'}>
+        <Shell />
+      </ArachnoForgeProvider>
+    </KarenBrainProvider>
+  );
+}
