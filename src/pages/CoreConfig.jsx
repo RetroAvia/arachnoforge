@@ -579,14 +579,42 @@ export default function CoreConfig() {
         </h2>
         <div className="relative flex items-center justify-between gap-4">
           <p className="text-base text-slate-400 leading-relaxed">
-            Karen: Sensory Web Audio Engine attivo. Web-Click, Hover Blip, Focus Reminder (ogni 30 min di Focus),
-            Penalty Buzzer, Level Up Chime, Success Chime e Goblin Alert — tutto sintetizzato al volo via Web Audio API,
-            nessun file esterno. Disattivato automaticamente quando Sensory Zero è attivo.
+            Karen: Sensory Web Audio Engine attivo. Fine blocco e fine pausa, Web-Click, Hover Blip, Penalty Buzzer,
+            Level Up Chime, Success Chime e Goblin Alert — tutto sintetizzato al volo via Web Audio API, nessun file
+            esterno. Disattivato automaticamente quando Sensory Zero è attivo.
           </p>
           <TechSwitch
             checked={state.settings.soundEffects !== false}
             onChange={() => actions.updateSettings({ soundEffects: state.settings.soundEffects === false })}
             ariaLabel="Effetti sonori"
+          />
+        </div>
+
+        {/* V40.3 — i due suoni che possono dare davvero fastidio durante
+            lo studio hanno un interruttore proprio: spegnerli non deve
+            costare anche il rintocco di fine blocco, che è il solo
+            avviso che conta. */}
+        <div className="relative flex items-center justify-between gap-4 pt-3 border-t border-white/10">
+          <p className="text-base text-slate-400 leading-relaxed">
+            Rintocco ogni 30 minuti di Focus accumulato, dentro una sessione lunga. Il suono di fine blocco resta
+            comunque.
+          </p>
+          <TechSwitch
+            checked={state.settings.focusReminder !== false}
+            onChange={() => actions.updateSettings({ focusReminder: state.settings.focusReminder === false })}
+            ariaLabel="Promemoria ogni 30 minuti"
+          />
+        </div>
+
+        <div className="relative flex items-center justify-between gap-4 pt-3 border-t border-white/10">
+          <p className="text-base text-slate-400 leading-relaxed">
+            Drone simbionte: il ronzio grave continuo delle due ore di Maximum Carnage Mode. Si può zittire anche dal
+            banner rosso in cima alla pagina.
+          </p>
+          <TechSwitch
+            checked={state.settings.carnageDrone !== false}
+            onChange={() => actions.updateSettings({ carnageDrone: state.settings.carnageDrone === false })}
+            ariaLabel="Drone simbionte"
           />
         </div>
       </section>

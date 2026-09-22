@@ -105,6 +105,89 @@ function ReadinessGauge({ score, band }) {
   );
 }
 
+/**
+ * V40.3 — "Dati disponibili: oggettivi 67%" senza dire QUALI mancava di
+ * rispondere alla sola domanda che uno si fa. Le voci sono le sette del
+ * punteggio (tre oggettive dall'iPhone, quattro dal Recovery Survey);
+ * per ognuna si dice se è entrata nel calcolo e, se no, perché.
+ *
+ * Il caso tipico: il battito a riposo c'è, ma il punteggio cardiaco è un
+ * CONFRONTO con la tua media — finché non ci sono almeno 3 giorni
+ * registrati negli ultimi 14 non c'è niente con cui confrontarlo, e quella
+ * voce resta fuori. Non è un dato mancante: è una linea di base che si
+ * deve ancora formare.
+ */
+function ComposizionePunteggio({ breakdown, biometrics }) {
+  const parts = breakdown?.parts;
+  if (!parts) return null;
+  const baselineHr = breakdown.baselineHr ?? null;
+  const voci = [
+    {
+      key: 'sleep',
+      gruppo: 'Dati dall\'iPhone',
+      label: 'Sonno',
+      manca: 'manca il sonno totale di stanotte'
+    },
+    {
+      key: 'cardio',
+      gruppo: 'Dati dall\'iPhone',
+      label: 'Battito a riposo',
+      manca:
+        biometrics?.resting_hr != null && baselineHr == null
+          ? 'il battito di oggi c\'è, ma serve la tua media di riferimento: almeno 3 giorni registrati negli ultimi 14'
+          : 'manca il battito a riposo'
+    },
+    { key: 'activity', gruppo: 'Dati dall\'iPhone', label: 'Attività', manca: 'mancano i passi di oggi' },
+    { key: 'focus', gruppo: 'Recovery Survey', label: 'Focus percepito', manca: 'non compilato oggi' },
+    { key: 'energy', gruppo: 'Recovery Survey', label: 'Energia', manca: 'non compilato oggi' },
+    { key: 'stress', gruppo: 'Recovery Survey', label: 'Stress', manca: 'non compilato oggi' },
+    { key: 'soreness', gruppo: 'Recovery Survey', label: 'Indolenzimento', manca: 'non compilato oggi' }
+  ];
+  const gruppi = ['Dati dall\'iPhone', 'Recovery Survey'];
+
+  return (
+    <details className="relative rounded-xl border border-white/10 bg-black/20 p-3">
+      <summary className="cursor-pointer text-sm text-slate-400 select-none">Com'è composto il punteggio</summary>
+      <div className="mt-2.5 space-y-3">
+        {gruppi.map((g) => (
+          <div key={g}>
+            <p className="text-[10px] tracking-widest text-slate-500 mb-1.5">{g.toUpperCase()}</p>
+            <ul className="space-y-1">
+              {voci
+                .filter((v) => v.gruppo === g)
+                .map((v) => {
+                  const dentro = parts[v.key] != null;
+                  return (
+                    <li key={v.key} className="flex items-start gap-2 text-xs">
+                      <Icon
+                        name={dentro ? 'check' : 'close'}
+                        className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${dentro ? 'text-emerald-400' : 'text-slate-600'}`}
+                      />
+                      <span className={dentro ? 'text-slate-300' : 'text-slate-500'}>
+                        {v.label}
+                        {!dentro && <span className="text-slate-600"> — {v.manca}</span>}
+                      </span>
+                    </li>
+                  );
+                })}
+            </ul>
+          </div>
+        ))}
+        {breakdown.sleepTargetMin != null && (
+          <p className="text-[11px] text-slate-500 leading-relaxed">
+            Obiettivo di sonno usato oggi: {formatHoursMinutes(breakdown.sleepTargetMin / 60)}
+            {breakdown.sleepTargetMin !== 450 ? ' (calcolato sulle tue notti)' : ' (valore standard)'}.
+          </p>
+        )}
+        <p className="text-[11px] text-slate-500 leading-relaxed">
+          Il punteggio usa solo le voci disponibili: una voce fuori non abbassa il Readiness, riduce solo la percentuale
+          di dati su cui è calcolato.
+        </p>
+      </div>
+    </details>
+  );
+}
+
 function MetricCard({ icon, label, value, sub, pending }) {
   return (
     <div className="relative bg-surface/60 border border-secondary/15 rounded-xl p-3.5 sm:p-4 flex items-start gap-3 overflow-hidden">
@@ -371,6 +454,9 @@ export default function SuitTelemetryView() {
               sub={biometrics?.active_calories != null ? `${biometrics.active_calories} kcal attive` : null}
             />
           </div>
+
+          {/* V40.3 — quali voci sono entrate nel punteggio e quali no. */}
+          <ComposizionePunteggio breakdown={briefing?.score_breakdown} biometrics={biometrics} />
         </div>
       </div>
 

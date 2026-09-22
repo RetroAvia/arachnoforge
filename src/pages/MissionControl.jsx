@@ -476,6 +476,13 @@ export default function MissionControl() {
   const effectiveShortBreakMinutes = derived.karenAdaptiveTimerActive
     ? derived.karenFocusDirective.break_minutes
     : state.settings.shortBreakTime;
+  // V40.3 — minuti che verrebbero salvati chiudendo adesso: quelli già in
+  // sospeso più i minuti interi del blocco in corso.
+  const minutiBloccoInCorso =
+    timer.status === TIMER_STATUS.FOCUS || timer.status === TIMER_STATUS.PAUSED
+      ? Math.max(0, Math.floor((timer.totalSeconds - timer.remainingSeconds) / 60))
+      : 0;
+  const minutiSalvabili = timer.pendingFocusMinutes + minutiBloccoInCorso;
   // V37.0 — l'anteprima ignorava Maximum Carnage: annunciava un costo di
   // Stamina mentre il costo reale applicato dal reducer è zero per tutta
   // la finestra attiva. Stessa firma, stesso motore: nessun secondo
@@ -738,15 +745,21 @@ export default function MissionControl() {
   // Avviare una pausa chiude comunque la sessione: prima si passa dal
   // Tactical Debriefing (Fase 1), poi si registrano XP/Stamina/minuti
   // accumulati (incluse eventuali fasi Overdrive) e infine parte la pausa.
+  // V40.3 — prima di aprire il Debriefing si FERMA il blocco in corso e i
+  // suoi minuti interi entrano nella sessione: "termina e salva" lasciava
+  // il countdown in corsa (tipico dopo un Overdrive) e l'unico modo per
+  // fermarlo era il Blood Pact, cioè perdere XP.
   const handleTakeBreak = useCallback((long) => {
+    timer.freezeRunningBlock();
     setPendingAction({ type: 'break', long });
     setDebriefOpen(true);
-  }, []);
+  }, [timer]);
 
   const handleEndAndSave = useCallback(() => {
+    timer.freezeRunningBlock();
     setPendingAction({ type: 'end' });
     setDebriefOpen(true);
-  }, []);
+  }, [timer]);
 
   // V37.0 — FIX CRITICO: qui viveva una chiamata a `setAwaitingPostFocus`,
   // rimasta orfana dal refactor V35.0 che aveva sostituito quello stato
@@ -887,7 +900,9 @@ export default function MissionControl() {
           onClose={() => setConfirmInterruptOpen(false)}
           onConfirm={confirmInterrupt}
           title="Blood Pact"
-          message={`Interrompere ora la sessione di Focus costa ${derived.effectiveBloodPactPenalty} XP. Confermi il sacrificio?`}
+          message={`Interrompere ora la sessione di Focus costa ${derived.effectiveBloodPactPenalty} XP${
+            minutiSalvabili > 0 ? ` e butta via ${minutiSalvabili} minuti già fatti — per tenerli usa "Termina e salva"` : ''
+          }. Confermi il sacrificio?`}
           confirmLabel="Sacrifica XP"
         />
       </div>,
@@ -1415,6 +1430,11 @@ export default function MissionControl() {
                 <p className="text-[11px] text-center text-slate-500 font-mono">
                   Sessione in sospeso: {timer.pendingFocusMinutes} min{timer.pendingFocusOverdrive ? ' · overdrive attivo' : ''} — non ancora salvata
                 </p>
+                {timer.status !== TIMER_STATUS.IDLE && (
+                  <p className="text-[11px] text-center text-slate-500">
+                    Un blocco è ancora in corso: "Termina sessione e salva" lo ferma e aggiunge i suoi minuti interi.
+                  </p>
+                )}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <button type="button" onClick={handleOverdrive} className={BTN_AMBER}>
                     <Icon name="bolt" className="w-6 h-6" />
@@ -1453,6 +1473,15 @@ export default function MissionControl() {
                   <Icon name="stop" className="w-5 h-5" />
                   Interrompi
                 </button>
+                {/* V40.3 — chiudere una sessione senza aspettare la fine
+                    del blocco e senza il Blood Pact: i minuti interi già
+                    fatti si salvano, nessuna penalità. */}
+                {!timer.awaitingDebrief && minutiSalvabili > 0 && (
+                  <button type="button" onClick={handleEndAndSave} className={`${BTN_GHOST} col-span-2`}>
+                    <Icon name="check" className="w-5 h-5 text-emerald-400" />
+                    Termina e salva ({minutiSalvabili} min)
+                  </button>
+                )}
               </div>
             )}
 
@@ -1532,7 +1561,9 @@ export default function MissionControl() {
         onClose={() => setConfirmInterruptOpen(false)}
         onConfirm={confirmInterrupt}
         title="Blood Pact"
-        message={`Interrompere ora la sessione di Focus costa ${derived.effectiveBloodPactPenalty} XP. Confermi il sacrificio?`}
+        message={`Interrompere ora la sessione di Focus costa ${derived.effectiveBloodPactPenalty} XP${
+            minutiSalvabili > 0 ? ` e butta via ${minutiSalvabili} minuti già fatti — per tenerli usa "Termina e salva"` : ''
+          }. Confermi il sacrificio?`}
         confirmLabel="Sacrifica XP"
       />
 
