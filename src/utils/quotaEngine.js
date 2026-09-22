@@ -154,7 +154,7 @@ export function computeMateriaQuota(materia, allMaterie, calibration = null) {
     totalDaysNeeded = estimate.totalDaysNeeded || 0;
   }
 
-  let dailyQuotaHours = null;
+  let dailyQuotaHours;
   let overdue = false;
   if (hoursRemaining <= 0) {
     dailyQuotaHours = 0;
@@ -204,6 +204,10 @@ export function computeMateriaQuota(materia, allMaterie, calibration = null) {
     nome: materia.nome,
     examDate: materia.examDate || null,
     hasNodes,
+    // V40.0 — senza nodi le ore residue sono una stima dai CFU: vanno
+    // bene per la previsione di laurea e, con un esame in calendario, per
+    // pianificarlo; senza data NON sono lavoro da fare oggi.
+    stimaDaCfu: !hasNodes,
     hoursRemaining: Math.round(hoursRemaining * 100) / 100,
     daysRemaining,
     dataScaduta,
@@ -283,9 +287,19 @@ export function applyCumulativeLoad(quotas, calibration = null) {
  * CRITICAL_DISTANCE_DAYS scavalca sempre tutto, fra due imminenti vince il
  * più vicino; oltre quella soglia conta lo stato, poi i giorni.
  */
-/** Lavoro residuo: escluso solo chi dichiara esplicitamente 0 ore. */
+/**
+ * Lavoro residuo da pianificare OGGI.
+ *  - escluso chi dichiara esplicitamente 0 ore;
+ *  - V40.0 — escluse le materie SENZA nodi e SENZA una data d'esame
+ *    valida: le loro ore sono solo la stima dai CFU di un programma mai
+ *    mappato (es. i corsi del 3° anno che segui a lezione mentre dai gli
+ *    esami del 2°). Prima ricevevano ore vere nel piano del giorno —
+ *    "cose da studiare" che nessuno aveva mai inserito.
+ */
 function haLavoro(q) {
-  return !(Number.isFinite(q.hoursRemaining) && q.hoursRemaining <= 0);
+  if (Number.isFinite(q.hoursRemaining) && q.hoursRemaining <= 0) return false;
+  if (q.stimaDaCfu && q.daysRemaining == null) return false;
+  return true;
 }
 
 function urgencyGroup(q) {
@@ -319,15 +333,15 @@ export function compareByUrgency(a, b) {
  *   1. mai una materia congelata né una senza lavoro residuo;
  *   2. mai più di MAX_DAILY_FOCUS_MATERIE;
  *   3. esame entro CRITICAL_DISTANCE_DAYS in testa: monotask;
- *   4. V39.0 — gli slot si riempiono PRIMA con le materie che hanno una
- *      quota vera; quelle senza data entrano solo se avanza posto;
- *   5. V39.0 — `priorityIds` (le materie seguite a lezione oggi, vedi
- *      utils/campusEngine.js): fuori dal monotask, la prima di queste
- *      prende il SECONDO slot. Mai il primo: la materia più a rischio
- *      resta in testa, ma la lezione di oggi va sistemata oggi, finché è
- *      fresca — è il lavoro di sintesi con il rendimento più alto.
+ *   4. gli slot si riempiono PRIMA con le materie che hanno una quota
+ *      vera; quelle senza data entrano solo se avanza posto.
+ *
+ * V40.0 — le lezioni NON rubano più uno slot agli esami: la sintesi delle
+ * lezioni ha ora una sua riserva di tempo, limitata (vedi
+ * computeDailyPlan, `sintesiLezioni`). `priorityApplied` resta nel
+ * risultato, sempre null, per compatibilità.
  */
-export function selectDailyFocus(sortedQuotas, { priorityIds = null } = {}) {
+export function selectDailyFocus(sortedQuotas) {
   const eligible = sortedQuotas.filter((q) => !q.frozen && haLavoro(q));
   if (eligible.length === 0) return { focusIds: new Set(), monotaskActive: false, priorityApplied: null };
 
@@ -339,19 +353,7 @@ export function selectDailyFocus(sortedQuotas, { priorityIds = null } = {}) {
   const monotaskActive = topDays != null && topDays <= CRITICAL_DISTANCE_DAYS;
   const limit = monotaskActive ? 1 : MAX_DAILY_FOCUS_MATERIE;
   const picked = ordered.slice(0, limit).map((q) => q.materiaId);
-
-  let priorityApplied = null;
-  if (!monotaskActive && priorityIds && priorityIds.size > 0) {
-    const candidate = ordered.find((q) => priorityIds.has(q.materiaId));
-    if (candidate && !picked.includes(candidate.materiaId)) {
-      if (picked.length < limit) picked.push(candidate.materiaId);
-      else picked[limit - 1] = candidate.materiaId;
-      priorityApplied = candidate.materiaId;
-    } else if (candidate) {
-      priorityApplied = candidate.materiaId;
-    }
-  }
-  return { focusIds: new Set(picked), monotaskActive, priorityApplied };
+  return { focusIds: new Set(picked), monotaskActive, priorityApplied: null };
 }
 
 /**
@@ -366,10 +368,15 @@ export function allocateDailyBudget(focusQuotas, budgetHours) {
   const needs = focusQuotas.map((q) => ({
     materiaId: q.materiaId,
     need: Number.isFinite(q.dailyQuotaHours) && q.dailyQuotaHours > 0 ? q.dailyQuotaHours : 0,
-    senzaQuota: !(Number.isFinite(q.dailyQuotaHours) && q.dailyQuotaHours > 0) && haLavoro(q) && q.dailyQuotaHours !== 0
+    senzaQuota: !(Number.isFinite(q.dailyQuotaHours) && q.dailyQuotaHours > 0) && haLavoro(q) && q.dailyQuotaHours !== 0,
+    // V40.0 — l'avanzo non supera mai il lavoro che la materia ha davvero:
+    // mezz'ora di nodo residuo non diventa tre ore di "studio" oggi.
+    tetto: Number.isFinite(q.hoursRemaining) && q.hoursRemaining > 0 ? q.hoursRemaining : Infinity
   }));
   const totalNeed = needs.reduce((sum, n) => sum + n.need, 0);
-  const fits = totalNeed <= safeBudget;
+  // V40.0 — tolleranza di un minuto: senza, un piano che ci sta al
+  // centesimo risultava "in deficit di 0m" per un arrotondamento.
+  const fits = totalNeed <= safeBudget + 1 / 60;
 
   const allocation = new Map();
   needs.forEach((n) => {
@@ -378,12 +385,24 @@ export function allocateDailyBudget(focusQuotas, budgetHours) {
   });
 
   let slack = fits ? safeBudget - totalNeed : 0;
-  const beneficiari = needs.filter((n) => n.senzaQuota);
-  if (slack > 0 && beneficiari.length > 0) {
+  // Riparto dell'avanzo fra le materie senza quota, a giri: chi tocca il
+  // proprio tetto esce, e la sua parte torna agli altri.
+  let beneficiari = needs.filter((n) => n.senzaQuota);
+  while (slack > 0.009 && beneficiari.length > 0) {
     const quota = slack / beneficiari.length;
-    beneficiari.forEach((n) => allocation.set(n.materiaId, Math.round((allocation.get(n.materiaId) + quota) * 100) / 100));
-    slack = 0;
+    const restano = [];
+    beneficiari.forEach((n) => {
+      const attuale = allocation.get(n.materiaId);
+      const spazio = Math.max(0, n.tetto - attuale);
+      const dato = Math.min(quota, spazio);
+      allocation.set(n.materiaId, Math.round((attuale + dato) * 100) / 100);
+      slack -= dato;
+      if (spazio > quota) restano.push(n);
+    });
+    if (restano.length === beneficiari.length) break;
+    beneficiari = restano;
   }
+  slack = Math.max(0, slack);
 
   return {
     allocation,
@@ -401,19 +420,18 @@ export function allocateDailyBudget(focusQuotas, budgetHours) {
  * che il reducer richiama per verificare la missione Primary Target.
  *
  * @param {Array} materie
- * @param {object} options { calibration, loadAdjustmentPct, priorityIds }
+ * @param {object} options { calibration, loadAdjustmentPct, sintesiLezioni }
  */
-export function computeDailyPlan(materie, { calibration = null, loadAdjustmentPct = 0, priorityIds = null } = {}) {
+export function computeDailyPlan(materie, { calibration = null, loadAdjustmentPct = 0, sintesiLezioni = null } = {}) {
   const safe = Array.isArray(materie) ? materie : [];
   const quotas = applyCumulativeLoad(
     safe.filter((m) => m && !m.examPassed).map((m) => computeMateriaQuota(m, safe, calibration)),
     calibration
   ).sort(compareByUrgency);
 
-  const { focusIds, monotaskActive, priorityApplied } = selectDailyFocus(quotas, { priorityIds });
+  const { focusIds, monotaskActive, priorityApplied } = selectDailyFocus(quotas);
   const dailyFocusQuotas = quotas.filter((q) => focusIds.has(q.materiaId));
-  // L'ordine delle materie in focus segue quello di urgenza, tranne che
-  // per la materia promossa dalla lezione di oggi, che resta seconda.
+  // L'ordine delle materie in focus segue quello di urgenza.
   const queuedQuotas = quotas.filter((q) => !focusIds.has(q.materiaId) && !q.frozen);
   const frozenQuotas = quotas.filter((q) => q.frozen);
   const eventHorizonList = quotas.filter((q) => q.status === QUOTA_STATUS.CRITICO);
@@ -421,13 +439,59 @@ export function computeDailyPlan(materie, { calibration = null, loadAdjustmentPc
   const safePct = Number.isFinite(loadAdjustmentPct) ? Math.max(-50, Math.min(0, loadAdjustmentPct)) : 0;
   const base = Number(calibration?.hoursPerDay) > 0 ? Number(calibration.hoursPerDay) : EVENT_HORIZON_THRESHOLD_HOURS;
   const adjusted = base * (1 + safePct / 100);
-  const budgetResult = allocateDailyBudget(dailyFocusQuotas, adjusted);
-  const budget = { ...budgetResult, baseBudgetHours: Math.round(base * 100) / 100, loadAdjustmentPct: safePct };
+
+  // V40.0 — RISERVA PER LA SINTESI DELLE LEZIONI.
+  // Le lezioni seguite e davvero da sistemare (utils/campusEngine.js)
+  // prendono SOLO il tempo che gli esami in focus lasciano libero, e mai
+  // oltre il 40% della giornata (tutta, se oggi non c'è nessun esame su
+  // cui lavorare). Se gli esami occupano l'intera giornata la riserva è
+  // zero: la coda resta visibile, ma una lezione non accorcia mai il
+  // tempo di un esame. In monotask (esame entro 10 giorni) niente.
+  const voci = (Array.isArray(sintesiLezioni) ? sintesiLezioni : [])
+    .filter((v) => v && v.materiaId && Number(v.ore) > 0)
+    .map((v) => ({ materiaId: v.materiaId, ore: Number(v.ore) }));
+  const richiestaOre = voci.reduce((sum, v) => sum + v.ore, 0);
+  const esameARischio = dailyFocusQuotas.some(
+    (q) => q.daysRemaining != null && (q.status === QUOTA_STATUS.CRITICO || q.status === QUOTA_STATUS.ATTENZIONE)
+  );
+  const bisognoEsami = dailyFocusQuotas.reduce(
+    (sum, q) => sum + (Number.isFinite(q.dailyQuotaHours) && q.dailyQuotaHours > 0 ? q.dailyQuotaHours : 0),
+    0
+  );
+  const liberoDagliEsami = Math.max(0, adjusted - bisognoEsami);
+  const quotaMax = monotaskActive ? 0 : dailyFocusQuotas.length === 0 ? adjusted : Math.min(adjusted * 0.4, liberoDagliEsami);
+  const riservateOre = Math.round(Math.min(richiestaOre, quotaMax) * 100) / 100;
+  const sintesi = {
+    voci,
+    richiestaOre: Math.round(richiestaOre * 100) / 100,
+    riservateOre,
+    tettoOre: Math.round(quotaMax * 100) / 100,
+    esameARischio,
+    // In testa ad "ADESSO" solo se nessun esame in focus è a rischio.
+    prima: riservateOre > 0 && !esameARischio && !monotaskActive
+  };
+
+  const budgetResult = allocateDailyBudget(dailyFocusQuotas, adjusted - riservateOre);
+  // "Prima" solo se la riserva non mette in deficit lo studio (con i
+  // vincoli qui sopra non dovrebbe mai succedere; è la garanzia finale).
+  if (budgetResult.overCapacity) sintesi.prima = false;
+  const budget = {
+    ...budgetResult,
+    baseBudgetHours: Math.round(base * 100) / 100,
+    loadAdjustmentPct: safePct,
+    // Il budget "vero" del giorno resta quello intero: la riserva per la
+    // sintesi ne è una parte, dichiarata a parte.
+    budgetHours: Math.round(adjusted * 100) / 100,
+    studioHours: budgetResult.budgetHours,
+    sintesiHours: riservateOre,
+    // Ore di studio davvero ripartite oggi (quote + eventuale avanzo alle
+    // materie senza data): il numero da mostrare accanto alla sintesi.
+    assegnateHours: Math.round([...budgetResult.allocation.values()].reduce((sum, v) => sum + (Number(v) || 0), 0) * 100) / 100
+  };
 
   const withBudget = dailyFocusQuotas.map((q) => ({
     ...q,
-    assignedHours: budget.allocation.get(q.materiaId) ?? null,
-    promossaDaLezione: q.materiaId === priorityApplied
+    assignedHours: budget.allocation.get(q.materiaId) ?? null
   }));
 
   const byMateriaId = new Map(quotas.map((q) => [q.materiaId, q]));
@@ -445,6 +509,7 @@ export function computeDailyPlan(materie, { calibration = null, loadAdjustmentPc
     queuedQuotas,
     frozenQuotas,
     budget,
+    sintesi,
     // La prima scadenza oltre la quale il carico complessivo non ci sta.
     cumulativeOverload: overload
       ? { materiaId: overload.materiaId, nome: overload.nome, ratio: overload.cumulativeRatio, daysRemaining: overload.daysRemaining }

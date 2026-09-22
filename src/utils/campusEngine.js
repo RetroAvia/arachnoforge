@@ -23,10 +23,11 @@
 // sintesi le hai dedicato questa settimana.
 //
 // Tutto è collegato al resto dell'app attraverso gli ID delle materie del
-// Web-Matrix: l'orario non ha materie proprie, usa quelle; il planner di
-// Karen riceve le materie seguite oggi e dà loro il secondo slot; la
-// coda post-lezione punta all'argomento che hai in sintesi in quella
-// materia; lo Star Log dice quanta sintesi hai fatto davvero.
+// Web-Matrix: l'orario non ha materie proprie, usa quelle; la coda
+// post-lezione punta all'argomento che hai in sintesi in quella materia;
+// lo Star Log e i nodi dicono quanta sintesi hai fatto davvero; il
+// planner di Karen riserva ogni giorno solo il tempo di sintesi davvero
+// dovuto, senza mai scavalcare un esame a rischio (V40.0).
 //
 // Nessuna funzione qui dentro legge l'orologio da sola quando serve
 // l'ora: `now` viene sempre passato, così ogni caso è testabile.
@@ -84,6 +85,20 @@ export const RAPPORTO_MAX = 3;
 /** Finestra della coda post-lezione: copre anche il fine settimana
  * (lezione del venerdì pomeriggio, sistemata il lunedì mattina). */
 export const CODA_FINESTRA_ORE = 72;
+
+/**
+ * V40.0 — Esito di una singola lezione (un'occorrenza: lezione + giorno),
+ * dichiarato a mano dalla coda "Da sistemare":
+ *   FATTA   — l'ho già sistemata, anche fuori dall'app;
+ *   SALTATA — non l'ho seguita, o non c'era niente da sistemare.
+ */
+export const ESITO_LEZIONE = { FATTA: 'FATTA', SALTATA: 'SALTATA' };
+/** Gli esiti più vecchi di così non servono più a niente e vengono potati. */
+export const ESITI_GIORNI_CONSERVATI = 35;
+
+export function esitoKey(lezioneId, dateKey) {
+  return `${lezioneId}@${dateKey}`;
+}
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -180,7 +195,7 @@ export function createSemestre({ nome = '', inizio, fine } = {}) {
  * migrazione, import e reidratazione: nessun consumatore deve difendersi
  * da dati incoerenti per conto proprio.
  */
-export function normalizeCampus(raw, materieIds = null) {
+export function normalizeCampus(raw, materieIds = null, oggi = getDateKey()) {
   const src = raw && typeof raw === 'object' ? raw : {};
   const ids = materieIds instanceof Set ? materieIds : Array.isArray(materieIds) ? new Set(materieIds) : null;
 
@@ -213,11 +228,22 @@ export function normalizeCampus(raw, materieIds = null) {
   const r = Number(src.rapportoSintesi);
   const rapportoSintesi = Number.isFinite(r) ? Math.min(RAPPORTO_MAX, Math.max(RAPPORTO_MIN, r)) : DEFAULT_RAPPORTO_SINTESI;
 
-  return { semestri, override, rapportoSintesi };
+  // V40.0 — esiti manuali: solo chiavi ben formate, di lezioni che
+  // esistono ancora, e non più vecchi di ESITI_GIORNI_CONSERVATI.
+  const lezioneIds = new Set(semestri.flatMap((sem) => sem.lezioni.map((l) => l.id)));
+  const limite = addDaysToDateOnly(isValidDateKey(oggi) ? oggi : getDateKey(), -ESITI_GIORNI_CONSERVATI);
+  const esiti = {};
+  Object.entries(src.esiti && typeof src.esiti === 'object' ? src.esiti : {}).forEach(([k, v]) => {
+    const m = /^(.+)@(\d{4}-\d{2}-\d{2})$/.exec(k);
+    if (!m || !ESITO_LEZIONE[v] || m[2] < limite || !lezioneIds.has(m[1])) return;
+    esiti[k] = v;
+  });
+
+  return { semestri, override, rapportoSintesi, esiti };
 }
 
 export function createDefaultCampus() {
-  return { semestri: [], override: null, rapportoSintesi: DEFAULT_RAPPORTO_SINTESI };
+  return { semestri: [], override: null, rapportoSintesi: DEFAULT_RAPPORTO_SINTESI, esiti: {} };
 }
 
 /**
@@ -351,119 +377,330 @@ export function weeklyMinutesByMateria(semestre, materieById) {
   return map;
 }
 
-/**
- * Sessioni di sintesi su una materia, dallo Star Log. Solo le sessioni
- * dichiarate "Sintesi" nel Tactical Debriefing contano: sono l'unico dato
- * che dice davvero "ho lavorato sugli appunti di questa materia".
- */
-function sessioniSintesi(starLog, materiaId) {
-  return (Array.isArray(starLog) ? starLog : []).filter(
-    (e) => e && e.type === 'FOCUS_SESSION' && e.workMode === 'SINTESI' && e.materiaId === materiaId
-  );
+/* ------------------------------------------------------------------ *
+ * SINTESI DELLE LEZIONI
+ *
+ * V40.0 — Una lezione chiede di essere sistemata SOLO se c'è davvero
+ * qualcosa da sistemare che l'app conosce. Prima ogni lezione finita
+ * finiva in coda e maturava ore di sintesi, anche per una materia senza
+ * nodi né fonti (cose da sintetizzare che non esistevano), anche se
+ * la sintesi era già stata fatta fuori dall'app aggiornando il nodo a
+ * mano, anche se a quella lezione non eri andato. Ora ogni occorrenza
+ * (lezione + giorno) ha uno stato:
+ *
+ *   SALTATA    — dichiarata a mano: non seguita / niente da sistemare;
+ *   FATTA      — dichiarata a mano: sistemata, anche fuori dall'app;
+ *   FATTA_APP  — dopo la sua fine c'è una sessione Sintesi sulla materia;
+ *   FATTA_NODI — dopo la sua fine hai fatto avanzare a mano la sintesi di
+ *                un nodo della materia (pagine snellite, sintesi chiusa,
+ *                pagine dei tuoi appunti): vedi `sintesiAggiornataAt`;
+ *   NIENTE     — la materia non ha fonti aperte da snellire: non c'è
+ *                niente di tracciato da sistemare;
+ *   DA_FARE    — tutto il resto: è l'unico stato che entra in coda.
+ * ------------------------------------------------------------------ */
+
+export const STATO_LEZIONE = {
+  SALTATA: 'SALTATA',
+  FATTA: 'FATTA',
+  FATTA_APP: 'FATTA_APP',
+  FATTA_NODI: 'FATTA_NODI',
+  NIENTE: 'NIENTE',
+  DA_FARE: 'DA_FARE'
+};
+
+/** Soglia oltre la quale le sessioni Sintesi dopo una lezione la "sistemano". */
+export const COPERTURA_MINIMA = 0.5;
+
+function msDaIdFonte(id) {
+  const m = /^fonte_(\d{12,})_/.exec(String(id || ''));
+  return m ? Number(m[1]) : null;
 }
 
 /**
- * CODA POST-LEZIONE: le lezioni finite nelle ultime 72 ore che non sono
- * ancora state seguite da una sessione di sintesi sulla stessa materia.
- * È la lista più utile della modalità Lezioni: dice cosa sistemare
- * adesso, nell'ordine in cui è successo.
- *
- * Una lezione è "sistemata" se dopo la sua fine c'è almeno una sessione
- * di Sintesi sulla stessa materia. Due lezioni della stessa materia
- * nella finestra vengono unite in una sola voce (quella più recente):
- * una sessione di sintesi le copre entrambe.
+ * Stato della sintesi di una materia:
+ *  - `aperta`: c'è almeno una fonte con pagine da snellire su un nodo
+ *    non completato;
+ *  - `haFonti`: la materia ha fonti, in generale;
+ *  - `tracciataDalMs`: da quando esiste la prima fonte (dall'id della
+ *    fonte; -Infinity se non si può sapere). Le lezioni finite PRIMA non
+ *    diventano debito all'improvviso quando aggiungi le fonti;
+ *  - `ultimoAggiornamentoMs`: l'ultimo avanzamento registrato a mano sui
+ *    nodi (`sintesiAggiornataAt`).
  */
-export function postLectureQueue(campus, now, materieById, starLog) {
-  const finestraMs = CODA_FINESTRA_ORE * 3600000;
-  const oggi = getDateKey(now);
-  const perMateria = new Map();
+export function sintesiMateria(materia) {
+  let aperta = false;
+  let haFonti = false;
+  let ultimoAggiornamentoMs = -Infinity;
+  let tracciataDalMs = Infinity;
+  (Array.isArray(materia?.sfide) ? materia.sfide : []).forEach((s) => {
+    if (!s) return;
+    const src = nodeSources(s);
+    if (src.totali > 0) {
+      haFonti = true;
+      src.fonti.forEach((f) => {
+        const t = msDaIdFonte(f?.id);
+        tracciataDalMs = Math.min(tracciataDalMs, t == null ? -Infinity : t);
+      });
+    }
+    if (s.status !== 'COMPLETED' && src.totali > 0 && src.residue > 0 && !src.conclusa) aperta = true;
+    const t = Date.parse(s.sintesiAggiornataAt);
+    if (Number.isFinite(t) && t > ultimoAggiornamentoMs) ultimoAggiornamentoMs = t;
+  });
+  if (!haFonti) tracciataDalMs = Infinity;
+  return { aperta, haFonti, ultimoAggiornamentoMs, tracciataDalMs };
+}
 
-  for (let i = 3; i >= 0; i -= 1) {
-    const dk = addDaysToDateOnly(oggi, -i);
+/**
+ * Contesto calcolato UNA volta per snapshot: per ogni materia lo stato
+ * della sua sintesi e le sue sessioni Sintesi (in ordine di tempo), più
+ * i minuti di Sintesi da `daMs` in poi. Un solo passaggio sullo Star Log.
+ */
+export function contestoSintesi(campus, materieById, starLog, daMs = -Infinity) {
+  const perMateria = new Map();
+  materieById.forEach((m, id) => {
+    perMateria.set(id, { ...sintesiMateria(m), sessioni: [], ultimaSessioneMs: -Infinity, minutiDa: 0 });
+  });
+  (Array.isArray(starLog) ? starLog : []).forEach((e) => {
+    if (!e || e.type !== 'FOCUS_SESSION' || e.workMode !== 'SINTESI') return;
+    const c = perMateria.get(e.materiaId);
+    if (!c) return;
+    const t = Date.parse(e.timestamp);
+    if (!Number.isFinite(t)) return;
+    const min = Number(e.minutes) || 0;
+    c.sessioni.push({ t, min });
+    if (t > c.ultimaSessioneMs) c.ultimaSessioneMs = t;
+    if (t >= daMs) c.minutiDa += min;
+  });
+  perMateria.forEach((c) => c.sessioni.sort((x, y) => x.t - y.t));
+  return { perMateria, esiti: campus?.esiti && typeof campus.esiti === 'object' ? campus.esiti : {}, daMs, starLog };
+}
+
+function rapportoDi(campus) {
+  return Number(campus?.rapportoSintesi) > 0 ? Number(campus.rapportoSintesi) : DEFAULT_RAPPORTO_SINTESI;
+}
+
+/**
+ * Valuta un insieme di lezioni finite (tutte le materie).
+ *
+ * I minuti delle sessioni Sintesi vengono "spesi" sulle lezioni della
+ * stessa materia finite PRIMA della sessione, cominciando dalla più
+ * recente: la sessione delle 15:00 sistema la lezione di stamattina, non
+ * una di lunedì ormai uscita dalla coda. Le lezioni con una risposta
+ * manuale non concorrono: "Niente da sistemare" non prende minuti, e
+ * "Già fatta" prende solo quelli che avanzano (per non contarli due
+ * volte), con credito per il resto. Così una sessione di un minuto non
+ * sistema una lezione di due ore, e nessun minuto vale doppio.
+ *
+ * Ritorna una Map esitoKey → { stato, motivo, dovutoMin, copertiMin, creditoMin }:
+ *   dovutoMin  — sintesi che la lezione chiede (minuti × rapporto), 0 se
+ *                non c'è niente da sistemare;
+ *   copertiMin — minuti di sessioni Sintesi spesi su questa lezione;
+ *   creditoMin — sintesi fatta fuori dal timer (dichiarata o registrata
+ *                sui nodi), solo per la parte non coperta;
+ *   motivo     — per NIENTE: 'NESSUNA_FONTE' | 'PRIMA_DELLE_FONTI' | 'FONTI_CHIUSE'.
+ */
+export function valutaLezioni(occorrenze, ctx, rapporto = DEFAULT_RAPPORTO_SINTESI) {
+  const out = new Map();
+  const lista = [...occorrenze].sort((a, b) => a.fineMs - b.fineMs);
+  const info = lista.map((l) => {
+    const key = esitoKey(l.id, l.dateKey);
+    const esito = ctx.esiti[key];
+    const c = ctx.perMateria.get(l.materiaId);
+    const tracciata = !!c && c.haFonti && l.fineMs >= c.tracciataDalMs;
+    return { l, key, esito, c, tracciata, dovuto: tracciata ? Math.round(l.minuti * rapporto) : 0, coperti: 0 };
+  });
+
+  // Spesa dei minuti, materia per materia: prima le lezioni senza
+  // risposta manuale, poi (con ciò che resta) quelle dichiarate fatte.
+  const perMateria = new Map();
+  info.forEach((x) => {
+    if (!perMateria.has(x.l.materiaId)) perMateria.set(x.l.materiaId, []);
+    perMateria.get(x.l.materiaId).push(x);
+  });
+  perMateria.forEach((voci, materiaId) => {
+    const sessioni = (ctx.perMateria.get(materiaId)?.sessioni || []).map((x) => ({ t: x.t, restante: x.min }));
+    const spendi = (candidate) => {
+      sessioni.forEach((sess) => {
+        candidate
+          .filter((x) => x.l.fineMs <= sess.t && x.coperti < x.dovuto)
+          .sort((p, q) => q.l.fineMs - p.l.fineMs)
+          .forEach((x) => {
+            if (sess.restante <= 0) return;
+            const preso = Math.min(sess.restante, x.dovuto - x.coperti);
+            sess.restante -= preso;
+            x.coperti += preso;
+          });
+      });
+    };
+    spendi(voci.filter((x) => x.tracciata && !x.esito));
+    spendi(voci.filter((x) => x.tracciata && x.esito === ESITO_LEZIONE.FATTA));
+  });
+
+  info.forEach((x) => {
+    const { l, key, esito, c, tracciata, dovuto, coperti } = x;
+    let stato;
+    let motivo = null;
+    let credito = 0;
+    if (esito === ESITO_LEZIONE.SALTATA) stato = STATO_LEZIONE.SALTATA;
+    else if (esito === ESITO_LEZIONE.FATTA) {
+      stato = STATO_LEZIONE.FATTA;
+      credito = dovuto - coperti;
+    } else if (!tracciata) {
+      stato = STATO_LEZIONE.NIENTE;
+      motivo = c && c.haFonti ? 'PRIMA_DELLE_FONTI' : 'NESSUNA_FONTE';
+    } else if (dovuto > 0 && coperti >= dovuto * COPERTURA_MINIMA) {
+      stato = STATO_LEZIONE.FATTA_APP;
+    } else if (c.ultimoAggiornamentoMs >= l.fineMs) {
+      stato = STATO_LEZIONE.FATTA_NODI;
+      credito = dovuto - coperti;
+    } else if (!c.aperta) {
+      stato = STATO_LEZIONE.NIENTE;
+      motivo = 'FONTI_CHIUSE';
+    } else {
+      stato = STATO_LEZIONE.DA_FARE;
+    }
+    const nienteDaFare = stato === STATO_LEZIONE.NIENTE || stato === STATO_LEZIONE.SALTATA;
+    out.set(key, {
+      stato,
+      motivo,
+      dovutoMin: nienteDaFare ? 0 : dovuto,
+      copertiMin: nienteDaFare ? 0 : coperti,
+      creditoMin: Math.max(0, credito)
+    });
+  });
+  return out;
+}
+
+/** Le lezioni finite fra `dalKey` e adesso, con la fine in millisecondi. */
+function lezioniFinite(campus, materieById, dalKey, now) {
+  const oggi = getDateKey(now);
+  const nowMs = now.getTime();
+  const out = [];
+  for (let dk = dalKey; dk <= oggi; dk = addDaysToDateOnly(dk, 1)) {
     lessonsOn(campus, dk, materieById).forEach((l) => {
       const fineMs = localDateTime(dk, l.fine).getTime();
-      if (fineMs > now.getTime()) return; // non ancora finita
-      if (now.getTime() - fineMs > finestraMs) return; // troppo vecchia
-      const sistemata = sessioniSintesi(starLog, l.materiaId).some((e) => {
-        const t = Date.parse(e.timestamp);
-        return Number.isFinite(t) && t >= fineMs;
-      });
-      if (sistemata) {
-        perMateria.delete(l.materiaId);
-        return;
-      }
-      const prev = perMateria.get(l.materiaId);
-      perMateria.set(l.materiaId, {
-        ...l,
-        fineMs,
-        lezioniDaSistemare: (prev?.lezioniDaSistemare || 0) + 1,
-        minutiDaSistemare: (prev?.minutiDaSistemare || 0) + l.minuti,
-        oreFa: Math.max(0, Math.round((now.getTime() - fineMs) / 3600000))
-      });
+      if (fineMs <= nowMs) out.push({ ...l, fineMs });
     });
   }
+  return out;
+}
+
+function ctxOrBuild(campus, materieById, ctxOrStarLog, daMs) {
+  if (ctxOrStarLog && ctxOrStarLog.perMateria) {
+    return daMs == null || ctxOrStarLog.daMs === daMs
+      ? ctxOrStarLog
+      : contestoSintesi(campus, materieById, ctxOrStarLog.starLog, daMs);
+  }
+  return contestoSintesi(campus, materieById, ctxOrStarLog, daMs ?? -Infinity);
+}
+
+/** Stato di UNA lezione finita alle `fineMs` (valutata da sola). */
+export function statoLezione(l, fineMs, ctx, rapporto = DEFAULT_RAPPORTO_SINTESI) {
+  return valutaLezioni([{ ...l, fineMs }], ctx, rapporto).get(esitoKey(l.id, l.dateKey)).stato;
+}
+
+/** La finestra comune a coda e passo: da lunedì (o da 3 giorni fa, se prima). */
+function inizioFinestra(oggi) {
+  const lunedi = startOfWeek(oggi);
+  const treGiorniFa = addDaysToDateOnly(oggi, -3);
+  return lunedi < treGiorniFa ? lunedi : treGiorniFa;
+}
+
+/**
+ * CODA POST-LEZIONE: le lezioni finite nelle ultime 72 ore ancora DA_FARE,
+ * unite per materia (con l'elenco delle occorrenze, così "Già fatta" /
+ * "Niente da sistemare" le chiude tutte).
+ *
+ * L'ultimo argomento può essere lo Star Log o un contesto già calcolato
+ * (`contestoSintesi`); `valutazioni` opzionale evita di rifare il conto.
+ */
+export function postLectureQueue(campus, now, materieById, ctxOrStarLog, valutazioni = null) {
+  const oggi = getDateKey(now);
+  const nowMs = now.getTime();
+  const finestraMs = CODA_FINESTRA_ORE * 3600000;
+  const rapporto = rapportoDi(campus);
+  const occ = lezioniFinite(campus, materieById, inizioFinestra(oggi), now);
+  const val = valutazioni || valutaLezioni(occ, ctxOrBuild(campus, materieById, ctxOrStarLog), rapporto);
+  const perMateria = new Map();
+  occ
+    .filter((l) => nowMs - l.fineMs <= finestraMs)
+    .forEach((l) => {
+      const v = val.get(esitoKey(l.id, l.dateKey));
+      if (!v || v.stato !== STATO_LEZIONE.DA_FARE) return;
+      const prev = perMateria.get(l.materiaId);
+      const occorrenza = { id: l.id, dateKey: l.dateKey, inizio: l.inizio, fine: l.fine, minuti: l.minuti };
+      perMateria.set(l.materiaId, {
+        ...l,
+        lezioni: [...(prev?.lezioni || []), occorrenza],
+        lezioniDaSistemare: (prev?.lezioniDaSistemare || 0) + 1,
+        minutiDaSistemare: (prev?.minutiDaSistemare || 0) + l.minuti,
+        // Sintesi che manca davvero: dovuto meno quanto già coperto.
+        sintesiMancanteMin: (prev?.sintesiMancanteMin || 0) + Math.max(0, v.dovutoMin - v.copertiMin),
+        oreFa: Math.max(0, Math.round((nowMs - l.fineMs) / 3600000))
+      });
+    });
   return [...perMateria.values()].sort((a, b) => a.fineMs - b.fineMs);
 }
 
 /**
- * STARE AL PASSO: per ogni materia del semestre attivo, confronta la
- * sintesi che le lezioni di questa settimana (già fatte) richiedono con
- * quella fatta davvero.
- *
- * Il dovuto matura con le lezioni, non con il calendario: il martedì non
- * devi ancora la sintesi della lezione del giovedì. Così lo stato è
- * sempre giusto, in qualunque giorno lo guardi.
+ * STARE AL PASSO: per ogni materia del semestre attivo, la sintesi che le
+ * lezioni di questa settimana (già finite e con qualcosa da sistemare)
+ * chiedono, contro quella fatta: minuti di Sintesi nell'app da lunedì,
+ * più il credito della sintesi fatta fuori dal timer.
  */
-export function weekPace(campus, now, materieById, starLog) {
+export function weekPace(campus, now, materieById, ctxOrStarLog, valutazioni = null) {
   const oggi = getDateKey(now);
   const sem = activeSemester(campus, oggi);
   if (!sem) return [];
-  const rapporto = Number(campus?.rapportoSintesi) > 0 ? Number(campus.rapportoSintesi) : DEFAULT_RAPPORTO_SINTESI;
+  const rapporto = rapportoDi(campus);
   const lunedi = startOfWeek(oggi);
-  const settimanali = weeklyMinutesByMateria(sem, materieById);
   const lunediMs = localDateTime(lunedi, '00:00').getTime();
+  const ctx = ctxOrBuild(campus, materieById, ctxOrStarLog, lunediMs);
+  const occ = lezioniFinite(campus, materieById, inizioFinestra(oggi), now);
+  const val = valutazioni || valutaLezioni(occ, ctx, rapporto);
+  const settimanali = weeklyMinutesByMateria(sem, materieById);
 
   const righe = [];
   settimanali.forEach((minSett, materiaId) => {
+    const c = ctx.perMateria.get(materiaId) || { haFonti: false, minutiDa: 0 };
     let lezioniFatteMin = 0;
-    for (let i = 0; i < 7; i += 1) {
-      const dk = addDaysToDateOnly(lunedi, i);
-      if (dk > oggi) break;
-      lessonsOn(campus, dk, materieById)
-        .filter((l) => l.materiaId === materiaId)
-        .forEach((l) => {
-          if (localDateTime(dk, l.fine).getTime() <= now.getTime()) lezioniFatteMin += l.minuti;
-        });
-    }
-    const sintesiFattaMin = sessioniSintesi(starLog, materiaId)
-      .filter((e) => {
-        const t = Date.parse(e.timestamp);
-        return Number.isFinite(t) && t >= lunediMs && t <= now.getTime();
-      })
-      .reduce((sum, e) => sum + (Number(e.minutes) || 0), 0);
-    const dovutoMin = Math.round(lezioniFatteMin * rapporto);
-    const obiettivoSettMin = Math.round(minSett * rapporto);
-    let stato = 'NESSUNA_LEZIONE';
-    if (dovutoMin > 0) {
+    let dovutoMin = 0;
+    let creditoMin = 0;
+    let saltateMin = 0;
+    occ
+      .filter((l) => l.materiaId === materiaId && l.dateKey >= lunedi)
+      .forEach((l) => {
+        const v = val.get(esitoKey(l.id, l.dateKey));
+        lezioniFatteMin += l.minuti;
+        if (!v) return;
+        if (v.stato === STATO_LEZIONE.SALTATA) saltateMin += l.minuti;
+        dovutoMin += v.dovutoMin;
+        creditoMin += v.creditoMin;
+      });
+    const sintesiFattaMin = Math.round(c.minutiDa + creditoMin);
+    let stato;
+    if (!c.haFonti && dovutoMin === 0 && sintesiFattaMin === 0) stato = 'NON_TRACCIATA';
+    else if (dovutoMin > 0) {
       if (sintesiFattaMin >= dovutoMin) stato = 'IN_PARI';
       else if (sintesiFattaMin >= dovutoMin * 0.6) stato = 'QUASI';
       else stato = 'INDIETRO';
-    } else if (sintesiFattaMin > 0) {
-      stato = 'IN_PARI';
-    }
+    } else stato = sintesiFattaMin > 0 || lezioniFatteMin > 0 ? 'IN_PARI' : 'NESSUNA_LEZIONE';
     righe.push({
       materiaId,
       materia: materieById.get(materiaId),
       lezioneSettMin: minSett,
       lezioniFatteMin,
+      saltateMin,
       dovutoMin,
-      obiettivoSettMin,
+      obiettivoSettMin: Math.round(minSett * rapporto),
       sintesiFattaMin,
+      creditoMin,
       mancanoMin: Math.max(0, dovutoMin - sintesiFattaMin),
+      tracciata: c.haFonti,
       stato
     });
   });
-  const ordine = { INDIETRO: 0, QUASI: 1, IN_PARI: 2, NESSUNA_LEZIONE: 3 };
+  const ordine = { INDIETRO: 0, QUASI: 1, IN_PARI: 2, NESSUNA_LEZIONE: 3, NON_TRACCIATA: 4 };
   return righe.sort((a, b) => ordine[a.stato] - ordine[b.stato] || b.mancanoMin - a.mancanoMin);
 }
 
@@ -482,18 +719,15 @@ export function nodoInSintesi(materia) {
 }
 
 /**
- * Le materie da privilegiare OGGI nel planner di Karen: quelle con
- * lezione oggi e quelle con una lezione ancora da sistemare. Solo in
- * modalità Lezioni — in sessione le priorità le decidono le date.
+ * Le materie con una lezione davvero da sistemare (in coda). Solo in
+ * modalità Lezioni. V40.0 — non più "tutte le materie con lezione oggi":
+ * una lezione seguita non è automaticamente lavoro da fare.
  */
-export function priorityMateriaIds(campus, now, materieById, starLog) {
+export function priorityMateriaIds(campus, now, materieById, ctxOrStarLog) {
   const oggi = getDateKey(now);
   const phase = detectPhase(campus, oggi);
   if (phase.fase !== FASE.LEZIONI) return new Set();
-  const ids = new Set();
-  postLectureQueue(campus, now, materieById, starLog).forEach((l) => ids.add(l.materiaId));
-  lessonsOn(campus, oggi, materieById).forEach((l) => ids.add(l.materiaId));
-  return ids;
+  return new Set(postLectureQueue(campus, now, materieById, ctxOrStarLog).map((l) => l.materiaId));
 }
 
 /**
@@ -522,8 +756,10 @@ export function validateLezione(lezione, altre = []) {
 }
 
 /**
- * Tutto ciò che serve alla UI, in una chiamata: fase, lezioni di oggi,
- * prossima lezione, coda post-lezione, passo settimanale.
+ * Tutto ciò che serve alla UI, in una chiamata: fase, lezioni di oggi
+ * (con lo stato di sintesi di quelle finite), prossima lezione, coda
+ * post-lezione, passo settimanale, e i minuti di sintesi da riservare
+ * oggi nel piano di Karen.
  */
 export function computeCampusSnapshot(campus, now, materie, starLog) {
   const materieById = new Map((Array.isArray(materie) ? materie : []).map((m) => [m.id, m]));
@@ -531,16 +767,52 @@ export function computeCampusSnapshot(campus, now, materie, starLog) {
   const phase = detectPhase(campus, oggi);
   const oggiLezioni = lessonsOn(campus, oggi, materieById);
   const adesso = minutesOfDay(now);
+  const lezioni = phase.fase === FASE.LEZIONI;
+  const lunediMs = localDateTime(startOfWeek(oggi), '00:00').getTime();
+  const rapporto = rapportoDi(campus);
+  const ctx = contestoSintesi(campus, materieById, starLog, lunediMs);
+  // Una sola valutazione per coda, passo e chip delle lezioni di oggi.
+  const valutazioni = valutaLezioni(lezioniFinite(campus, materieById, inizioFinestra(oggi), now), ctx, rapporto);
+  const coda = lezioni ? postLectureQueue(campus, now, materieById, ctx, valutazioni) : [];
+
+  // Materie seguite a lezione nella finestra della coda ma senza fonti:
+  // la UI lo dice, invece di inventare lavoro.
+  const nonTracciate = [];
+  if (lezioni) {
+    const visti = new Set();
+    for (let i = 3; i >= 0; i -= 1) {
+      lessonsOn(campus, addDaysToDateOnly(oggi, -i), materieById).forEach((l) => {
+        if (visti.has(l.materiaId)) return;
+        const c = ctx.perMateria.get(l.materiaId);
+        if (c && !c.haFonti) {
+          visti.add(l.materiaId);
+          nonTracciate.push({ materiaId: l.materiaId, materia: l.materia });
+        }
+      });
+    }
+  }
+
   return {
     ...phase,
     oggi,
-    lezioniOggi: oggiLezioni.map((l) => ({
-      ...l,
-      stato: timeToMinutes(l.fine) <= adesso ? 'FINITA' : timeToMinutes(l.inizio) <= adesso ? 'IN_CORSO' : 'PROSSIMA'
-    })),
+    lezioniOggi: oggiLezioni.map((l) => {
+      const stato = timeToMinutes(l.fine) <= adesso ? 'FINITA' : timeToMinutes(l.inizio) <= adesso ? 'IN_CORSO' : 'PROSSIMA';
+      const v = valutazioni.get(esitoKey(l.id, oggi));
+      return {
+        ...l,
+        stato,
+        sintesi: stato === 'FINITA' && v ? v.stato : null,
+        // Perché non c'è niente da sistemare (vedi valutaLezioni).
+        motivo: stato === 'FINITA' && v ? v.motivo : null
+      };
+    }),
     prossima: nextLesson(campus, now, materieById),
-    coda: phase.fase === FASE.LEZIONI ? postLectureQueue(campus, now, materieById, starLog) : [],
-    passo: phase.fase === FASE.LEZIONI ? weekPace(campus, now, materieById, starLog) : [],
+    coda,
+    nonTracciate,
+    passo: lezioni ? weekPace(campus, now, materieById, ctx, valutazioni) : [],
+    // Minuti di sintesi davvero mancanti per le lezioni in coda.
+    sintesiDovutaMin: coda.reduce((sum, l) => sum + l.sintesiMancanteMin, 0),
+    lezioniInCoda: coda.reduce((sum, l) => sum + l.lezioniDaSistemare, 0),
     haOrario: (campus?.semestri || []).some((s) => s.lezioni.length > 0),
     rapportoSintesi: campus?.rapportoSintesi ?? DEFAULT_RAPPORTO_SINTESI
   };

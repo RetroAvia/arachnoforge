@@ -568,3 +568,52 @@ describe('Campus — semestri, orario, integrità', () => {
     assert.deepEqual(out.campus.semestri[0].lezioni.map((l) => l.materiaId), ['m1']);
   });
 });
+
+/* ---------------------------------------------------------------- *
+ * V40 — sintesi registrata a mano sul nodo ed esiti delle lezioni
+ * ---------------------------------------------------------------- */
+test('V40 — UPDATE_SFIDA segna sintesiAggiornataAt solo se la sintesi avanza', () => {
+  let s = createDefaultState();
+  s = reducer(s, { type: 'ADD_MATERIA', payload: { nome: 'MdV', cfu: 9 } });
+  const mid = s.materie[0].id;
+  s = reducer(s, { type: 'ADD_SFIDA', payload: { materiaId: mid, nome: 'Atmosfera', oreStimate: 1 } });
+  const sid = s.materie[0].sfide[0].id;
+  s = reducer(s, { type: 'UPDATE_SFIDA', payload: { materiaId: mid, sfidaId: sid, patch: { nome: 'Atmosfera Standard' } } });
+  assert.equal(s.materie[0].sfide[0].sintesiAggiornataAt, undefined, 'rinominare non è sintesi');
+  s = reducer(s, { type: 'UPDATE_SFIDA', payload: { materiaId: mid, sfidaId: sid, patch: { fonti: [{ id: 'f', tipo: 'LIBRO', pagine: 16, pagineFatte: 0 }] } } });
+  assert.equal(s.materie[0].sfide[0].sintesiAggiornataAt, undefined, 'aggiungere una fonte da snellire non è sintesi fatta');
+  s = reducer(s, { type: 'UPDATE_SFIDA', payload: { materiaId: mid, sfidaId: sid, patch: { fonti: [{ id: 'f', tipo: 'LIBRO', pagine: 16, pagineFatte: 16 }] } } });
+  assert.ok(typeof s.materie[0].sfide[0].sintesiAggiornataAt === 'string', 'pagine snellite: sintesi avanzata');
+});
+
+test('V40 — CAMPUS_SET_ESITO imposta e annulla', () => {
+  let s = createDefaultState();
+  s = reducer(s, { type: 'ADD_MATERIA', payload: { nome: 'MdV', cfu: 9 } });
+  const mid = s.materie[0].id;
+  s = reducer(s, { type: 'CAMPUS_ADD_SEMESTRE', payload: { nome: 'S', inizio: '2026-09-01', fine: '2026-12-20' } });
+  const semId = s.campus.semestri[0].id;
+  s = reducer(s, { type: 'CAMPUS_SAVE_LEZIONE', payload: { semestreId: semId, lezione: { materiaId: mid, giorno: 1, inizio: '09:00', fine: '11:00' } } });
+  const lid = s.campus.semestri[0].lezioni[0].id;
+  const oggi = new Date();
+  const dk = `${oggi.getFullYear()}-${String(oggi.getMonth() + 1).padStart(2, '0')}-${String(oggi.getDate()).padStart(2, '0')}`;
+  s = reducer(s, { type: 'CAMPUS_SET_ESITO', payload: { lezioni: [{ id: lid, dateKey: dk }], esito: 'FATTA' } });
+  assert.equal(s.campus.esiti[`${lid}@${dk}`], 'FATTA');
+  s = reducer(s, { type: 'CAMPUS_SET_ESITO', payload: { lezioni: [{ id: lid, dateKey: dk }], esito: null } });
+  assert.equal(s.campus.esiti[`${lid}@${dk}`], undefined);
+  const prima = s;
+  s = reducer(s, { type: 'CAMPUS_SET_ESITO', payload: { lezioni: [{ id: lid, dateKey: dk }], esito: 'BOH' } });
+  assert.equal(s, prima, 'esito sconosciuto: stato invariato');
+});
+
+test('V40 — il caricamento (hydrate) non perde più chiusoDaVerbale e sintesiAggiornataAt', () => {
+  let s = createDefaultState();
+  s = reducer(s, { type: 'ADD_MATERIA', payload: { nome: 'X', cfu: 6 } });
+  const mid = s.materie[0].id;
+  s = reducer(s, { type: 'ADD_SFIDA', payload: { materiaId: mid, nome: 'n', oreStimate: 1 } });
+  const sid = s.materie[0].sfide[0].id;
+  s = reducer(s, { type: 'UPDATE_SFIDA', payload: { materiaId: mid, sfidaId: sid, patch: { pagineAppunti: 3 } } });
+  s = reducer(s, { type: 'UPDATE_MATERIA', payload: { id: mid, patch: { examPassed: true } } });
+  const h = hydrateState(JSON.parse(JSON.stringify(s)));
+  assert.equal(h.materie[0].sfide[0].chiusoDaVerbale, true);
+  assert.equal(typeof h.materie[0].sfide[0].sintesiAggiornataAt, 'string');
+});

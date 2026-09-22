@@ -185,6 +185,10 @@ body {
   pointer-events: none;
   opacity: 0.025;
   z-index: 999;
+  /* V40.0 — livello proprio: la grana non viene più ricomposta con la
+     pagina a ogni ridisegno sottostante. */
+  transform: translateZ(0);
+  contain: strict;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -220,7 +224,7 @@ body {
   pointer-events: none;
   z-index: 20;
   background: radial-gradient(ellipse at center, transparent 50%, rgb(var(--af-attack-rgb) / 0.18) 100%);
-  mix-blend-mode: screen;
+  will-change: opacity;
   animation: af-interference-flicker 4.5s ease-in-out infinite;
 }
 @keyframes af-interference-flicker {
@@ -260,12 +264,43 @@ body {
 }
 
 /* Goblin Protocol: bordi rosso fuoco pulsanti per materie a ridosso dell'esame. */
-@keyframes af-goblin-pulse {
-  0%, 100% { box-shadow: 0 0 14px rgb(var(--af-attack-rgb) / 0.5); }
-  50% { box-shadow: 0 0 26px rgb(var(--af-attack-rgb) / 0.9); }
+/* V40.0 — Tutti i bordi "che respirano" (Goblin, Event Horizon,
+   Attenzione, Carnage, Spider-Sense) ora animano SOLO l'opacità di uno
+   pseudo-elemento con un bagliore interno fisso. Prima animavano
+   `box-shadow` (e `border-color`) dell'elemento stesso: ogni frame
+   ridipingeva la card intera — e, sotto, la sua sfocatura di sfondo —
+   per ogni card in allarme. Con sei materie critiche il Web-Matrix
+   ridipingeva mezzo schermo 60 volte al secondo: i rallentamenti e gli
+   scatti venivano da qui. L'opacità la anima il compositore, gratis. */
+@keyframes af-glow-breathe {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+.af-goblin,
+.af-event-horizon,
+.af-attenzione-pulse,
+.af-carnage-pulse,
+.af-spidersense-pulse {
+  position: relative;
+}
+.af-goblin::after,
+.af-event-horizon::after,
+.af-attenzione-pulse::after,
+.af-carnage-pulse::after,
+.af-spidersense-pulse::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  will-change: opacity;
+  animation: af-glow-breathe var(--af-glow-speed, 2.6s) ease-in-out infinite;
+  box-shadow: inset 0 0 22px var(--af-glow-color, rgb(var(--af-attack-rgb) / 0.45));
 }
 .af-goblin {
-  animation: af-goblin-pulse 1.6s ease-in-out infinite;
+  box-shadow: 0 0 16px rgb(var(--af-attack-rgb) / 0.55);
+  --af-glow-speed: 1.6s;
+  --af-glow-color: rgb(var(--af-attack-rgb) / 0.5);
 }
 
 /* V20.0 — K.A.R.E.N. Auto-Router: EVENT HORIZON (DEFCON 1). Traiettoria
@@ -273,23 +308,20 @@ body {
    rosso più rapido e aggressivo del Goblin Protocol (che segnala solo
    "esame vicino", non "impossibile da recuperare in tempo"), doppio
    strato box-shadow + leggero flash di opacità del bordo. */
-@keyframes af-event-horizon-blink {
-  0%, 100% { box-shadow: 0 0 16px rgb(var(--af-attack-rgb) / 0.55), 0 0 36px rgb(var(--af-attack-rgb) / 0.25); border-color: rgb(var(--af-attack-rgb) / 0.9); }
-  50% { box-shadow: 0 0 30px rgb(var(--af-attack-rgb) / 1), 0 0 60px rgb(var(--af-attack-rgb) / 0.5); border-color: rgb(var(--af-attack-rgb) / 0.4); }
-}
 .af-event-horizon {
-  animation: af-event-horizon-blink 0.9s ease-in-out infinite;
+  box-shadow: 0 0 18px rgb(var(--af-attack-rgb) / 0.55), 0 0 36px rgb(var(--af-attack-rgb) / 0.2);
+  border-color: rgb(var(--af-attack-rgb) / 0.8) !important;
+  --af-glow-speed: 1.2s;
+  --af-glow-color: rgb(var(--af-attack-rgb) / 0.6);
 }
 
 /* V23.0 — Quantum Router: stato "Attenzione" (giallo/Decay), un respiro
    molto più lento e morbido dell'Event Horizon — segnala una traiettoria
    da tenere d'occhio, MAI un allarme vero e proprio. */
-@keyframes af-attenzione-glow {
-  0%, 100% { box-shadow: 0 0 10px rgb(var(--af-decay-rgb) / 0.35); }
-  50% { box-shadow: 0 0 18px rgb(var(--af-decay-rgb) / 0.6); }
-}
 .af-attenzione-pulse {
-  animation: af-attenzione-glow 2.6s ease-in-out infinite;
+  box-shadow: 0 0 12px rgb(var(--af-decay-rgb) / 0.35);
+  --af-glow-speed: 2.6s;
+  --af-glow-color: rgb(var(--af-decay-rgb) / 0.4);
 }
 
 /* V23.0 — Daily Patrol Engine: "burst" di completamento missione — scale
@@ -344,11 +376,36 @@ button:disabled {
 }
 
 /* Anello HUD del Web-Matrix Radar: leggero respiro luminoso continuo. */
+/* V40.0 — Skill Tree: nodo sbloccabile. Anello fisso + respiro d'opacità
+   (prima: `box-shadow` animato, vedi sopra). */
+.af-token-pulse {
+  position: relative;
+}
+.af-token-pulse::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  /* interno: la card ha overflow-hidden, un anello esterno sarebbe tagliato */
+  box-shadow: inset 0 0 0 2px rgb(var(--af-decay-rgb) / 0.55), inset 0 0 20px rgb(var(--af-decay-rgb) / 0.35);
+  will-change: opacity;
+  animation: af-glow-breathe 2s ease-in-out infinite;
+}
+body[data-effects='lite'] .af-token-pulse::after {
+  animation: none;
+}
+
+/* V40.0 — ombra fissa (disegnata una volta) e respiro d'opacità: prima
+   si animava il `filter: drop-shadow`, che ridisegna l'SVG a ogni frame
+   (undici anelli nello Star Log). */
 @keyframes af-radar-glow {
-  0%, 100% { filter: drop-shadow(0 0 4px rgb(var(--af-refuel-rgb) / 0.35)); }
-  50% { filter: drop-shadow(0 0 10px rgb(var(--af-refuel-rgb) / 0.6)); }
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
 }
 .af-radar-ring {
+  filter: drop-shadow(0 0 6px rgb(var(--af-refuel-rgb) / 0.45));
+  will-change: opacity;
   animation: af-radar-glow 3s ease-in-out infinite;
 }
 
@@ -490,17 +547,18 @@ body[data-carnage='true'] {
   background:
     radial-gradient(ellipse at center, transparent 35%, rgb(var(--af-attack-rgb) / 0.22) 100%),
     linear-gradient(rgb(0 0 0 / 0.15), transparent 15%, transparent 85%, rgb(0 0 0 / 0.15));
-  mix-blend-mode: screen;
+  /* V40.0 — niente mix-blend-mode su un livello a tutto schermo animato:
+     costringeva a rimescolare l'intera pagina a ogni frame. Su fondo
+     scuro la differenza visiva è trascurabile. */
+  will-change: opacity;
   animation: af-carnage-vignette 2.2s ease-in-out infinite;
 }
 
 /* Banner/HUD chip Maximum Carnage: bordo che "respira" rosso/argento. */
-@keyframes af-carnage-pulse {
-  0%, 100% { box-shadow: 0 0 14px rgb(var(--af-attack-rgb) / 0.55), 0 0 4px rgb(var(--af-refuel-rgb) / 0.4) inset; }
-  50% { box-shadow: 0 0 30px rgb(var(--af-attack-rgb) / 0.9), 0 0 8px rgb(var(--af-refuel-rgb) / 0.6) inset; }
-}
 .af-carnage-pulse {
-  animation: af-carnage-pulse 1.3s ease-in-out infinite;
+  box-shadow: 0 0 16px rgb(var(--af-attack-rgb) / 0.6);
+  --af-glow-speed: 1.3s;
+  --af-glow-color: rgb(var(--af-refuel-rgb) / 0.45);
 }
 
 @keyframes af-carnage-in {
@@ -585,14 +643,19 @@ body[data-carnage='true'] {
    sconfinare nell'allarme rosso dell'Event Horizon — è tensione
    produttiva, non pericolo. */
 @keyframes af-spidersense-tension {
-  0%, 100% { box-shadow: 0 0 10px rgb(var(--af-refuel-rgb) / 0.3); }
-  20% { box-shadow: 0 0 22px rgb(var(--af-refuel-rgb) / 0.65); }
-  35% { box-shadow: 0 0 12px rgb(var(--af-refuel-rgb) / 0.35); }
-  55% { box-shadow: 0 0 26px rgb(var(--af-refuel-rgb) / 0.7); }
-  75% { box-shadow: 0 0 10px rgb(var(--af-refuel-rgb) / 0.3); }
+  0%, 100% { opacity: 0.3; }
+  20% { opacity: 0.9; }
+  35% { opacity: 0.4; }
+  55% { opacity: 1; }
+  75% { opacity: 0.3; }
 }
 .af-spidersense-pulse {
-  animation: af-spidersense-tension 2.4s ease-in-out infinite;
+  box-shadow: 0 0 14px rgb(var(--af-refuel-rgb) / 0.35);
+  --af-glow-color: rgb(var(--af-refuel-rgb) / 0.5);
+}
+.af-spidersense-pulse::after {
+  animation-name: af-spidersense-tension;
+  animation-duration: 2.4s;
 }
 
 /* Sblocco — al completamento pulito: espansione anulare luminosa + flash
@@ -691,11 +754,11 @@ body[data-effects='lite'] .af-carnage-overlay {
 /* Le animazioni cicliche (drone visivi) si fermano; quelle "una tantum"
    di feedback (pop, shake, reveal) restano: sono informazione, non
    decorazione, e durano poche centinaia di millisecondi. */
-body[data-effects='lite'] .af-event-horizon,
-body[data-effects='lite'] .af-attenzione-pulse,
-body[data-effects='lite'] .af-goblin,
-body[data-effects='lite'] .af-spidersense-pulse,
-body[data-effects='lite'] .af-carnage-pulse,
+body[data-effects='lite'] .af-event-horizon::after,
+body[data-effects='lite'] .af-attenzione-pulse::after,
+body[data-effects='lite'] .af-goblin::after,
+body[data-effects='lite'] .af-spidersense-pulse::after,
+body[data-effects='lite'] .af-carnage-pulse::after,
 body[data-effects='lite'] .af-chest-float,
 body[data-effects='lite'] .af-radar-ring,
 body[data-effects='lite'] .af-cursor-blink,
@@ -705,7 +768,6 @@ body[data-effects='lite'] .af-cursor-blink,
 body[data-effects='lite'] .animate-pulse,
 body[data-effects='lite'] .animate-pulse-slow,
 body[data-effects='lite'] .animate-scanline,
-body[data-effects='lite'] .animate-token-pulse,
 body[data-effects='lite'] .animate-gradient-shift,
 body[data-effects='lite'] .af-title-epic,
 body[data-effects='lite'] .af-enrage {
@@ -718,6 +780,43 @@ body[data-effects='lite'] .af-event-horizon {
 }
 body[data-effects='lite'] .af-attenzione-pulse {
   border-color: rgb(var(--af-decay-rgb) / 0.7) !important;
+}
+
+/* --- 1b. Niente sfocatura di sfondo DENTRO le pagine ---------------
+ * V40.0 — `backdrop-filter` è l'effetto più costoso del browser: per
+ * ogni elemento che lo usa, a ogni ridisegno, il motore deve leggere e
+ * sfocare tutto ciò che sta sotto. Nelle pagine ce n'erano fino a 30
+ * (ogni card, ogni riga), sopra uno sfondo quasi uniforme dove la
+ * sfocatura non si vede nemmeno. Dentro <main> la si spegne: restano le
+ * superfici semi-trasparenti e i bordi, identici. La sfocatura resta
+ * dove si vede e serve — modali, drawer, menu, barra laterale — che
+ * vivono fuori da <main>. */
+main .backdrop-blur-sm,
+main .backdrop-blur,
+main .backdrop-blur-md,
+main .backdrop-blur-lg,
+main .backdrop-blur-xl,
+main .backdrop-blur-2xl,
+main .backdrop-blur-3xl {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* Le animazioni infinite rimaste (solo opacità/trasformazioni) su un
+   livello proprio: il compositore le gestisce senza ridisegnare. */
+.animate-pulse-slow,
+.animate-pulse {
+  will-change: opacity;
+}
+.animate-scanline {
+  will-change: transform;
+}
+/* I bagliori decorativi sfocati (`blur-2xl/3xl` dietro le card) su un
+   livello proprio: così il timer che cambia ogni secondo, o una card che
+   si aggiorna, non costringe a ri-sfocarli ogni volta. */
+.blur-xl,
+.blur-2xl,
+.blur-3xl {
+  will-change: transform;
 }
 
 /* --- 2. Contrasto del testo informativo ---------------------------

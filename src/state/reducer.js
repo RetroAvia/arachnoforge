@@ -41,8 +41,8 @@ import { NODE_STATUS, PERSISTED_STATUS, deriveNodeStatus, orphanChildren, create
 import { getSkillDef, canUnlockSkill, computeSkillEffects } from '../data/techTree.js';
 import { scheduleNextReview, REVIEW_RATING } from '../utils/spiderSense.js';
 import { isGoblinProtocol } from '../utils/materiaMeta.js';
-import { WORK_MODE, applySintesiProgress } from '../utils/sintesiEngine.js';
-import { createSemestre, createLezione, normalizeCampus } from '../utils/campusEngine.js';
+import { WORK_MODE, applySintesiProgress, nodeSources, nodeNotes } from '../utils/sintesiEngine.js';
+import { createSemestre, createLezione, normalizeCampus, esitoKey, ESITO_LEZIONE } from '../utils/campusEngine.js';
 import { computeWeightedAverage, isGradedMateria } from '../utils/gpaEngine.js';
 import { nowIso, getDateKey, isSameDay, daysBetween, currentMonthKey } from '../utils/dateUtils.js';
 import { applyQuestEvent, QUEST_EVENTS } from '../utils/dailyPatrol.js';
@@ -69,6 +69,15 @@ export function pushLog(combatLog, message, tag = 'INFO') {
 
 export function findMateria(state, materiaId) {
   return state.materie.find((m) => m.id === materiaId) || null;
+}
+
+/** V40.0 — La sintesi di un nodo è andata avanti fra `prima` e `dopo`? */
+function sintesiAvanzata(prima, dopo) {
+  const a = nodeSources(prima);
+  const b = nodeSources(dopo);
+  if (b.fatte > a.fatte) return true;
+  if (!a.conclusa && b.conclusa && b.totali > 0) return true;
+  return nodeNotes(dopo).attuali > nodeNotes(prima).attuali;
 }
 
 function updateMateriaSfide(state, materiaId, updater) {
@@ -511,6 +520,24 @@ export function reducer(state, action) {
       return { ...state, campus };
     }
 
+    // V40.0 — esito dichiarato a mano per una o più lezioni (coda "Da
+    // sistemare" della Empire State University): FATTA, SALTATA, oppure
+    // null per annullare. `lezioni`: [{ id, dateKey }].
+    case 'CAMPUS_SET_ESITO': {
+      const { lezioni, esito } = action.payload || {};
+      if (!Array.isArray(lezioni) || lezioni.length === 0) return state;
+      if (esito != null && !ESITO_LEZIONE[esito]) return state;
+      const esiti = { ...(state.campus?.esiti || {}) };
+      lezioni.forEach((l) => {
+        if (!l || typeof l.id !== 'string' || typeof l.dateKey !== 'string') return;
+        const k = esitoKey(l.id, l.dateKey);
+        if (esito == null) delete esiti[k];
+        else esiti[k] = esito;
+      });
+      const campus = normalizeCampus({ ...state.campus, esiti }, state.materie.map((m) => m.id));
+      return { ...state, campus };
+    }
+
     case 'ADD_SFIDA': {
       const materia = findMateria(state, action.payload.materiaId);
       if (!materia) return state;
@@ -524,7 +551,16 @@ export function reducer(state, action) {
 
     case 'UPDATE_SFIDA':
       return updateMateriaSfide(state, action.payload.materiaId, (sfide) =>
-        sfide.map((s) => (s.id === action.payload.sfidaId ? { ...s, ...action.payload.patch } : s))
+        sfide.map((s) => {
+          if (s.id !== action.payload.sfidaId) return s;
+          const next = { ...s, ...action.payload.patch };
+          // V40.0 — la sintesi fatta FUORI dall'app e registrata a mano
+          // sul nodo (più pagine snellite, sintesi chiusa, più pagine dei
+          // tuoi appunti) lascia un segno temporale: la coda delle
+          // lezioni da sistemare lo usa per capire che la lezione di oggi
+          // è già stata sistemata, anche senza una sessione col timer.
+          return sintesiAvanzata(s, next) ? { ...next, sintesiAggiornataAt: nowIso() } : next;
+        })
       );
 
     case 'DELETE_SFIDA': {

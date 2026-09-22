@@ -128,7 +128,7 @@ async function resolveInvokeErrorMessage(err, fallback) {
       const body = await err.context.clone().json();
       if (body?.error) return body.error;
     }
-  } catch (_readErr) {
+  } catch {
     // Corpo non-JSON, già consumato, o context assente — si ricade sotto.
   }
   return err.message || fallback;

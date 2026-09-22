@@ -1,6 +1,6 @@
 import { computeSpiderScore, computeDirectUnlockCount, getMissingPrerequisites, computePressure } from '../data/vanvitelliCourseMap.js';
 import { computeRemainingHours } from './materiaMeta.js';
-import { daysUntilDateOnly } from './dateUtils.js';
+import { daysUntilDateOnly, todayDateOnlyKey } from './dateUtils.js';
 
 /**
  * Karen's Tactical Suggestor — V20.0 "The Master Control" (Pillar 2).
@@ -74,7 +74,14 @@ export function computePrimaryTarget(materie, calibration = null, preferredMater
   // Web-Matrix, ma esclusa dal Primary Target automatico finché non si
   // sblocca. Se risultano TUTTE congelate, Karen non ha nulla da spingere
   // (nessun fallback silenzioso su una materia bloccata).
-  const eligible = pending.filter((m) => !isPrereqFrozen(m, safeMaterie));
+  // V40.0 — né una materia senza nodi e senza una data d'esame futura:
+  // le sue ore sono solo la stima dai CFU di un programma mai mappato
+  // (tipicamente un corso che segui a lezione e che darai più avanti),
+  // non qualcosa da "attaccare" oggi.
+  const oggiKey = todayDateOnlyKey();
+  const mappata = (m) =>
+    (Array.isArray(m.sfide) && m.sfide.length > 0) || (typeof m.examDate === 'string' && m.examDate.slice(0, 10) >= oggiKey);
+  const eligible = pending.filter((m) => !isPrereqFrozen(m, safeMaterie) && mappata(m));
   if (eligible.length === 0) return null;
 
   // V39.0 — Il Primary Target COINCIDE con la prima materia "in focus

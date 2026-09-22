@@ -149,26 +149,60 @@ test('focus: una materia già finita non occupa slot', () => {
   assert.ok(plan.budget.totalNeedHours > 0);
 });
 
-test('focus: la materia seguita a lezione oggi prende il secondo slot, mai il primo', () => {
+test('V40 — le lezioni non rubano più uno slot agli esami', () => {
   const a = materia({ examDate: fra(40), sfide: [nodo({ oreStimate: 150 })] }); // CRITICO
   const b = materia({ examDate: fra(50), sfide: [nodo({ oreStimate: 150 })] });
-  const lezione = materia({ examDate: fra(90), sfide: [nodo({ oreStimate: 5 })] }); // OTTIMALE, in fondo
-  const plan = computeDailyPlan([a, b, lezione], { calibration: CAL, priorityIds: new Set([lezione.id]) });
+  const lezione = materia({ sfide: [nodo({ oreStimate: 5 })] }); // seguita a lezione, senza data
+  const plan = computeDailyPlan([a, b, lezione], { calibration: CAL, sintesiLezioni: [{ materiaId: lezione.id, ore: 2 }] });
   const ids = plan.dailyFocusQuotas.map((q) => q.materiaId);
-  assert.equal(ids.length, 2);
-  assert.ok(ids.includes(lezione.id), 'la lezione di oggi entra nel focus');
-  assert.equal(plan.priorityApplied, lezione.id);
-  assert.equal(plan.dailyFocusQuotas.find((q) => q.materiaId === lezione.id).promossaDaLezione, true);
-  // la più urgente resta in testa
-  assert.equal(plan.quotas[0].materiaId === lezione.id, false);
+  assert.deepEqual(ids.sort(), [a.id, b.id].sort(), 'gli slot restano agli esami');
+  assert.equal(plan.priorityApplied, null);
 });
 
-test('focus: in monotask la lezione di oggi NON scavalca l’esame imminente', () => {
+test('V40 — riserva di sintesi: solo il tempo libero dagli esami, massimo 40%, zero in monotask', () => {
+  const rischio = materia({ examDate: fra(40), sfide: [nodo({ oreStimate: 300 })] }); // 300h in 40gg: CRITICO
+  const r1 = computeDailyPlan([rischio], { calibration: CAL, sintesiLezioni: [{ materiaId: 'x', ore: 3 }] });
+  assert.equal(r1.sintesi.esameARischio, true);
+  assert.equal(r1.sintesi.riservateOre, 0, 'un esame a rischio non cede tempo alle lezioni');
+  assert.equal(r1.sintesi.prima, false);
+
+  const pieno = materia({ examDate: fra(40), sfide: [nodo({ oreStimate: 150 })] }); // 3.75h/giorno su 4.5
+  const r0 = computeDailyPlan([pieno], { calibration: CAL, sintesiLezioni: [{ materiaId: 'x', ore: 3 }] });
+  assert.equal(r0.sintesi.riservateOre, 0.75, 'prende solo i 45 minuti che l’esame lascia liberi');
+  assert.equal(r0.budget.overCapacity, false, 'la riserva non crea mai un deficit');
+
+  const calmo = materia({ examDate: fra(90), sfide: [nodo({ oreStimate: 5 })] });
+  const r2 = computeDailyPlan([calmo], { calibration: CAL, sintesiLezioni: [{ materiaId: 'x', ore: 1 }] });
+  assert.equal(r2.sintesi.riservateOre, 1, 'serve 1h e c’è spazio');
+  assert.equal(r2.sintesi.prima, true);
+  const r2b = computeDailyPlan([calmo], { calibration: CAL, sintesiLezioni: [{ materiaId: 'x', ore: 5 }] });
+  assert.equal(r2b.sintesi.riservateOre, 1.8, 'mai oltre il 40% della giornata');
+
+  const r4 = computeDailyPlan([], { calibration: CAL, sintesiLezioni: [{ materiaId: 'x', ore: 3 }] });
+  assert.equal(r4.sintesi.riservateOre, 3, 'senza esami su cui lavorare, la giornata è delle lezioni');
+
   const imminente = materia({ examDate: fra(5), sfide: [nodo({ oreStimate: 10 })] });
-  const lezione = materia({ examDate: fra(90), sfide: [nodo({ oreStimate: 5 })] });
-  const plan = computeDailyPlan([imminente, lezione], { calibration: CAL, priorityIds: new Set([lezione.id]) });
-  assert.equal(plan.monotaskActive, true);
-  assert.deepEqual(plan.dailyFocusQuotas.map((q) => q.materiaId), [imminente.id]);
+  const r3 = computeDailyPlan([imminente], { calibration: CAL, sintesiLezioni: [{ materiaId: 'x', ore: 1 }] });
+  assert.equal(r3.monotaskActive, true);
+  assert.equal(r3.sintesi.riservateOre, 0);
+});
+
+test('V40 — materia senza nodi e senza data: nessuna ora finta nel piano del giorno', () => {
+  const vuota = materia({ cfu: 9, sfide: [] });
+  const esame = materia({ examDate: fra(60), sfide: [nodo({ oreStimate: 10 })] });
+  const plan = computeDailyPlan([vuota, esame], { calibration: CAL });
+  assert.ok(!plan.dailyFocusIds.has(vuota.id), 'la stima dai CFU non è lavoro di oggi');
+  // con una data d'esame, invece, la stima dai CFU serve a pianificare
+  const conData = materia({ cfu: 9, examDate: fra(60), sfide: [] });
+  const p2 = computeDailyPlan([conData], { calibration: CAL });
+  assert.ok(p2.dailyFocusIds.has(conData.id));
+});
+
+test('V40 — l’avanzo del budget non supera il lavoro residuo della materia', () => {
+  const pochissimo = materia({ sfide: [nodo({ oreStimate: 0.5 })] }); // senza data, 0.5h di lavoro
+  const plan = computeDailyPlan([pochissimo], { calibration: CAL });
+  const q = plan.dailyFocusQuotas.find((x) => x.materiaId === pochissimo.id);
+  assert.ok(q.assignedHours <= 0.5 + 1e-9, `assegnate ${q.assignedHours}h a una materia con 0.5h di lavoro`);
 });
 
 test('ordinamento: una materia senza data non scavalca una con esame vero', () => {

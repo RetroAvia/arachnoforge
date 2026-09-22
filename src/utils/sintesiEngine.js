@@ -174,7 +174,11 @@ export function normalizeFonti(raw) {
       ...createFonte(f),
       // L'id esistente va conservato: è la chiave con cui la UI e il
       // reducer ritrovano la fonte fra un render e l'altro.
-      id: typeof f.id === 'string' && f.id ? f.id : createFonte(f).id
+      // V40.0 — a una fonte senza id (import, dati vecchi) se ne dà uno
+      // SENZA data: l'id con la data dice alla coda delle lezioni da
+      // quando la materia è tracciata, e una data inventata a ogni
+      // caricamento spostava in avanti quel momento.
+      id: typeof f.id === 'string' && f.id ? f.id : `fonte_legacy_${Math.random().toString(36).slice(2, 10)}`
     }))
     .filter((f) => f.pagine > 0);
 }
