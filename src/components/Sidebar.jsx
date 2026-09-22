@@ -256,12 +256,12 @@ export default function Sidebar({ currentPage, navigate }) {
                   className={`w-6 h-6 shrink-0 group-hover:scale-110 transition-transform duration-300 ${active ? 'text-primary' : ''}`}
                 />
                 <span className="tracking-wide leading-snug min-w-0">{item.label}</span>
-                {item.route === ROUTES.CAMPUS && derived.campus?.coda?.length > 0 && (
+                {item.route === ROUTES.CAMPUS && derived.campus?.lezioniInCoda > 0 && (
                   <span
                     className="ml-auto min-w-[1.25rem] h-5 px-1.5 rounded-full bg-accent/20 text-accent text-[11px] font-mono font-bold flex items-center justify-center shrink-0"
-                    aria-label={`${derived.campus.coda.length} lezioni da sistemare`}
+                    aria-label={derived.campus.lezioniInCoda === 1 ? '1 lezione da sistemare' : `${derived.campus.lezioniInCoda} lezioni da sistemare`}
                   >
-                    {derived.campus.coda.length}
+                    {derived.campus.lezioniInCoda}
                   </span>
                 )}
                 {item.route === ROUTES.QUADRANT_HUB && derived.upcomingReviews.length > 0 && (

@@ -42,8 +42,19 @@ import { CARD, CARD_BARE, CARD_ALERT, BTN_PRIMARY, BTN_SECONDARY, BTN_AMBER, BTN
  * neutro — un dato informativo ("se dovessi iniziare oggi questa
  * materia, servirebbe questo ritmo"), mai un'istruzione per la giornata
  * odierna, che resta dominata dalla materia in focus. */
+/** V40.0 — una materia senza data non è "in attenzione": non ha una
+ * scadenza da rischiare. Stile neutro, nessuna pulsazione. */
+const SENZA_DATA_META = {
+  label: 'Senza data',
+  badgeClass: 'bg-slate-800/60 text-slate-300 border-slate-500/30',
+  dotClass: 'bg-slate-500',
+  cardClass: 'bg-surface/60 border-white/10',
+  glowStyle: undefined
+};
+
 function QuotaRow({ q, today = true }) {
-  const statusMeta = QUOTA_STATUS_META[q.status];
+  const senzaData = q.daysRemaining == null && !q.dataScaduta && !q.frozen && q.status === 'ATTENZIONE';
+  const statusMeta = senzaData ? SENZA_DATA_META : QUOTA_STATUS_META[q.status];
   // V39.0 — nelle materie in focus si mostrano le ore REALMENTE ripartite
   // dal budget del giorno (`assignedHours`), non la quota grezza: con due
   // materie in focus le righe dicevano 4h + 3h mentre il budget ne
@@ -67,12 +78,6 @@ function QuotaRow({ q, today = true }) {
           {!q.frozen && !today && Number.isFinite(q.dailyQuotaHours) && q.dailyQuotaHours > 0 && (
             <span className={BADGE.slate}>Ritmo: {formatHoursMinutes(q.dailyQuotaHours)}/giorno</span>
           )}
-          {today && q.promossaDaLezione && (
-            <span className={BADGE.cyan} title="Hai avuto lezione di questa materia: la sintesi di oggi è la più redditizia">
-              <Icon name="calendar" className="w-3 h-3" />
-              lezione di oggi
-            </span>
-          )}
         </span>
       </div>
       {q.frozen ? (
@@ -86,7 +91,7 @@ function QuotaRow({ q, today = true }) {
               Karen: traiettoria insostenibile. Rischio esaurimento. Consigliato rinvio appello.
             </p>
           )}
-          {q.status === 'ATTENZIONE' && q.hasNodes && !q.cumulativeOverload && (
+          {q.status === 'ATTENZIONE' && !senzaData && q.hasNodes && !q.cumulativeOverload && (
             <p className="text-xs text-accent mt-1.5 leading-relaxed">
               Karen: il ritmo attuale è leggermente indietro rispetto alla Fine Prevista — nessun panico, ma non rallentare.
             </p>
@@ -106,8 +111,21 @@ function QuotaRow({ q, today = true }) {
               ? 'Esame oggi'
               : `${q.daysRemaining}gg all'esame`}
             {' · '}
-            {formatHoursMinutes(q.hoursRemaining)} residue
-            {q.hasNodes && <span className="text-slate-600"> · basata sui Nodi dello Skill Tree</span>}
+            {q.stimaDaCfu && q.daysRemaining == null ? (
+              <span>
+                nessun nodo: fuori dal piano finché non mappi il programma o fissi l’esame
+                <span className="text-slate-600"> (stima dai CFU: {formatHoursMinutes(q.hoursRemaining)})</span>
+              </span>
+            ) : (
+              <>
+                {formatHoursMinutes(q.hoursRemaining)} residue
+                {q.hasNodes ? (
+                  <span className="text-slate-600"> · basata sui Nodi dello Skill Tree</span>
+                ) : (
+                  <span className="text-slate-600"> · stima dai CFU</span>
+                )}
+              </>
+            )}
           </p>
         </>
       )}
@@ -135,7 +153,12 @@ function CampusStrip({ campus }) {
       <span className="min-w-0 flex-1">
         <span className="block text-[11px] font-mono tracking-widest text-cyan-300">
           LEZIONI{campus.settimana ? ` · SETTIMANA ${campus.settimana}` : ''}
-          {campus.coda?.length > 0 && <span className="text-accent"> · {campus.coda.length} DA SISTEMARE</span>}
+          {campus.lezioniInCoda > 0 && (
+            <span className="text-accent">
+              {' '}
+              · {campus.lezioniInCoda === 1 ? '1 LEZIONE' : `${campus.lezioniInCoda} LEZIONI`} DA SISTEMARE
+            </span>
+          )}
         </span>
         <span className="flex flex-wrap gap-x-3 gap-y-1 mt-1 text-sm">
           {oggi.length === 0 ? (
@@ -212,12 +235,32 @@ function NowCard({ target, minutes, budget, canStart, onStart, onOpenDetails, de
           <p className="text-sm text-secondary leading-relaxed border-l-2 border-secondary/40 pl-3">{target.metodo}</p>
         )}
 
+        {/* V40.0 — il secondo candidato, dichiarato: "POI". */}
+        {target?.dopo && (
+          <p className="text-sm text-slate-400 flex items-start gap-2">
+            <span className="text-[11px] font-mono tracking-[0.2em] text-slate-500 mt-0.5 shrink-0">POI</span>
+            <span className="min-w-0">
+              <span className="text-slate-200">{target.dopo.testo}</span>
+              {target.dopo.minuti ? (
+                <span className="text-slate-500">
+                  {' '}
+                  · {formatHoursMinutes(target.dopo.minuti / 60)} {target.dopo.etichetta}
+                </span>
+              ) : target.dopo.nota ? (
+                <span className="text-slate-500"> · {target.dopo.nota}</span>
+              ) : null}
+            </span>
+          </p>
+        )}
+
         {/* Budget del giorno: una riga, non due numeri da sommare a mente. */}
-        {budget && budget.totalNeedHours > 0 && (
+        {budget && ((budget.assegnateHours ?? budget.totalNeedHours) > 0 || budget.sintesiHours > 0) && (
           <div className="flex items-center gap-2 flex-wrap text-xs">
             <span className={budget.overCapacity ? BADGE.red : BADGE.blue}>
               <Icon name="clock" className="w-3 h-3" />
-              Oggi: {formatHoursMinutes(budget.totalNeedHours)} su {formatHoursMinutes(budget.budgetHours)} disponibili
+              Oggi: {formatHoursMinutes(budget.assegnateHours ?? budget.totalNeedHours)} di studio
+              {budget.sintesiHours > 0 ? ` + ${formatHoursMinutes(budget.sintesiHours)} di sintesi` : ''} su{' '}
+              {formatHoursMinutes(budget.budgetHours)} disponibili
             </span>
             {budget.overCapacity && (
               <span className="text-primary">
@@ -340,7 +383,6 @@ export default function MissionControl() {
       return () => clearTimeout(timeoutId);
     }
     prevQuestsRef.current = dailyQuests;
-     
   }, [dailyQuests]);
 
   // V28.1 — Pillar 3 (Spider-Sense Focus Surge): l'animazione di sblocco è
@@ -521,17 +563,24 @@ export default function MissionControl() {
    * suggerire.
    */
   const nowTarget = useMemo(() => {
-    // V39.0 — in modalità Lezioni, se c'è una lezione da sistemare e
-    // nessun esame imminente impone il monotask, la cosa da fare ADESSO è
-    // quella: trasformare la lezione in appunti finché è fresca. È il
-    // lavoro di sintesi col rendimento più alto, e ha una scadenza
-    // naturale che nessun altro bersaglio ha.
+    // V40.0 — due candidati, e un arbitro.
+    //  - lo STUDIO per gli esami (argomento scelto oggi da K.A.R.E.N.,
+    //    altrimenti il Primary Target di materia);
+    //  - la SINTESI di una lezione davvero da sistemare (coda del Campus,
+    //    solo con fonti aperte o non dichiarata già fatta).
+    // La lezione passa davanti solo se il piano lo consente
+    // (`karenSintesi.prima`: nessun esame in focus a rischio, niente
+    // monotask) o se non c'è altro da fare. Altrimenti resta come "POI":
+    // visibile, con il suo tempo riservato, ma mai sopra un esame che
+    // rischia di non starci. Prima vinceva sempre la lezione.
     const campus = derived.campus;
-    if (campus?.fase === 'LEZIONI' && campus.coda?.length > 0 && !derived.karenMonotaskActive) {
+    const sintesiPlan = derived.karenSintesi;
+    let lezione = null;
+    if (campus?.fase === 'LEZIONI' && campus.coda?.length > 0) {
       const l = campus.coda[0];
       const materia = materie.find((m) => m.id === l.materiaId);
       const nodo = nodoInSintesi(materia);
-      return {
+      lezione = {
         argomento: nodo ? nodo.nome : `Appunti di ${l.materia.nome}`,
         materia: `${l.materia.nome} · sistema la lezione ${
           l.lezioniDaSistemare > 1 ? `(${l.lezioniDaSistemare} lezioni)` : `delle ${l.inizio}`
@@ -543,31 +592,60 @@ export default function MissionControl() {
         metodo: 'Modalità Sintesi: dal libro, dalle slide e da ciò che hai scritto in aula ai tuoi appunti definitivi.',
         materiaId: l.materiaId,
         sfidaId: nodo?.id || null,
-        daLezione: true
+        daLezione: true,
+        breve: `Sistema la lezione di ${l.materia.nome}`
       };
     }
+    let studio = null;
     if (liveStudyFocus.primary) {
-      return {
+      studio = {
         argomento: liveStudyFocus.primary.argomento,
         materia: liveStudyFocus.primary.materia,
         rationale: liveStudyFocus.primary.rationale,
         metodo: liveStudyFocus.primary.metodo,
         materiaId: liveStudyFocus.primary.materiaId || null,
-        sfidaId: liveStudyFocus.primary.sfidaId || null
+        sfidaId: liveStudyFocus.primary.sfidaId || null,
+        breve: liveStudyFocus.primary.argomento
       };
-    }
-    if (derived.primaryTarget) {
-      return {
+    } else if (derived.primaryTarget) {
+      studio = {
         argomento: derived.primaryTarget.materia.nome,
         materia: `Primary Target · Spider-Score ${derived.primaryTarget.spiderScore}`,
         rationale: derived.primaryTarget.reason,
         metodo: null,
         materiaId: derived.primaryTarget.materia.id,
-        sfidaId: null
+        sfidaId: null,
+        breve: derived.primaryTarget.materia.nome
+      };
+    }
+    const minutiSintesi = Math.round((sintesiPlan?.riservateOre || 0) * 60);
+    if (lezione && (sintesiPlan?.prima || !studio)) {
+      const oreStudio = derived.karenDailyFocusQuotas?.find((q) => q.materiaId === studio?.materiaId)?.assignedHours;
+      return {
+        ...lezione,
+        dopo: studio
+          ? { testo: studio.breve, minuti: Number.isFinite(oreStudio) && oreStudio > 0 ? Math.round(oreStudio * 60) : null, etichetta: 'di studio oggi' }
+          : null
+      };
+    }
+    if (studio) {
+      return {
+        ...studio,
+        dopo: lezione
+          ? minutiSintesi > 0
+            ? { testo: lezione.breve, minuti: minutiSintesi, etichetta: 'riservati oggi' }
+            : {
+                testo: lezione.breve,
+                minuti: null,
+                nota: derived.karenMonotaskActive
+                  ? 'dopo l’esame: con un appello entro 10 giorni il tempo va tutto lì'
+                  : 'quando avanzi tempo: oggi gli esami occupano tutta la giornata'
+              }
+          : null
       };
     }
     return null;
-  }, [liveStudyFocus, derived.primaryTarget, derived.campus, derived.karenMonotaskActive, materie]);
+  }, [liveStudyFocus, derived.primaryTarget, derived.campus, derived.karenSintesi, derived.karenDailyFocusQuotas, derived.karenMonotaskActive, materie]);
 
   /** Avvio in un solo gesto dalla card "ADESSO": seleziona il bersaglio
    * (così i due Dropdown restano coerenti con ciò che sta girando) e fa
@@ -1051,9 +1129,16 @@ export default function MissionControl() {
                     <span className="text-[11px] font-mono tracking-widest text-slate-500">BUDGET DI OGGI</span>
                     <span className={derived.karenBudget.overCapacity ? BADGE.red : BADGE.green}>
                       {formatHoursMinutes(derived.karenBudget.totalNeedHours)} richieste /{' '}
-                      {formatHoursMinutes(derived.karenBudget.budgetHours)} disponibili
+                      {formatHoursMinutes(derived.karenBudget.studioHours ?? derived.karenBudget.budgetHours)} per lo studio
                     </span>
                   </div>
+                  {derived.karenBudget.sintesiHours > 0 && (
+                    <p className="text-xs text-cyan-300/90 mt-1.5">
+                      + {formatHoursMinutes(derived.karenBudget.sintesiHours)} riservate alla sintesi delle lezioni (su{' '}
+                      {formatHoursMinutes(derived.karenBudget.budgetHours)} della giornata), prese solo dal tempo che gli
+                      esami lasciano libero.
+                    </p>
+                  )}
                   <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
                     {derived.karenBudget.overCapacity ? (
                       <>
@@ -1215,12 +1300,23 @@ export default function MissionControl() {
                   strokeLinecap="round"
                   strokeDasharray={circumference}
                   strokeDashoffset={dashOffset}
-                  className={`${ringColor} transition-[stroke-dashoffset] duration-[250ms] ease-linear`}
+                  // V40.0 — niente transizione CSS sull'anello: con un tick
+                  // ogni 250 ms la transizione di 250 ms lo teneva in
+                  // animazione continua, ridisegnando l'ombra luminosa a
+                  // ogni frame per tutta la sessione. Il passo per tick è
+                  // di una frazione di pixel: a occhio è identico.
+                  className={ringColor}
                   style={{ filter: `drop-shadow(0 0 10px currentColor)` }}
                 />
               </svg>
               <div className="absolute flex flex-col items-center">
-                <p className="text-4xl sm:text-5xl font-mono font-bold af-mono-nums tabular-nums text-white">{formatClock(timer.remainingSeconds)}</p>
+                {/* V40.0 — a timer fermo mostra la durata del prossimo blocco
+                    (25:00), non un "00:00" che sembra un conto già finito. */}
+                <p className="text-4xl sm:text-5xl font-mono font-bold af-mono-nums tabular-nums text-white">
+                  {timer.status === TIMER_STATUS.IDLE && !timer.awaitingDebrief
+                    ? formatClock(Math.round((Number(effectiveFocusMinutes) || 25) * 60))
+                    : formatClock(timer.remainingSeconds)}
+                </p>
                 <p className="text-base text-slate-400 mt-2 tracking-widest">
                   {timer.status === TIMER_STATUS.FOCUS && (timer.isOverdriveActive ? 'OVERDRIVE' : 'FOCUS')}
                   {timer.status === TIMER_STATUS.BREAK && 'PAUSA'}

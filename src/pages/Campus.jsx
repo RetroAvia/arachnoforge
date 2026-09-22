@@ -22,7 +22,9 @@ import {
   suggestSemestre,
   validateLezione,
   nodoInSintesi,
-  isValidDateKey
+  isValidDateKey,
+  STATO_LEZIONE,
+  ESITO_LEZIONE
 } from '../utils/campusEngine.js';
 
 /**
@@ -232,8 +234,51 @@ function PhaseCard({ snap, onSetOverride }) {
  * OGGI
  * ================================================================== */
 
-function TodayCard({ snap, materieById, onAvviaSintesi }) {
+/** V40.0 — stato di sintesi di una lezione già finita, come chip. */
+const SINTESI_CHIP = {
+  [STATO_LEZIONE.DA_FARE]: { label: 'da sistemare', cls: 'text-accent border-accent/40 bg-accent/10' },
+  [STATO_LEZIONE.FATTA]: { label: 'sistemata', cls: 'text-emerald-300 border-emerald-400/40 bg-emerald-500/10', manuale: true },
+  [STATO_LEZIONE.FATTA_APP]: { label: 'sistemata', cls: 'text-emerald-300 border-emerald-400/40 bg-emerald-500/10' },
+  [STATO_LEZIONE.FATTA_NODI]: { label: 'sistemata sui nodi', cls: 'text-emerald-300 border-emerald-400/40 bg-emerald-500/10' },
+  [STATO_LEZIONE.SALTATA]: { label: 'niente da sistemare', cls: 'text-slate-400 border-white/15 bg-white/[0.03]', manuale: true },
+  [STATO_LEZIONE.NIENTE]: { label: 'nessuna fonte aperta', cls: 'text-slate-500 border-white/10 bg-transparent' }
+};
+
+const MOTIVO_NIENTE = {
+  NESSUNA_FONTE: 'nessuna fonte nei nodi',
+  PRIMA_DELLE_FONTI: 'prima delle fonti',
+  FONTI_CHIUSE: 'fonti già snellite'
+};
+
+function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
   const prossima = snap.prossima;
+  const lezioniInCoda = snap.coda.reduce((n, l) => n + l.lezioniDaSistemare, 0);
+  const renderStato = (l, chip, dove) => {
+    if (!chip) {
+      return (
+        <span className={`text-[11px] font-mono whitespace-nowrap ${l.stato === 'IN_CORSO' ? 'text-cyan-300' : 'text-slate-400'}`}>
+          {l.stato === 'IN_CORSO' ? '● in corso' : 'più tardi'}
+        </span>
+      );
+    }
+    const cls = `text-[11px] font-mono whitespace-nowrap rounded-full border px-2 py-0.5 ${chip.cls}`;
+    return chip.manuale ? (
+      <button
+        type="button"
+        onClick={() => onEsito([{ id: l.id, dateKey: snap.oggi }], null)}
+        title="Annulla la scelta"
+        aria-label={`Annulla: ${chip.label}`}
+        className={`${cls} hover:brightness-125`}
+        data-pos={dove}
+      >
+        {chip.label} ×
+      </button>
+    ) : (
+      <span className={cls} data-pos={dove}>
+        {chip.label}
+      </span>
+    );
+  };
   return (
     <section className={`${CARD} space-y-5`}>
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -242,7 +287,7 @@ function TodayCard({ snap, materieById, onAvviaSintesi }) {
           OGGI · {GIORNI[isoWeekday(snap.oggi)].toUpperCase()}
         </h2>
         {prossima && !prossima.inCorso && (
-          <span className={BADGE.cyan}>
+          <span className={`${BADGE.cyan} max-w-full !whitespace-normal text-left leading-snug`}>
             Prossima: {prossima.materia.nome} · {quandoProssima(prossima)}
           </span>
         )}
@@ -257,6 +302,11 @@ function TodayCard({ snap, materieById, onAvviaSintesi }) {
         <ol className="space-y-2">
           {snap.lezioniOggi.map((l) => {
             const c = colorFor(l.materiaId);
+            const chip = l.sintesi
+              ? l.sintesi === STATO_LEZIONE.NIENTE
+                ? { ...SINTESI_CHIP[l.sintesi], label: MOTIVO_NIENTE[l.motivo] || SINTESI_CHIP[l.sintesi].label }
+                : SINTESI_CHIP[l.sintesi]
+              : null;
             return (
               <li
                 key={l.id}
@@ -280,14 +330,11 @@ function TodayCard({ snap, materieById, onAvviaSintesi }) {
                     {TIPO_LEZIONE_META[l.tipo].label}
                     {l.aula ? ` · ${l.aula}` : ''}
                   </span>
+                  <span className="flex sm:hidden mt-1.5">{renderStato(l, chip, 'below')}</span>
                 </span>
-                <span
-                  className={`text-[11px] font-mono shrink-0 ${
-                    l.stato === 'IN_CORSO' ? 'text-cyan-300' : l.stato === 'FINITA' ? 'text-slate-500' : 'text-slate-400'
-                  }`}
-                >
-                  {l.stato === 'IN_CORSO' ? '● in corso' : l.stato === 'FINITA' ? 'finita' : 'più tardi'}
-                </span>
+                {/* V40.0 — su telefono lo stato va SOTTO il nome: accanto,
+                    con testo lungo, schiacciava il nome a una lettera per riga. */}
+                <span className="hidden sm:flex shrink-0">{renderStato(l, chip, 'right')}</span>
               </li>
             );
           })}
@@ -295,21 +342,23 @@ function TodayCard({ snap, materieById, onAvviaSintesi }) {
       )}
 
       <div className="pt-4 border-t border-white/10 space-y-3">
-        <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center justify-between gap-x-3 gap-y-1 flex-wrap">
           <p className="text-sm font-bold tracking-widest text-accent flex items-center gap-2">
             <Icon name="flask" className="w-4 h-4" />
             DA SISTEMARE
           </p>
           {snap.coda.length > 0 && (
-            <span className="text-xs text-slate-500">
-              {snap.coda.length === 1 ? '1 lezione' : `${snap.coda.length} materie`} ancora da trasformare in appunti
+            <span className="text-xs text-slate-500 min-w-0">
+              {lezioniInCoda === 1 ? '1 lezione' : `${lezioniInCoda} lezioni`} ·{' '}
+              {minutiLabel(snap.sintesiDovutaMin)} di sintesi
             </span>
           )}
         </div>
         {snap.coda.length === 0 ? (
           <p className="text-sm text-slate-400 leading-relaxed">
-            Tutto in pari: nessuna lezione delle ultime 72 ore aspetta di essere sistemata. Una lezione esce da qui quando
-            chiudi una sessione in modo <span className="text-accent">Sintesi</span> su quella materia.
+            Niente in sospeso. Una lezione finisce qui solo se la materia ha fonti ancora da snellire nei suoi nodi, ed
+            esce appena la sistemi: con una sessione in modo <span className="text-accent">Sintesi</span>, aggiornando la
+            sintesi del nodo a mano, oppure segnandola come fatta.
           </p>
         ) : (
           <ul className="space-y-2.5">
@@ -317,15 +366,13 @@ function TodayCard({ snap, materieById, onAvviaSintesi }) {
               const materia = materieById.get(l.materiaId);
               const nodo = nodoInSintesi(materia);
               const c = colorFor(l.materiaId);
+              const occorrenze = l.lezioni || [];
               return (
-                <li
-                  key={`${l.materiaId}_${l.dateKey}`}
-                  className="rounded-xl border border-accent/30 bg-accent/[0.06] p-3 flex flex-col sm:flex-row sm:items-center gap-3"
-                >
-                  <div className="flex items-start gap-3 min-w-0 flex-1">
+                <li key={`${l.materiaId}_${l.dateKey}`} className="rounded-xl border border-accent/30 bg-accent/[0.06] p-3 space-y-3">
+                  <div className="flex items-start gap-3 min-w-0">
                     <span className={`w-2.5 h-2.5 mt-1.5 rounded-full shrink-0 ${c.dot}`} />
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-slate-100">{l.materia.nome}</p>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-slate-100 break-words">{l.materia.nome}</p>
                       <p className="text-xs text-slate-400 mt-0.5">
                         {l.lezioniDaSistemare > 1
                           ? `${l.lezioniDaSistemare} lezioni (${minutiLabel(l.minutiDaSistemare)})`
@@ -333,29 +380,52 @@ function TodayCard({ snap, materieById, onAvviaSintesi }) {
                         {' · '}
                         {l.oreFa < 1 ? 'appena finita' : `${l.oreFa}h fa`}
                       </p>
-                      <p className="text-xs mt-1 text-slate-500">
-                        {nodo ? (
-                          <>
-                            Argomento in sintesi: <span className="text-slate-300">{nodo.nome}</span>
-                          </>
-                        ) : (
-                          'Nessun argomento con fonti aperte: la sessione verrà registrata sulla materia.'
-                        )}
-                      </p>
+                      {nodo && (
+                        <p className="text-xs mt-1 text-slate-500 break-words">
+                          Argomento in sintesi: <span className="text-slate-300">{nodo.nome}</span>
+                        </p>
+                      )}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onAvviaSintesi(l.materiaId, nodo?.id || null)}
-                    className={`${BTN_PRIMARY} !px-4 !py-2.5 shrink-0 w-full sm:w-auto`}
-                  >
-                    <Icon name="play" className="w-4 h-4" />
-                    Avvia sintesi
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2 pl-0 sm:pl-5">
+                    <button
+                      type="button"
+                      onClick={() => onAvviaSintesi(l.materiaId, nodo?.id || null)}
+                      className={`${BTN_PRIMARY} !px-4 !py-2 grow sm:grow-0`}
+                    >
+                      <Icon name="play" className="w-4 h-4" />
+                      Avvia sintesi
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onEsito(occorrenze, ESITO_LEZIONE.FATTA)}
+                      className={`${BTN_GHOST} !px-3 !py-2`}
+                      title="L'hai già sistemata, anche fuori dall'app"
+                    >
+                      <Icon name="check" className="w-4 h-4 text-emerald-400" />
+                      Già fatta
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onEsito(occorrenze, ESITO_LEZIONE.SALTATA)}
+                      className={`${BTN_GHOST} !px-3 !py-2`}
+                      title="Non l'hai seguita, o non c'è niente da sistemare"
+                    >
+                      <Icon name="close" className="w-4 h-4" />
+                      Niente da sistemare
+                    </button>
+                  </div>
                 </li>
               );
             })}
           </ul>
+        )}
+        {snap.nonTracciate?.length > 0 && (
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Seguite ma senza fonti nei nodi:{' '}
+            <span className="text-slate-300">{snap.nonTracciate.map((x) => x.materia.nome).join(', ')}</span>. Nessuna
+            sintesi da recuperare: quando aggiungi le fonti ai loro nodi, le lezioni successive entreranno qui.
+          </p>
         )}
       </div>
     </section>
@@ -576,7 +646,8 @@ const PASSO_META = {
   IN_PARI: { label: 'In pari', cls: BADGE.green },
   QUASI: { label: 'Quasi', cls: BADGE.amber },
   INDIETRO: { label: 'Indietro', cls: BADGE.red },
-  NESSUNA_LEZIONE: { label: 'Nessuna lezione ancora', cls: BADGE.slate }
+  NESSUNA_LEZIONE: { label: 'Nessuna lezione ancora', cls: BADGE.slate },
+  NON_TRACCIATA: { label: 'Nessuna fonte nei nodi', cls: BADGE.slate }
 };
 
 function PaceCard({ snap, onSetRapporto }) {
@@ -589,8 +660,9 @@ function PaceCard({ snap, onSetRapporto }) {
           STARE AL PASSO · QUESTA SETTIMANA
         </h2>
         <p className="text-sm text-slate-400 mt-1.5 leading-relaxed">
-          Per ogni ora di lezione già fatta, quanta sintesi le hai dedicato. Il dovuto cresce con le lezioni, non con
-          il calendario: il martedì non devi ancora la sintesi della lezione del giovedì.
+          Per ogni ora di lezione già fatta, quanta sintesi le hai dedicato. Contano solo le lezioni con qualcosa da
+          sistemare; la sintesi fatta fuori dal timer (nodi aggiornati a mano, lezioni segnate come fatte) vale come
+          quella misurata.
         </p>
       </div>
 
@@ -620,8 +692,16 @@ function PaceCard({ snap, onSetRapporto }) {
               </div>
               <p className="text-[11px] font-mono af-mono-nums text-slate-400 flex flex-wrap gap-x-3 gap-y-0.5">
                 <span>{minutiLabel(r.lezioneSettMin)} di lezione a settimana</span>
-                <span>dovute finora {minutiLabel(r.dovutoMin)}</span>
-                <span className="text-slate-200">fatte {minutiLabel(r.sintesiFattaMin)}</span>
+                {r.stato === 'NON_TRACCIATA' ? (
+                  <span>niente da sistemare finché i nodi non hanno fonti</span>
+                ) : (
+                  <>
+                    <span>dovute finora {minutiLabel(r.dovutoMin)}</span>
+                    <span className="text-slate-200">fatte {minutiLabel(r.sintesiFattaMin)}</span>
+                    {r.creditoMin > 0 && <span>di cui {minutiLabel(r.creditoMin)} fuori dal timer</span>}
+                    {r.saltateMin > 0 && <span>{minutiLabel(r.saltateMin)} di lezione senza niente da sistemare</span>}
+                  </>
+                )}
               </p>
             </li>
           );
@@ -1075,7 +1155,16 @@ export default function Campus() {
       ) : (
         <>
           {snap.fase === FASE.LEZIONI && (
-            <TodayCard snap={snap} materieById={materieById} onAvviaSintesi={avviaSintesi} />
+            <TodayCard
+              snap={snap}
+              materieById={materieById}
+              onAvviaSintesi={avviaSintesi}
+              onEsito={(lezioni, esito) => {
+                actions.campusSetEsito(lezioni, esito);
+                if (esito === ESITO_LEZIONE.FATTA) pushToast('Segnata come già sistemata.', 'success');
+                else if (esito === ESITO_LEZIONE.SALTATA) pushToast('Tolta dalla coda: niente da sistemare.', 'info');
+              }}
+            />
           )}
 
           <section className={`${CARD} space-y-4`}>

@@ -2,6 +2,7 @@ import React, { useId, useMemo } from 'react';
 import { Icon } from '../../components/Icons.jsx';
 import { INPUT, INPUT_SM, CARD_NOPAD } from '../../utils/designSystem.js';
 import { formatDateOnlyHuman } from '../../utils/dateUtils.js';
+import { pagineLabel, oreLabel } from '../../utils/format.js';
 import {
   FONTE_TIPO,
   FONTE_TIPO_META,
@@ -21,10 +22,6 @@ import {
 
 const TIPI_ORDINE = [FONTE_TIPO.LIBRO, FONTE_TIPO.SLIDE, FONTE_TIPO.APPUNTI_PROF, FONTE_TIPO.ALTRO];
 
-function oreLabel(ore) {
-  if (!ore) return '0h';
-  return ore >= 10 ? `${Math.round(ore)}h` : `${ore}h`;
-}
 
 /* ================================================================== *
  * EDITOR DELLE FONTI DI UN NODO
@@ -166,7 +163,7 @@ function FonteRow({ fonte, indice, onChange, onRemove }) {
           <p className="flex items-center justify-between gap-2 text-[11px] font-mono af-mono-nums">
             <span className="text-slate-400">{pct}% snellito</span>
             <span className={residue > 0 ? 'text-accent' : 'text-emerald-400'}>
-              {residue > 0 ? `${residue} pagine da snellire` : 'fonte completata'}
+              {residue > 0 ? `${pagineLabel(residue)} da snellire` : 'fonte completata'}
             </span>
           </p>
         </div>
@@ -332,7 +329,7 @@ export function FontiEditor({
           <div className="flex items-center justify-between gap-2 flex-wrap text-sm">
             <span className="text-slate-400">Appunti finali previsti</span>
             <span className="font-mono af-mono-nums text-slate-100">
-              {anteprima.pagineAppuntiProiettate} pagine
+              {pagineLabel(anteprima.pagineAppuntiProiettate)}
               {anteprima.pagineAppuntiDaProdurre > 0 && (
                 <span className="text-slate-500">
                   {' '}
@@ -406,7 +403,7 @@ export function NodeWorkSummary({ sfida, calibration }) {
           </div>
           {b.oreSintesiResidue > 0 && (
             <p className="text-[11px] text-accent">
-              {b.fontiResidue} pagine ancora da snellire · ≈ {oreLabel(b.oreSintesiResidue)}
+              {pagineLabel(b.fontiResidue)} ancora da snellire · ≈ {oreLabel(b.oreSintesiResidue)}
             </p>
           )}
           {b.sintesiConclusa && (
@@ -421,11 +418,13 @@ export function NodeWorkSummary({ sfida, calibration }) {
       <div className="flex items-center justify-between gap-2 text-sm pt-1 border-t border-white/5">
         <span className="text-slate-400">I tuoi appunti</span>
         <span className="font-mono af-mono-nums text-slate-200">
-          {b.pagineAppunti}
-          {b.pagineAppuntiDaProdurre > 0 && (
-            <span className="text-slate-500"> → {b.pagineAppuntiProiettate} previste</span>
-          )}{' '}
-          pagine
+          {b.pagineAppuntiDaProdurre > 0 ? (
+            <>
+              {b.pagineAppunti} <span className="text-slate-500">→ {pagineLabel(b.pagineAppuntiProiettate)} previste</span>
+            </>
+          ) : (
+            pagineLabel(b.pagineAppunti)
+          )}
         </span>
       </div>
       <div className="flex items-center justify-between gap-2 text-sm">
@@ -547,13 +546,13 @@ export function PianoAppuntiPanel({ plan, materiaNome, passo = null }) {
             </p>
             <p className="text-sm text-slate-200">
               Sintesi di questa settimana:{' '}
-              <span className="font-mono af-mono-nums">{oreLabel(Math.round((passo.sintesiFattaMin / 60) * 10) / 10)}</span> su{' '}
-              <span className="font-mono af-mono-nums">{oreLabel(Math.round((passo.dovutoMin / 60) * 10) / 10)}</span> dovute per
+              <span className="font-mono af-mono-nums">{oreLabel(passo.sintesiFattaMin / 60)}</span> su{' '}
+              <span className="font-mono af-mono-nums">{oreLabel(passo.dovutoMin / 60)}</span> dovute per
               le lezioni già fatte
               {passo.mancanoMin > 0 && (
                 <span className="text-slate-400">
                   {' '}
-                  — mancano {oreLabel(Math.round((passo.mancanoMin / 60) * 10) / 10)}
+                  — mancano {oreLabel(passo.mancanoMin / 60)}
                 </span>
               )}
               .
@@ -565,7 +564,7 @@ export function PianoAppuntiPanel({ plan, materiaNome, passo = null }) {
         {plan.quotaSintesiOggi > 0 && (
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <span className="text-sm text-slate-400">Da snellire oggi</span>
-            <span className="font-mono af-mono-nums text-lg text-accent">{plan.quotaSintesiOggi} pagine</span>
+            <span className="font-mono af-mono-nums text-lg text-accent">{pagineLabel(plan.quotaSintesiOggi)}</span>
           </div>
         )}
 
@@ -585,7 +584,7 @@ export function PianoAppuntiPanel({ plan, materiaNome, passo = null }) {
           <div className="flex items-center justify-between gap-2 text-xs font-mono flex-wrap">
             <span className="text-accent">
               {oreLabel(plan.oreSintesiResidue)} di sintesi
-              {plan.fontiResidue > 0 && <span className="text-slate-500"> · {plan.fontiResidue} pagine</span>}
+              {plan.fontiResidue > 0 && <span className="text-slate-500"> · {pagineLabel(plan.fontiResidue)}</span>}
             </span>
             <span className="text-secondary">{oreLabel(plan.oreStudioResidue)} di studio</span>
           </div>
@@ -601,7 +600,8 @@ export function PianoAppuntiPanel({ plan, materiaNome, passo = null }) {
           <div>
             <p className="text-[11px] tracking-wide text-slate-500">APPUNTI FINALI</p>
             <p className="font-mono af-mono-nums text-sm text-slate-200">
-              {plan.pagineAppuntiProiettate} <span className="text-slate-500">pagine previste</span>
+              {plan.pagineAppuntiProiettate}{' '}
+              <span className="text-slate-500">{plan.pagineAppuntiProiettate === 1 ? 'pagina prevista' : 'pagine previste'}</span>
             </p>
           </div>
         </div>

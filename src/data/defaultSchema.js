@@ -35,7 +35,10 @@ import { createDefaultCampus, normalizeCampus } from '../utils/campusEngine.js';
  *  - `sfida.focusMinutesSintesi` / `focusMinutesStudio` — le ore spese
  *    nei due modi, separate perché i due ritmi vanno misurati a parte.
  */
-export const SCHEMA_VERSION = '12.0.0';
+// V40.0 (12.1.0): `campus.esiti` (lezioni segnate "già fatta" / "niente
+// da sistemare") e `sfida.sintesiAggiornataAt` (sintesi registrata a mano
+// sul nodo). La migrazione conserva ora anche `chiusoDaVerbale`.
+export const SCHEMA_VERSION = '12.1.0';
 // V39.0 (12.0.0): `campus` — semestri, orario settimanale, fase di
 // studio (lezioni/sessione). Vedi utils/campusEngine.js. `sfida.
 // chiusoDaVerbale` marca i nodi chiusi d'ufficio dall'esame verbalizzato,
@@ -311,7 +314,17 @@ function migrateSfida(raw, index, arr) {
     // Facile/Medio vs Difficile per nodo, alimentano `utils/friction.js`.
     // Blindati a interi >= 0 anche da un import/salvataggio corrotto.
     tentativiSuccessi: Number.isFinite(raw.tentativiSuccessi) && raw.tentativiSuccessi >= 0 ? raw.tentativiSuccessi : 0,
-    tentativiFalliti: Number.isFinite(raw.tentativiFalliti) && raw.tentativiFalliti >= 0 ? raw.tentativiFalliti : 0
+    tentativiFalliti: Number.isFinite(raw.tentativiFalliti) && raw.tentativiFalliti >= 0 ? raw.tentativiFalliti : 0,
+    // V40.0 — FIX: questi due campi venivano scartati a ogni caricamento
+    // (la migrazione elenca i campi uno per uno). `chiusoDaVerbale`
+    // (V39) teneva fuori dalla calibrazione i nodi chiusi dall'esame
+    // verbalizzato: dopo un riavvio tornavano campioni e falsavano di
+    // nuovo fattore e ritmo. `sintesiAggiornataAt` (V40) dice alla coda
+    // delle lezioni che la sintesi è stata fatta a mano sul nodo.
+    ...(raw.chiusoDaVerbale === true ? { chiusoDaVerbale: true } : {}),
+    ...(typeof raw.sintesiAggiornataAt === 'string' && Number.isFinite(Date.parse(raw.sintesiAggiornataAt))
+      ? { sintesiAggiornataAt: raw.sintesiAggiornataAt }
+      : {})
   };
 }
 

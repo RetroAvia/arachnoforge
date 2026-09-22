@@ -8,7 +8,7 @@ import { SCHEMA_VERSION, SUITS } from '../data/defaultSchema.js';
 import { validateAdminPassphrase, isAdminPassphraseConfigured } from '../utils/adminOverride.js';
 import { validateImportedProfile } from '../utils/storage.js';
 import { oldestDetailedMonth } from '../utils/starLogMaintenance.js';
-import { formatMonthYearHuman } from '../utils/dateUtils.js';
+import { formatMonthYearHuman, formatHoursMinutes } from '../utils/dateUtils.js';
 import { notificationPermission, requestNotificationPermission, notify, NOTIFY_PERMISSION } from '../utils/systemNotify.js';
 import { CARD, CARD_ALERT, H1, H2, BTN_PRIMARY, BTN_SECONDARY, BTN_GHOST, INPUT } from '../utils/designSystem.js';
 
@@ -685,7 +685,7 @@ export default function CoreConfig() {
         <div className="relative grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
           <div className="bg-white/[0.03] border border-white/10 rounded-xl p-3.5">
             <p className="text-[11px] font-mono tracking-widest text-slate-500">CAPACITÀ GIORNALIERA</p>
-            <p className="text-2xl font-mono font-bold text-white mt-1">{derived.calibration.hoursPerDay}h</p>
+            <p className="text-2xl font-mono font-bold text-white mt-1">{formatHoursMinutes(Number(derived.calibration.hoursPerDay) || 0)}</p>
             <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
               {derived.calibration.capacityConfident
                 ? `Media reale sulle tue ultime ${derived.calibration.observedDays} giornate, giorni di riposo inclusi. Sostituisce il vecchio 4.5h/giorno teorico in ogni proiezione.`

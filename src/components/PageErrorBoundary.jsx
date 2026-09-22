@@ -27,7 +27,6 @@ export default class PageErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, info) {
-     
     console.error('ArachnoForge — errore di rendering intercettato dal Web-Shooter:', error, info?.componentStack);
     // V35.2 — Osservabilità di base: fire-and-forget, non altera in alcun
     // modo il comportamento di recupero esistente sopra/sotto questa riga.

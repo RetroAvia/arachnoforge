@@ -812,7 +812,7 @@ export default function StarLog() {
             <Icon name="alertTriangle" className="w-5 h-5 text-accent" />
             RADAR SPIDER-SENSE
           </span>
-          <Dropdown value={sortKey} onChange={setSortKey} options={SORT_OPTIONS} className="w-64" />
+          <Dropdown value={sortKey} onChange={setSortKey} options={SORT_OPTIONS} className="w-full sm:w-64" />
         </div>
 
         {sortedReviews.length === 0 ? (
@@ -823,7 +823,42 @@ export default function StarLog() {
             subtitle="Nessun ripasso in sospeso — torna dopo aver completato nuovi nodi."
           />
         ) : (
-          <div className="relative overflow-x-auto af-scroll">
+          <>
+          {/* V40.0 — su telefono una scheda per ripasso, con i tre pulsanti
+              a tutta larghezza: la tabella a cinque colonne costringeva a
+              scorrere di lato per arrivare a "Medio" e "Difficile". */}
+          <ul className="relative sm:hidden space-y-2.5">
+            {sortedReviews.map((row) => {
+              const diffMeta = DIFFICULTY_META[row.difficulty] || DIFFICULTY_META.MEDIUM;
+              return (
+                <li key={row.sfidaId} className="rounded-xl border border-white/10 bg-surface/60 p-3 space-y-2.5">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-100 break-words">{row.sfidaNome}</p>
+                    <p className="text-xs text-slate-500 break-words">{row.materiaNome}</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap text-xs">
+                    <span className={`font-mono px-2 py-0.5 rounded-full border ${diffMeta.border} ${diffMeta.color}`}>{diffMeta.label}</span>
+                    <span className="font-mono text-accent">
+                      ripasso da {row.nextReviewDate ? formatDateOnlyHuman(row.nextReviewDate) : '—'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {Object.values(REVIEW_RATING).map((rating) => (
+                      <button
+                        key={rating}
+                        type="button"
+                        onClick={() => actions.reviewSfida(row.materiaId, row.sfidaId, rating)}
+                        className={`text-sm py-2 rounded-lg border ${REVIEW_RATING_META[rating].border} ${REVIEW_RATING_META[rating].color} bg-white/[0.02] hover:brightness-125 transition-all duration-300`}
+                      >
+                        {REVIEW_RATING_META[rating].label}
+                      </button>
+                    ))}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="relative hidden sm:block overflow-x-auto af-scroll">
             <table className="w-full text-base">
               <thead>
                 <tr className="text-left text-base text-slate-500 border-b border-white/10">
@@ -836,7 +871,7 @@ export default function StarLog() {
               </thead>
               <tbody>
                 {sortedReviews.map((row) => {
-                  const diffMeta = DIFFICULTY_META[row.difficulty];
+                  const diffMeta = DIFFICULTY_META[row.difficulty] || DIFFICULTY_META.MEDIUM;
                   return (
                     <tr key={row.sfidaId} className="border-b border-white/5 hover:bg-white/5 transition-all duration-300">
                       <td className="py-2.5 pr-4 text-slate-200">{row.materiaNome}</td>
@@ -846,7 +881,9 @@ export default function StarLog() {
                           {diffMeta.label}
                         </span>
                       </td>
-                      <td className="py-2.5 pr-4 font-mono text-accent">{row.nextReviewDate}</td>
+                      <td className="py-2.5 pr-4 font-mono text-accent whitespace-nowrap">
+                        {row.nextReviewDate ? formatDateOnlyHuman(row.nextReviewDate) : '—'}
+                      </td>
                       <td className="py-2.5 pr-4">
                         <div className="flex gap-1.5">
                           {Object.values(REVIEW_RATING).map((rating) => (
@@ -867,6 +904,7 @@ export default function StarLog() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </div>
 

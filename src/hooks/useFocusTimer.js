@@ -221,7 +221,6 @@ export function useFocusTimer({
       reminderThresholdRef.current = reachedThresholds;
       audio.playFocusReminder();
     }
-     
   }, [rawTimer.status, rawTimer.remainingSeconds, rawTimer.totalSeconds, pendingFocus.totalMinutes, audio]);
 
   const startFocus = useCallback((materiaId = null, sfidaId = null, overdrive = false) => {

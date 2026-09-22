@@ -36,10 +36,10 @@ export {
 
 /**
  * @param {Array} materie state.materie corrente
- * @param {{calibration?:object, loadAdjustmentPct?:number, priorityIds?:Set<string>|null}} options
+ * @param {{calibration?:object, loadAdjustmentPct?:number, sintesiLezioni?:Array<{materiaId:string, ore:number}>|null}} options
  */
 export function useKarenAutoRouter(materie, options = {}) {
-  const { calibration = null, loadAdjustmentPct = 0, priorityIds = null } = options;
+  const { calibration = null, loadAdjustmentPct = 0, sintesiLezioni = null } = options;
   const [dayKey, setDayKey] = useState(todayDateOnlyKey);
 
   // Battito leggero: ricontrolla la chiave del giorno ogni minuto, così il
@@ -53,14 +53,16 @@ export function useKarenAutoRouter(materie, options = {}) {
     return () => clearInterval(id);
   }, []);
 
-  // `priorityIds` è un Set: lo si confronta per contenuto, non per
-  // identità, così un Set ricreato con gli stessi id non invalida il piano.
-  const priorityKey = priorityIds && priorityIds.size ? [...priorityIds].sort().join('|') : '';
+  // Confronto per contenuto: un elenco ricreato identico (ogni minuto,
+  // col battito del Campus) non invalida il piano.
+  const sintesiKey = Array.isArray(sintesiLezioni)
+    ? sintesiLezioni.map((v) => `${v.materiaId}:${Math.round((Number(v.ore) || 0) * 100)}`).join('|')
+    : '';
 
   return useMemo(
-    () => computeDailyPlan(materie, { calibration, loadAdjustmentPct, priorityIds }),
+    () => computeDailyPlan(materie, { calibration, loadAdjustmentPct, sintesiLezioni }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [materie, calibration, loadAdjustmentPct, priorityKey, dayKey]
+    [materie, calibration, loadAdjustmentPct, sintesiKey, dayKey]
   );
 }
 

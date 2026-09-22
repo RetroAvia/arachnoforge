@@ -42,7 +42,6 @@ export function KarenBrainProvider({ children }) {
       ...telemetry,
       directives
     }),
-     
     [telemetry, directives]
   );
 

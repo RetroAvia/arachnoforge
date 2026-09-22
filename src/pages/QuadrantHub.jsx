@@ -279,7 +279,16 @@ export default function QuadrantHub() {
   // idratato, non far mai propagare un `undefined`/non-array al render
   // (causa nota di schermo nero da eccezione non gestita su .map()).
   const materie = Array.isArray(state.materie) ? state.materie : [];
-  const [selectedMateriaId, setSelectedMateriaId] = useState(materie[0]?.id || '');
+  // V40.0 — all'apertura si mostra la materia su cui Karen ti manda oggi
+  // (Primary Target), altrimenti la prima NON ancora superata: prima era
+  // semplicemente la prima dell'elenco, spesso un esame già archiviato.
+  const [selectedMateriaId, setSelectedMateriaId] = useState(
+    () =>
+      derived.primaryTarget?.materia?.id ||
+      materie.find((m) => m && !m.examPassed)?.id ||
+      materie[0]?.id ||
+      ''
+  );
   const [materiaModalOpen, setMateriaModalOpen] = useState(false);
   const [editingMateria, setEditingMateria] = useState(null);
   const [deleteMateriaTarget, setDeleteMateriaTarget] = useState(null);
@@ -870,7 +879,11 @@ export default function QuadrantHub() {
                       const archiviata = !!m.examPassed;
                       const status = archiviata ? 'ARCHIVIATA' : quota?.status;
                       const critico = status === 'CRITICO';
-                      const attenzione = status === 'ATTENZIONE';
+                      // V40.0 — "Attenzione" solo con una data vera: una
+                      // materia senza esame fissato (es. un corso che segui
+                      // a lezione) non ha niente da rischiare e non deve
+                      // pulsare in ambra accanto agli esami veri.
+                      const attenzione = status === 'ATTENZIONE' && quota?.daysRemaining != null;
                       // V29.0 — Pillar 2 (Automatic Precedence Engine): la
                       // Materia resta pienamente visibile/cliccabile (mai
                       // bloccata) ma segnalata come "congelata" per il
@@ -1010,16 +1023,20 @@ export default function QuadrantHub() {
                           <p className="text-sm text-slate-500 mt-1.5">
                             {archiviata ? (total > 0 ? `${total}/${total} nodi · archiviati` : 'Esame archiviato') : `${done}/${total} nodi`}
                           </p>
+                          {/* V40.0 — nell'elenco basta una parola: il dettaglio
+                              (e il consiglio) sta nella scheda della materia.
+                              Sei card con la stessa frase di tre righe in
+                              rosso erano rumore, non informazione. */}
                           {critico && (
-                            <p className="text-xs text-primary mt-2 font-semibold flex items-start gap-1.5">
-                              <Icon name="alertTriangle" className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                              Karen: traiettoria insostenibile. Rischio esaurimento. Consigliato rinvio appello.
+                            <p className="text-xs text-primary mt-2 font-semibold flex items-center gap-1.5">
+                              <Icon name="alertTriangle" className="w-3.5 h-3.5 shrink-0" />
+                              Traiettoria insostenibile
                             </p>
                           )}
                           {attenzione && (
-                            <p className="text-xs text-accent mt-2 font-medium flex items-start gap-1.5">
-                              <Icon name="alertTriangle" className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                              Karen: ritmo leggermente indietro rispetto alla Fine Prevista.
+                            <p className="text-xs text-accent mt-2 font-medium flex items-center gap-1.5">
+                              <Icon name="alertTriangle" className="w-3.5 h-3.5 shrink-0" />
+                              Leggermente indietro
                             </p>
                           )}
                           {congelata && (
@@ -1837,8 +1854,8 @@ export default function QuadrantHub() {
                   <NodeWorkSummary sfida={nodeDetail} calibration={derived.calibration} />
 
                   <p className="text-sm text-slate-500">
-                    Ore previste: {nodeDetail.oreStimate}h
-                    {' · '}{nodeDetail.focusMinutes} min di Focus accumulati
+                    Ore previste: {formatHoursMinutes(Number(nodeDetail.oreStimate) || 0)}
+                    {' · '}{formatHoursMinutes((Number(nodeDetail.focusMinutes) || 0) / 60)} di Focus accumulati
                     {Number(nodeDetail.focusMinutesSintesi) > 0 && (
                       <> (<span className="text-accent">{nodeDetail.focusMinutesSintesi} di sintesi</span>)</>
                     )}

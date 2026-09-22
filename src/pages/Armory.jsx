@@ -41,7 +41,7 @@ function SkillCard({ skill, unlocked, unlockable, prereqMissing, techTokens, onU
           : prereqMissing
           ? 'bg-surface/40 backdrop-blur-md border-white/5 opacity-40 grayscale'
           : unlockable
-          ? `bg-surface/60 backdrop-blur-xl ${meta.border} animate-token-pulse hover:-translate-y-1`
+          ? `bg-surface/60 backdrop-blur-xl ${meta.border} af-token-pulse hover:-translate-y-1`
           : 'bg-surface/50 backdrop-blur-md border-white/10 hover:-translate-y-0.5'
       }`}
     >

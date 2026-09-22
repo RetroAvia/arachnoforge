@@ -549,7 +549,7 @@ export function ArachnoForgeProvider({ children }) {
           if (!force && pendingStateRef.current === lastPersistedRef.current) return { ok: true, skipped: true };
           let result = await withTimeout(persistState());
           if (!result || !result.conflict) return result;
-          let remote = null;
+          let remote;
           try {
             remote = await withTimeout(readRemoteRow());
           } catch {
@@ -672,7 +672,6 @@ export function ArachnoForgeProvider({ children }) {
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
-     
   }, [state, user.id, storageMode, runPersist, enterConflictState]);
 
   // V37.0 — Flush d'uscita. `visibilitychange -> hidden` è l'unico evento
@@ -999,21 +998,17 @@ export function ArachnoForgeProvider({ children }) {
     [state.campus, state.materie, state.starLog, nowTick]
   );
 
-  // Le materie seguite a lezione oggi (o con una lezione ancora da
-  // sistemare): il planner di Karen dà a una di loro il secondo slot
-  // "in focus oggi". Solo in modalità Lezioni.
-  const campusPriorityIds = useMemo(() => {
-    if (campusSnapshot.fase !== FASE.LEZIONI) return null;
-    const ids = new Set();
-    campusSnapshot.coda.forEach((l) => ids.add(l.materiaId));
-    campusSnapshot.lezioniOggi.forEach((l) => ids.add(l.materiaId));
-    return ids.size ? ids : null;
+  // V40.0 — la sintesi delle lezioni davvero da sistemare entra nel piano
+  // come riserva di tempo limitata (mai uno slot rubato a un esame).
+  const sintesiLezioni = useMemo(() => {
+    if (campusSnapshot.fase !== FASE.LEZIONI || campusSnapshot.coda.length === 0) return null;
+    return campusSnapshot.coda.map((l) => ({ materiaId: l.materiaId, ore: (l.sintesiMancanteMin || 0) / 60 }));
   }, [campusSnapshot]);
 
   const karenAutoRouter = useKarenAutoRouter(state.materie, {
     calibration,
     loadAdjustmentPct: karenLoadAdjustmentPct,
-    priorityIds: campusPriorityIds
+    sintesiLezioni
   });
 
   // Karen's Tactical Suggestor (Primary Target): ricalcolato qui, a
@@ -1094,16 +1089,12 @@ export function ArachnoForgeProvider({ children }) {
       // Promise { success, error } così il chiamante può pilotare il
       // proprio feedback di salvataggio/errore in tempo reale.
       updateSfidaAndSync: async (materiaId, sfidaId, patch) => {
-        dispatch({ type: 'UPDATE_SFIDA', payload: { materiaId, sfidaId, patch } });
-
-        const nextState = {
-          ...stateRef.current,
-          materie: stateRef.current.materie.map((m) =>
-            m.id === materiaId
-              ? { ...m, sfide: m.sfide.map((s) => (s.id === sfidaId ? { ...s, ...patch } : s)) }
-              : m
-          )
-        };
+        const action = { type: 'UPDATE_SFIDA', payload: { materiaId, sfidaId, patch } };
+        dispatch(action);
+        // V40.0 — lo stato da salvare subito è quello che produce il
+        // reducer stesso (con `sintesiAggiornataAt` e ogni altra regola),
+        // non una fusione fatta a mano che poteva divergere.
+        const nextState = reducer(stateRef.current, action);
 
         // V39 — il salvataggio immediato passa dalla STESSA coda
         // dell'autosave (flushSave → runPersist). Prima scriveva
@@ -1129,6 +1120,8 @@ export function ArachnoForgeProvider({ children }) {
         dispatch({ type: 'CAMPUS_TOGGLE_SOSPENSIONE', payload: { semestreId, dateKey } }),
       campusSetOverride: (fase, finoA) => dispatch({ type: 'CAMPUS_SET_OVERRIDE', payload: fase ? { fase, finoA } : null }),
       campusSetRapporto: (value) => dispatch({ type: 'CAMPUS_SET_RAPPORTO', payload: { value } }),
+      // V40.0 — "Fatta" / "Niente da sistemare" / annulla (esito null).
+      campusSetEsito: (lezioni, esito) => dispatch({ type: 'CAMPUS_SET_ESITO', payload: { lezioni, esito } }),
       // V34.2 — "Selezione Multipla Nodi": eliminazione in blocco dal
       // pannello di selezione del Web-Matrix (QuadrantHub.jsx). `sfidaIds`
       // è un array semplice (mai un Set: i reducer restano serializzabili,
@@ -1479,6 +1472,9 @@ export function ArachnoForgeProvider({ children }) {
       // V39.0 — Empire State University.
       campus: campusSnapshot,
       karenCumulativeOverload: karenAutoRouter.cumulativeOverload,
+      // V40.0 — riserva per la sintesi delle lezioni (quanto, e se passa
+      // davanti agli esami in "ADESSO").
+      karenSintesi: karenAutoRouter.sintesi,
       nextExamReadiness
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

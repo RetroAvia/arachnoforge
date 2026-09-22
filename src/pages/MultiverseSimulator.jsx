@@ -16,7 +16,7 @@ import {
   computeGradeHistory,
   CAREER_MIN_EXAMS
 } from '../utils/gpaEngine.js';
-import { formatDateOnlyHuman, formatMonthYearHuman, monthKeyFromDateKey, dateOnlyToUtcMs } from '../utils/dateUtils.js';
+import { formatDateOnlyHuman, formatMonthYearHuman, monthKeyFromDateKey, dateOnlyToUtcMs, formatHoursMinutes } from '../utils/dateUtils.js';
 import { CARD, CARD_BARE, H1, H2, BADGE } from '../utils/designSystem.js';
 
 /** Slider "Stark-Tech" per il voto ipotizzato (18-30), tinta Accento (Decay) — coerente col resto del Design System, mai uno slider nativo. */
@@ -256,7 +256,7 @@ function GraduationForecastCard({ forecast }) {
             {forecast.byWorkload.mesi} <span className="text-sm font-semibold text-slate-400">mesi</span>
           </p>
           <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-            {forecast.byWorkload.oreResidue}h di lavoro residuo a {forecast.byWorkload.capacitaOreGiorno}h/giorno.
+            {forecast.byWorkload.oreResidue}h di lavoro residuo a {formatHoursMinutes(forecast.byWorkload.capacitaOreGiorno)} al giorno.
             {!forecast.byWorkload.confident && ' Capacità non ancora calibrata sulle tue giornate reali.'}
             {forecast.byWorkload.oreNonTracciate > 0 &&
               ` Include ${forecast.byWorkload.oreNonTracciate}h stimate per i CFU non ancora aperti nel Web-Matrix.`}
