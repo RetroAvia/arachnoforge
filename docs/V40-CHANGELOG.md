@@ -1,4 +1,33 @@
-# ArachnoForge V40.0 — Note di rilascio
+# ArachnoForge V40 — Note di rilascio
+
+## V40.1 — "Web-Shooter Inceppato" dopo un aggiornamento
+
+### Causa
+Le pagine vengono scaricate solo al primo accesso. Se esce un aggiornamento mentre l'app è aperta, i file della versione vecchia spariscono dal server. La prima volta che apri una pagina non ancora visitata, il download fallisce e compariva "Web-Shooter Inceppato", anche se nel codice non c'era nessun errore. Il caso è stato riprodotto simulando un aggiornamento con l'app aperta.
+
+### Cosa cambia
+- **Pagine precaricate.** Qualche secondo dopo l'avvio, l'app scarica in sottofondo tutte le pagine, una alla volta e solo quando il browser è libero.
+  - Aprire una pagina diventa istantaneo.
+  - Un aggiornamento uscito con l'app aperta non rompe più la navigazione.
+- **Avviso chiaro se il download fallisce lo stesso** (per esempio offline): "Nuova versione disponibile" con il pulsante "Ricarica l'app", invece dell'errore generico.
+- **Errori veri più facili da risolvere.**
+  - Nuovo pulsante "Riprova".
+  - "Torna allo Stark-Web Terminal" ora funziona anche quando l'errore è proprio su Mission Control.
+  - "Dettagli tecnici" mostra il messaggio d'errore, con un pulsante per copiarlo.
+- **Star Log.** Una voce non valida in un backup importato a mano (per esempio `null`) poteva bloccare l'intera app: ora viene scartata al caricamento.
+
+### Verifica
+- 405 test automatici, tutti verdi.
+- ESLint: nessun errore e nessun avviso.
+- Build a pagine separate: tutte le pagine si aprono.
+- Aggiornamento simulato con l'app aperta:
+  - con il precaricamento, la pagina si apre normalmente;
+  - senza, compare l'avviso e "Ricarica l'app" risolve.
+- 20 profili di dati anomali, su tutte le pagine: nessun errore.
+
+---
+
+*Da qui in giù: la V40.0.*
 
 ## 1. Lezioni e sintesi: niente più lavoro inventato
 
