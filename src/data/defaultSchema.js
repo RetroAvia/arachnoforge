@@ -427,7 +427,12 @@ export function hydrateState(rawState) {
     // (FOCUS_MINUTES) non vengono toccati — Heatmap, minuti totali e
     // calibrazione restano completi per sempre. Vedi
     // utils/starLogMaintenance.js per il ragionamento esteso.
-    starLog: Array.isArray(rawState.starLog) ? pruneStarLog(rawState.starLog).starLog : defaults.starLog,
+    // V40.1 — solo voci che sono oggetti: un `null` finito in un backup
+    // importato a mano faceva crollare la valutazione dei trofei (e con
+    // lei l'intera app) al primo render.
+    starLog: Array.isArray(rawState.starLog)
+      ? pruneStarLog(rawState.starLog.filter((e) => e && typeof e === 'object' && !Array.isArray(e))).starLog
+      : defaults.starLog,
     // V32.0 — Storico Media Ponderata: blindato voce per voce (mai un
     // punto con data/average corrotti che romperebbe il grafico).
     gradeHistory: Array.isArray(rawState.gradeHistory)
