@@ -66,3 +66,27 @@ describe('deriveNodeStatus — V35.5 "In Corso" (nuovo)', () => {
     assert.equal(deriveNodeStatus(node, [node]), NODE_STATUS.AVAILABLE);
   });
 });
+
+describe('V40.2 — "In corso" anche per la sintesi fatta a mano', () => {
+  test('pagine di fonte già snellite -> IN_PROGRESS', () => {
+    const node = leafNode({ fonti: [{ id: 'f', tipo: 'LIBRO', pagine: 16, pagineFatte: 4 }] });
+    assert.equal(deriveNodeStatus(node, [node]), NODE_STATUS.IN_PROGRESS);
+  });
+  test('pagine dei tuoi appunti o sintesi chiusa -> IN_PROGRESS', () => {
+    const a = leafNode({ pagineAppunti: 3 });
+    const b = leafNode({ appuntiCompleti: true });
+    assert.equal(deriveNodeStatus(a, [a]), NODE_STATUS.IN_PROGRESS);
+    assert.equal(deriveNodeStatus(b, [b]), NODE_STATUS.IN_PROGRESS);
+  });
+  test('fonti senza pagine fatte: resta AVAILABLE', () => {
+    const node = leafNode({ fonti: [{ id: 'f', tipo: 'LIBRO', pagine: 16, pagineFatte: 0 }] });
+    assert.equal(deriveNodeStatus(node, [node]), NODE_STATUS.AVAILABLE);
+  });
+  test('la sintesi non completa mai il nodo, e non sblocca un Boss', () => {
+    const chiusa = leafNode({ fonti: [{ id: 'f', tipo: 'LIBRO', pagine: 16, pagineFatte: 16 }], appuntiCompleti: true });
+    assert.equal(deriveNodeStatus(chiusa, [chiusa]), NODE_STATUS.IN_PROGRESS);
+    const boss = leafNode({ id: 'boss', pagineAppunti: 5 });
+    const figlio = leafNode({ id: 'figlio', parentId: 'boss' });
+    assert.equal(deriveNodeStatus(boss, [boss, figlio]), NODE_STATUS.LOCKED);
+  });
+});

@@ -719,6 +719,57 @@ export function nodoInSintesi(materia) {
 }
 
 /**
+ * V40.2 — Gli argomenti fra cui scegliere quello su cui hai fatto sintesi
+ * dopo una lezione: i nodi NON completati della materia, nell'ordine
+ * dell'albero del Web-Matrix (ogni padre seguito dai suoi figli), con
+ * quello che serve per riconoscerli a colpo d'occhio. L'app suggerisce
+ * ancora un argomento (`consigliato`, lo stesso di `nodoInSintesi`), ma
+ * sei tu a dire quale hai fatto davvero: magari eri andato più avanti.
+ *
+ * Ogni voce: { id, nome, profondita, residue, totali, conclusa, avviato, consigliato }.
+ */
+export function argomentiSintesi(materia) {
+  const sfide = (Array.isArray(materia?.sfide) ? materia.sfide : []).filter((s) => s && s.id);
+  const aperti = sfide.filter((s) => s.status !== 'COMPLETED');
+  if (aperti.length === 0) return [];
+  const consigliato = nodoInSintesi(materia)?.id || null;
+  const ids = new Set(sfide.map((s) => s.id));
+  const figliDi = new Map();
+  sfide.forEach((s) => {
+    const padre = s.parentId && ids.has(s.parentId) && s.parentId !== s.id ? s.parentId : null;
+    if (!figliDi.has(padre)) figliDi.set(padre, []);
+    figliDi.get(padre).push(s);
+  });
+  const out = [];
+  const visti = new Set();
+  const visita = (s, profondita) => {
+    if (visti.has(s.id)) return; // difesa da cicli nei dati
+    visti.add(s.id);
+    if (s.status !== 'COMPLETED') {
+      const src = nodeSources(s);
+      out.push({
+        id: s.id,
+        nome: s.nome || 'Argomento senza nome',
+        profondita,
+        residue: src.residue,
+        totali: src.totali,
+        conclusa: src.conclusa,
+        avviato: src.fatte > 0 || Number(s.focusMinutes) > 0 || Number(s.pagineAppunti) > 0,
+        consigliato: s.id === consigliato
+      });
+    }
+    // Sotto un padre già completato (e quindi non elencato) i figli non
+    // rientrano: resterebbero indentati sotto una voce che non c'è.
+    const livelloFigli = s.status !== 'COMPLETED' ? profondita + 1 : profondita;
+    (figliDi.get(s.id) || []).forEach((f) => visita(f, livelloFigli));
+  };
+  (figliDi.get(null) || []).forEach((s) => visita(s, 0));
+  // Nodi rimasti fuori (catene di padri rotte o cicli): in coda, al livello 0.
+  sfide.forEach((s) => visita(s, 0));
+  return out;
+}
+
+/**
  * Le materie con una lezione davvero da sistemare (in coda). Solo in
  * modalità Lezioni. V40.0 — non più "tutte le materie con lezione oggi":
  * una lezione seguita non è automaticamente lavoro da fare.

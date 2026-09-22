@@ -822,11 +822,32 @@ export function reducer(state, action) {
         action.payload.workMode === WORK_MODE.SINTESI || action.payload.workMode === WORK_MODE.STUDIO
           ? action.payload.workMode
           : null;
-      const pagineFonte = Math.max(0, Math.round(Number(action.payload.pagineFonte) || 0));
+      let pagineFonte = Math.max(0, Math.round(Number(action.payload.pagineFonte) || 0));
       const pagineAppuntiProdotte = Math.max(0, Math.round(Number(action.payload.pagineAppuntiProdotte) || 0));
 
       const materia = materiaId ? findMateria(state, materiaId) : null;
       const targetNode = materia && sfidaId ? materia.sfide.find((s) => s.id === sfidaId) : null;
+
+      // V40.2 — pagine snellite FONTE PER FONTE (Debriefing): ogni numero
+      // va sulla sua fonte, mai oltre le pagine che le restano. Il totale
+      // registrato è quello davvero applicato. Senza questo dettaglio si
+      // ripiega sul totale unico, distribuito in ordine come prima.
+      let fontiPerFonte = null;
+      const perFonte = action.payload.pagineFontePer;
+      if (workModeDichiarato === WORK_MODE.SINTESI && targetNode && perFonte && typeof perFonte === 'object') {
+        let applicate = 0;
+        fontiPerFonte = (Array.isArray(targetNode.fonti) ? targetNode.fonti : []).map((f) => {
+          const richieste = Math.max(0, Math.round(Number(perFonte[f?.id]) || 0));
+          if (!f || richieste <= 0) return f;
+          const totali = Math.max(0, Math.round(Number(f.pagine) || 0));
+          const fatte = Math.min(totali, Math.max(0, Math.round(Number(f.pagineFatte) || 0)));
+          const quota = Math.min(richieste, totali - fatte);
+          if (quota <= 0) return f;
+          applicate += quota;
+          return { ...f, pagineFatte: fatte + quota };
+        });
+        pagineFonte = applicate;
+      }
       const difficulty = targetNode ? targetNode.difficulty : DIFFICULTY.MEDIUM;
       const isFatigued = state.profile.stamina < FATIGUE_STAMINA_THRESHOLD;
       const sessionHour = new Date().getHours();
@@ -929,10 +950,14 @@ export function reducer(state, action) {
                 (Number(s.focusMinutesStudio) || 0) + (workModeDichiarato === WORK_MODE.STUDIO ? focusMinutes : 0)
             };
             if (workModeDichiarato !== WORK_MODE.SINTESI) return aggiornato;
+            const avanzata = pagineFonte > 0 || pagineAppuntiProdotte > 0;
             return {
               ...aggiornato,
-              fonti: applySintesiProgress(aggiornato.fonti, pagineFonte),
-              pagineAppunti: (Number(aggiornato.pagineAppunti) || 0) + pagineAppuntiProdotte
+              fonti: fontiPerFonte || applySintesiProgress(aggiornato.fonti, pagineFonte),
+              pagineAppunti: (Number(aggiornato.pagineAppunti) || 0) + pagineAppuntiProdotte,
+              // Stessa marca del salvataggio a mano (UPDATE_SFIDA): la
+              // sintesi di questo nodo è avanzata adesso.
+              ...(avanzata ? { sintesiAggiornataAt: nowIso() } : {})
             };
           })
         );

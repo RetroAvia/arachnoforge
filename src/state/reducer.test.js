@@ -625,3 +625,48 @@ test('V40.1 — voci non valide nello Star Log vengono scartate al caricamento',
   assert.equal(h.starLog.length, 1);
   assert.equal(h.starLog[0].type, 'FOCUS_MINUTES');
 });
+
+/* V40.2 — pagine snellite fonte per fonte dal Debriefing. */
+describe('FOCUS_COMPLETED — pagine per fonte (V40.2)', () => {
+  const base = () =>
+    conMateria({}, [
+      nodo({
+        fonti: [
+          { id: 'libro', tipo: 'LIBRO', pagine: 600, pagineFatte: 100 },
+          { id: 'slide', tipo: 'SLIDE', pagine: 40, pagineFatte: 30 }
+        ]
+      })
+    ]);
+  const sessione = (stato, payload) =>
+    reducer(stato, { type: 'FOCUS_COMPLETED', payload: { materiaId: 'm1', sfidaId: 'n1', focusMinutes: 50, ...payload } });
+
+  test('ogni numero va sulla sua fonte, anche se non è la prima', () => {
+    const out = sessione(base(), { workMode: 'SINTESI', pagineFontePer: { slide: 6 } });
+    const n = out.materie[0].sfide[0];
+    assert.equal(n.fonti[0].pagineFatte, 100, 'il libro non si tocca');
+    assert.equal(n.fonti[1].pagineFatte, 36);
+    const voce = out.starLog.filter((e) => e.type === 'FOCUS_SESSION').pop();
+    assert.equal(voce.pagineFonte, 6);
+  });
+
+  test('mai oltre le pagine rimaste; nello Star Log va il totale applicato', () => {
+    const out = sessione(base(), { workMode: 'SINTESI', pagineFontePer: { libro: 20, slide: 99 }, pagineFonte: 119 });
+    const n = out.materie[0].sfide[0];
+    assert.equal(n.fonti[0].pagineFatte, 120);
+    assert.equal(n.fonti[1].pagineFatte, 40);
+    const voce = out.starLog.filter((e) => e.type === 'FOCUS_SESSION').pop();
+    assert.equal(voce.pagineFonte, 30, '20 dal libro + le 10 che restavano sulle slide');
+  });
+
+  test('segna il momento in cui la sintesi del nodo è avanzata', () => {
+    const out = sessione(base(), { workMode: 'SINTESI', pagineFontePer: { libro: 5 } });
+    assert.equal(typeof out.materie[0].sfide[0].sintesiAggiornataAt, 'string');
+    const senzaPagine = sessione(base(), { workMode: 'SINTESI' });
+    assert.equal(senzaPagine.materie[0].sfide[0].sintesiAggiornataAt, undefined, 'solo tempo: nessuna marca');
+  });
+
+  test('in modo Studio il dettaglio per fonte viene ignorato', () => {
+    const n = sessione(base(), { workMode: 'STUDIO', pagineFontePer: { libro: 50 } }).materie[0].sfide[0];
+    assert.equal(n.fonti[0].pagineFatte, 100);
+  });
+});

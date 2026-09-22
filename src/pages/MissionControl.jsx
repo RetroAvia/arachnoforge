@@ -533,8 +533,13 @@ export default function MissionControl() {
     setSelectedSfidaId('');
   }, []);
 
+  // V40.2 — intento della prossima partenza dopo la conferma "Avvia
+  // Comunque": resta 'SINTESI' se la partenza era dalla card di una lezione.
+  const intentoInAttesaRef = useRef(null);
   const doStartFocus = useCallback(() => {
-    timer.startFocus(selectedMateriaId || null, selectedSfidaId || null, false);
+    const intento = intentoInAttesaRef.current;
+    intentoInAttesaRef.current = null;
+    timer.startFocus(selectedMateriaId || null, selectedSfidaId || null, false, intento);
   }, [timer, selectedMateriaId, selectedSfidaId]);
 
   // V35.0 — guardia "sessione non salvata": `timer.awaitingDebrief` è ora
@@ -543,6 +548,7 @@ export default function MissionControl() {
   // minuti su una materia/nodo potenzialmente diversi da quelli in sospeso.
   // Si chiede conferma esplicita invece di permetterlo senza preavviso.
   const handleStartFocus = useCallback(() => {
+    intentoInAttesaRef.current = null;
     if (timer.awaitingDebrief) {
       setConfirmRestartOpen(true);
       return;
@@ -657,10 +663,13 @@ export default function MissionControl() {
     setSelectedMateriaId(materiaId || '');
     setSelectedSfidaId(sfidaId || '');
     if (timer.awaitingDebrief) {
+      intentoInAttesaRef.current = nowTarget?.daLezione ? 'SINTESI' : null;
       setConfirmRestartOpen(true);
       return;
     }
-    timer.startFocus(materiaId, sfidaId, false);
+    // V40.2 — dalla card di una lezione da sistemare la sessione nasce
+    // come Sintesi: il Debriefing chiederà le pagine fonte per fonte.
+    timer.startFocus(materiaId, sfidaId, false, nowTarget?.daLezione ? 'SINTESI' : null);
   }, [nowTarget, selectedMateriaId, selectedSfidaId, timer]);
 
   /**
@@ -752,13 +761,21 @@ export default function MissionControl() {
   // gira al reducer. Può essere `null`: in quel caso si registra solo
   // il tempo, come prima.
   const handleDebriefSubmit = useCallback((quality, forgia = null) => {
+    // V40.2 — "Argomento terminato" dal Debriefing: prima si registra la
+    // sessione, poi si completa il nodo (stesso percorso del Web-Matrix).
+    const materiaDaChiudere = timer.pendingFocusMateriaId;
+    const nodoDaChiudere =
+      forgia && forgia.sfidaId !== undefined ? forgia.sfidaId || null : timer.pendingFocusSfidaId;
     timer.endFocusSession(quality, forgia);
+    if (forgia?.completaNodo && materiaDaChiudere && nodoDaChiudere) {
+      actions.completeSfida(materiaDaChiudere, nodoDaChiudere);
+    }
     setDebriefOpen(false);
     if (pendingAction && pendingAction.type === 'break') {
       timer.startBreak(pendingAction.long);
     }
     setPendingAction(null);
-  }, [timer, pendingAction]);
+  }, [timer, pendingAction, actions]);
 
   // Chiudere il Debriefing senza valutare (Esc/click fuori) è non
   // distruttivo: i minuti restano "in sospeso" e l'utente torna al
@@ -793,11 +810,14 @@ export default function MissionControl() {
   // V38.0 — il nodo della sessione DA VALUTARE, che dopo "Avvia
   // Comunque" non è quello attualmente attivo: il Debriefing deve
   // chiedere e accreditare le pagine sull'argomento giusto.
+  const debriefMateria = useMemo(
+    () => materie.find((m) => m.id === timer.pendingFocusMateriaId) || null,
+    [materie, timer.pendingFocusMateriaId]
+  );
   const debriefSfida = useMemo(() => {
-    const materia = materie.find((m) => m.id === timer.pendingFocusMateriaId) || null;
-    if (!materia || !Array.isArray(materia.sfide)) return null;
-    return materia.sfide.find((s) => s.id === timer.pendingFocusSfidaId) || null;
-  }, [materie, timer.pendingFocusMateriaId, timer.pendingFocusSfidaId]);
+    if (!debriefMateria || !Array.isArray(debriefMateria.sfide)) return null;
+    return debriefMateria.sfide.find((s) => s.id === timer.pendingFocusSfidaId) || null;
+  }, [debriefMateria, timer.pendingFocusSfidaId]);
 
   const modoConsigliato = useMemo(() => {
     if (!activeSfida) return null;
@@ -1550,6 +1570,8 @@ export default function MissionControl() {
         minutes={timer.pendingFocusMinutes}
         overdrive={timer.pendingFocusOverdrive}
         sfida={debriefSfida}
+        materia={debriefMateria}
+        intent={timer.pendingFocusIntent}
         calibration={derived.calibration}
       />
 

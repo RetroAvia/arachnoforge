@@ -21,11 +21,12 @@ import {
   focusSemester,
   suggestSemestre,
   validateLezione,
-  nodoInSintesi,
   isValidDateKey,
   STATO_LEZIONE,
-  ESITO_LEZIONE
+  ESITO_LEZIONE,
+  argomentiSintesi
 } from '../utils/campusEngine.js';
+import { pagineLabel } from '../utils/format.js';
 
 /**
  * V39.0 — EMPIRE STATE UNIVERSITY.
@@ -250,8 +251,34 @@ const MOTIVO_NIENTE = {
   FONTI_CHIUSE: 'fonti già snellite'
 };
 
+/**
+ * V40.2 — Voci del selettore "Su quale argomento?": i nodi aperti della
+ * materia in ordine d'albero, più "nessun argomento preciso".
+ */
+function opzioniArgomento(argomenti) {
+  const voci = argomenti.map((a) => {
+    const stato =
+      a.totali === 0
+        ? 'senza fonti'
+        : a.residue > 0 && !a.conclusa
+        ? `${pagineLabel(a.residue)} da snellire`
+        : 'sintesi chiusa';
+    return {
+      value: a.id,
+      label: a.nome,
+      depth: a.profondita,
+      hint: [stato, a.avviato ? 'in corso' : null, a.consigliato ? 'suggerito' : null].filter(Boolean).join(' · ')
+    };
+  });
+  voci.push({ value: '', label: 'Nessun argomento preciso', hint: 'La sessione conta per la lezione, ma non aggiorna nessun nodo' });
+  return voci;
+}
+
 function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
   const prossima = snap.prossima;
+  // V40.2 — l'argomento scelto per ogni materia in coda. Finché non lo
+  // tocchi vale quello suggerito; la scelta resta finché resti qui.
+  const [argomentoScelto, setArgomentoScelto] = useState({});
   const lezioniInCoda = snap.coda.reduce((n, l) => n + l.lezioniDaSistemare, 0);
   const renderStato = (l, chip, dove) => {
     if (!chip) {
@@ -364,7 +391,12 @@ function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
           <ul className="space-y-2.5">
             {snap.coda.map((l) => {
               const materia = materieById.get(l.materiaId);
-              const nodo = nodoInSintesi(materia);
+              const argomenti = argomentiSintesi(materia);
+              const suggerito = argomenti.find((a) => a.consigliato)?.id || '';
+              const scelto = Object.prototype.hasOwnProperty.call(argomentoScelto, l.materiaId)
+                ? argomentoScelto[l.materiaId]
+                : suggerito;
+              const sceltoValido = scelto === '' || argomenti.some((a) => a.id === scelto) ? scelto : suggerito;
               const c = colorFor(l.materiaId);
               const occorrenze = l.lezioni || [];
               return (
@@ -380,17 +412,24 @@ function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
                         {' · '}
                         {l.oreFa < 1 ? 'appena finita' : `${l.oreFa}h fa`}
                       </p>
-                      {nodo && (
-                        <p className="text-xs mt-1 text-slate-500 break-words">
-                          Argomento in sintesi: <span className="text-slate-300">{nodo.nome}</span>
-                        </p>
-                      )}
                     </div>
                   </div>
+                  {argomenti.length > 0 && (
+                    <div className="pl-0 sm:pl-5 max-w-md">
+                      <p className="text-xs text-slate-400 mb-1">Su quale argomento hai fatto sintesi?</p>
+                      <Dropdown
+                        compact
+                        value={sceltoValido}
+                        onChange={(v) => setArgomentoScelto((prev) => ({ ...prev, [l.materiaId]: v }))}
+                        options={opzioniArgomento(argomenti)}
+                        ariaLabel={`Argomento della sintesi di ${l.materia.nome}`}
+                      />
+                    </div>
+                  )}
                   <div className="flex flex-wrap items-center gap-2 pl-0 sm:pl-5">
                     <button
                       type="button"
-                      onClick={() => onAvviaSintesi(l.materiaId, nodo?.id || null)}
+                      onClick={() => onAvviaSintesi(l.materiaId, sceltoValido || null)}
                       className={`${BTN_PRIMARY} !px-4 !py-2 grow sm:grow-0`}
                     >
                       <Icon name="play" className="w-4 h-4" />
@@ -1077,7 +1116,9 @@ export default function Campus() {
       goTo(ROUTES.MISSION_CONTROL);
       return;
     }
-    timer.startFocus(materiaId, sfidaId, false);
+    // V40.2 — intento Sintesi: il Debriefing parte già in modo Sintesi e
+    // chiede le pagine snellite fonte per fonte.
+    timer.startFocus(materiaId, sfidaId, false, 'SINTESI');
     const nodo = sfidaId ? materia?.sfide?.find((s) => s.id === sfidaId) : null;
     pushToast(`Sintesi avviata: ${materia?.nome ?? ''}${nodo ? ` — ${nodo.nome}` : ''}.`, 'success');
     goTo(ROUTES.MISSION_CONTROL);

@@ -22,7 +22,8 @@ import {
   priorityMateriaIds,
   validateLezione,
   computeCampusSnapshot,
-  createLezione
+  createLezione,
+  argomentiSintesi
 } from './campusEngine.js';
 import { getDateKey } from './dateUtils.js';
 
@@ -448,4 +449,34 @@ test('V40 — una sessione va alla lezione più recente, non a una vecchia già 
   const log = [sintesi('fisica', at(VEN, '18:00'), 120)];
   const q = postLectureQueue(campus(), at(VEN, '19:00'), byId, log);
   assert.ok(!q.some((x) => x.materiaId === 'fisica'), 'la fisica di venerdì è sistemata');
+});
+
+/* V40.2 — scelta dell'argomento della sintesi. */
+test('argomentiSintesi: ordine dell\'albero, niente completati, suggerito segnato', () => {
+  const f = (pagine, fatte = 0) => [{ id: `fonte_1790000000000_${pagine}${fatte}`, tipo: 'LIBRO', pagine, pagineFatte: fatte }];
+  const materia = {
+    id: 'mv',
+    nome: 'Meccanica del Volo',
+    sfide: [
+      { id: 'b', nome: 'Figlio di A', parentId: 'a', status: 'PENDING', fonti: f(10) },
+      { id: 'a', nome: 'Modulo A', parentId: null, status: 'PENDING', fonti: [] },
+      { id: 'c', nome: 'Modulo C', parentId: null, status: 'COMPLETED', fonti: [] },
+      { id: 'd', nome: 'Figlio di C', parentId: 'c', status: 'PENDING', fonti: f(20, 5) },
+      { id: 'e', nome: 'Orfano', parentId: 'inesistente', status: 'PENDING', fonti: [] }
+    ]
+  };
+  const lista = argomentiSintesi(materia);
+  assert.deepEqual(lista.map((x) => x.id), ['a', 'b', 'd', 'e']);
+  assert.deepEqual(lista.map((x) => x.profondita), [0, 1, 0, 0], 'sotto un padre completato non si rientra');
+  const d = lista.find((x) => x.id === 'd');
+  assert.equal(d.residue, 15);
+  assert.equal(d.avviato, true);
+  assert.equal(d.consigliato, true, 'la sintesi già avviata è quella suggerita');
+  assert.equal(lista.filter((x) => x.consigliato).length, 1);
+});
+
+test('argomentiSintesi: dati con un ciclo non vanno in loop', () => {
+  const materia = { sfide: [{ id: 'x', nome: 'X', parentId: 'y' }, { id: 'y', nome: 'Y', parentId: 'x' }] };
+  assert.deepEqual(argomentiSintesi(materia).map((a) => a.id).sort(), ['x', 'y']);
+  assert.deepEqual(argomentiSintesi(null), []);
 });

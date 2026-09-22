@@ -25,6 +25,18 @@ export const PERSISTED_STATUS = {
   COMPLETED: 'COMPLETED'
 };
 
+/**
+ * V40.2 — Il nodo porta già del lavoro di sintesi? Letto qui in linea (e
+ * non da sintesiEngine.js, che importa questo modulo) per non creare un
+ * ciclo di import.
+ */
+export function haAvanzamentoSintesi(sfida) {
+  if (!sfida) return false;
+  if (sfida.appuntiCompleti === true) return true;
+  if (Number(sfida.pagineAppunti) > 0 || Number(sfida.pagine) > 0) return true;
+  return Array.isArray(sfida.fonti) && sfida.fonti.some((f) => f && Number(f.pagineFatte) > 0);
+}
+
 /** Restituisce i figli DIRETTI di un nodo (non l'intera discendenza). */
 export function directChildrenOf(sfida, siblings) {
   return siblings.filter((s) => s && s.parentId === sfida.id);
@@ -55,7 +67,12 @@ export function deriveNodeStatus(sfida, siblings = []) {
   // già scritto da FOCUS_COMPLETED. Un Boss ancora LOCKED resta LOCKED a
   // prescindere: i suoi eventuali minuti propri non lo sbloccano prima
   // che i figli siano completati.
-  const isOpen = (status) => (sfida.focusMinutes > 0 ? NODE_STATUS.IN_PROGRESS : status);
+  // V40.2 — anche la sintesi fatta a mano conta: pagine di fonte già
+  // snellite, pagine dei tuoi appunti o sintesi chiusa. Prima un nodo
+  // aggiornato dal form restava "Disponibile" finché non ci passava un
+  // blocco del timer. Resta un "In corso": solo il completamento
+  // esplicito (l'hai studiato) lo porta a Completato.
+  const isOpen = (status) => (sfida.focusMinutes > 0 || haAvanzamentoSintesi(sfida) ? NODE_STATUS.IN_PROGRESS : status);
 
   const children = directChildrenOf(sfida, siblings);
   if (children.length > 0) {
