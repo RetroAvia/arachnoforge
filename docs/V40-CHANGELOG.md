@@ -1,5 +1,33 @@
 # ArachnoForge V40 — Note di rilascio
 
+## V40.2 — L'argomento della sintesi lo scegli tu
+
+### Cosa cambia
+- **"Su quale argomento hai fatto sintesi?"** In "Da sistemare" ogni lezione ha un menu con i nodi della materia presi dal Web-Matrix.
+  - I nodi sono in ordine d'albero (i figli rientrati sotto il padre), con le pagine ancora da snellire.
+  - L'app suggerisce ancora un argomento, ma decidi tu: magari sei andato più avanti. C'è anche "Nessun argomento preciso".
+- **"Avvia sintesi"** apre il timer su quell'argomento, già in modo Sintesi. Vale anche per la card "ADESSO" di una lezione.
+- **A fine sessione:**
+  - puoi ancora cambiare argomento;
+  - inserisci le pagine snellite **fonte per fonte** (libro, slide, dispense): vanno dritte in "Già snellite" di ciascuna fonte, mai oltre le pagine che le restano;
+  - e le pagine dei tuoi appunti.
+- **Stato del nodo automatico.**
+  - Da Disponibile a **In corso** appena c'è lavoro: minuti di timer, pagine snellite, pagine di appunti o sintesi chiusa, anche aggiornando il nodo a mano.
+  - Da In corso a **Completato** solo quando lo dici tu. Dopo una sessione di Studio compare "Argomento terminato: l'ho studiato tutto", spento di default; oppure dal Web-Matrix, come prima.
+  - La sola sintesi non chiude mai un nodo.
+- **Lezione sistemata.** Una sessione di Sintesi in cui registri delle pagine sistema la lezione anche se è breve, esattamente come l'aggiornamento a mano del nodo.
+- **Grafica.** Il titolo "Valuta il tuo Focus" è di nuovo leggibile.
+
+### Verifica
+- 415 test automatici, tutti verdi. ESLint: nessun errore e nessun avviso.
+- Flusso completo simulato nel browser, a 1280 e 360 px:
+  - scelta di un argomento diverso da quello suggerito, sessione, pagine per fonte (quelle oltre il massimo vengono ridotte);
+  - lezione sistemata e nodo "In corso";
+  - sessione di Studio con "Argomento terminato": nodo Completato, con il primo ripasso fissato.
+- Lo stesso flusso partendo dalla card "ADESSO".
+
+---
+
 ## V40.1 — "Web-Shooter Inceppato" dopo un aggiornamento
 
 ### Causa
