@@ -56,19 +56,12 @@ export default {
         gradientShift: {
           '0%': { backgroundPosition: '0% 50%' },
           '100%': { backgroundPosition: '300% 50%' }
-        },
-        // V25.0 — Skill Tree: pulsazione dei nodi sbloccabili (affordable
-        // ma non ancora sbloccati), per invitare il click senza gridare.
-        tokenPulse: {
-          '0%, 100%': { boxShadow: '0 0 0 0 rgb(var(--af-decay-rgb) / 0.45)' },
-          '50%': { boxShadow: '0 0 0 6px rgb(var(--af-decay-rgb) / 0)' }
         }
       },
       animation: {
         'pulse-slow': 'pulseSlow 2.5s ease-in-out infinite',
         scanline: 'scanline 3s linear infinite',
-        'gradient-shift': 'gradientShift 3.5s linear infinite',
-        'token-pulse': 'tokenPulse 2s ease-in-out infinite'
+        'gradient-shift': 'gradientShift 3.5s linear infinite'
       }
     }
   },
