@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, Suspense, lazy } from 'react';
+import React, { useEffect, useRef, Suspense } from 'react';
 import { ArachnoForgeProvider, useArachnoForge } from './context/ArachnoForgeContext.jsx';
 import { KarenBrainProvider, useKarenBrain } from './context/KarenBrainContext.jsx';
 import { readinessBand } from './services/karenEngine/useSuitTelemetry.js';
@@ -11,6 +11,7 @@ import NexusGate from './components/NexusGate.jsx';
 import BootScreen from './components/BootScreen.jsx';
 import MaxCarnageBanner from './components/MaxCarnageBanner.jsx';
 import { APP_BG } from './utils/designSystem.js';
+import { lazyPage } from './utils/lazyPage.js';
 
 // V34.3 — Code-splitting per rotta (risolve il warning Vite/Vercel "Some
 // chunks are larger than 500 kB after minification"): ognuna delle 7
@@ -20,15 +21,62 @@ import { APP_BG } from './utils/designSystem.js';
 // `Suspense` (vedi Shell più sotto) restano gli unici due punti che
 // reagiscono rispettivamente a un errore di rendering o al breve
 // caricamento del chunk.
-const MissionControl = lazy(() => import('./pages/MissionControl.jsx'));
-const QuadrantHub = lazy(() => import('./pages/QuadrantHub.jsx'));
-const Campus = lazy(() => import('./pages/Campus.jsx'));
-const BossFight = lazy(() => import('./pages/BossFight.jsx'));
-const StarLog = lazy(() => import('./pages/StarLog.jsx'));
-const Armory = lazy(() => import('./pages/Armory.jsx'));
-const CoreConfig = lazy(() => import('./pages/CoreConfig.jsx'));
-const MultiverseSimulator = lazy(() => import('./pages/MultiverseSimulator.jsx'));
-const SuitTelemetryView = lazy(() => import('./modules/suit-telemetry/SuitTelemetryView.jsx'));
+// V40.1 — `lazyPage` aggiunge `preload()`: vedi utils/lazyPage.js e il
+// precaricamento in sottofondo nella Shell.
+const MissionControl = lazyPage(() => import('./pages/MissionControl.jsx'));
+const QuadrantHub = lazyPage(() => import('./pages/QuadrantHub.jsx'));
+const Campus = lazyPage(() => import('./pages/Campus.jsx'));
+const BossFight = lazyPage(() => import('./pages/BossFight.jsx'));
+const StarLog = lazyPage(() => import('./pages/StarLog.jsx'));
+const Armory = lazyPage(() => import('./pages/Armory.jsx'));
+const CoreConfig = lazyPage(() => import('./pages/CoreConfig.jsx'));
+const MultiverseSimulator = lazyPage(() => import('./pages/MultiverseSimulator.jsx'));
+const SuitTelemetryView = lazyPage(() => import('./modules/suit-telemetry/SuitTelemetryView.jsx'));
+
+// Ordine del precaricamento: prima le pagine più usate.
+const PAGINE_DA_PRECARICARE = [
+  MissionControl,
+  QuadrantHub,
+  Campus,
+  StarLog,
+  CoreConfig,
+  Armory,
+  MultiverseSimulator,
+  BossFight,
+  SuitTelemetryView
+];
+
+/**
+ * V40.1 — Scarica in sottofondo tutte le pagine, una alla volta e solo
+ * quando il browser è libero, qualche secondo dopo l'avvio. Serve a due
+ * cose: aprire una pagina diventa istantaneo, e un deploy uscito mentre
+ * l'app è aperta non può più rompere la navigazione (i file della
+ * versione vecchia sono già in memoria).
+ */
+function usePrecaricaPagine() {
+  useEffect(() => {
+    let annullato = false;
+    let timer = null;
+    let idleId = null;
+    const haIdle = typeof window.requestIdleCallback === 'function';
+    const prossima = (i) => {
+      if (annullato || i >= PAGINE_DA_PRECARICARE.length) return;
+      const esegui = () => {
+        idleId = null;
+        if (annullato) return;
+        PAGINE_DA_PRECARICARE[i].preload().then(() => prossima(i + 1));
+      };
+      if (haIdle) idleId = window.requestIdleCallback(esegui, { timeout: 4000 });
+      else timer = setTimeout(esegui, 200);
+    };
+    timer = setTimeout(() => prossima(0), 2500);
+    return () => {
+      annullato = true;
+      if (timer) clearTimeout(timer);
+      if (idleId != null && haIdle) window.cancelIdleCallback(idleId);
+    };
+  }, []);
+}
 
 function PageSwitch({ currentPage }) {
   switch (currentPage) {
@@ -94,6 +142,7 @@ function KarenTrophyBridge() {
 function Shell() {
   const { currentPage, navigate } = useArachnoForgeRouter();
   const { state, derived, toasts, dismissToast } = useArachnoForge();
+  usePrecaricaPagine();
 
   // V16.0 True Theme Engine (Pillar 3): l'attributo vive su <body>, non
   // più su <html> — le variabili CSS del costume attivo (index.css,

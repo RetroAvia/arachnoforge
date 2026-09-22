@@ -617,3 +617,11 @@ test('V40 — il caricamento (hydrate) non perde più chiusoDaVerbale e sintesiA
   assert.equal(h.materie[0].sfide[0].chiusoDaVerbale, true);
   assert.equal(typeof h.materie[0].sfide[0].sintesiAggiornataAt, 'string');
 });
+
+test('V40.1 — voci non valide nello Star Log vengono scartate al caricamento', () => {
+  const s = createDefaultState();
+  s.starLog = [null, 'testo', [1, 2], { type: 'FOCUS_MINUTES', dateKey: '2026-09-20', minutes: 30, xp: 30 }];
+  const h = hydrateState(JSON.parse(JSON.stringify(s)));
+  assert.equal(h.starLog.length, 1);
+  assert.equal(h.starLog[0].type, 'FOCUS_MINUTES');
+});
