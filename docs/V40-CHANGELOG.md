@@ -1,5 +1,43 @@
 # ArachnoForge V40 — Note di rilascio
 
+## V40.3 — Timer, suoni e Maximum Carnage
+
+### 1. La fine di un blocco adesso si sente
+- **Il suono mancava del tutto.** L'unico avviso previsto era la notifica di sistema, che però è spenta finché non la attivi a mano: il timer arrivava a 00:00 in silenzio.
+- Ora c'è un rintocco dedicato (tre campane in salita) alla fine di ogni blocco di Focus, e uno più breve alla fine della pausa.
+- **Arriva puntuale anche con l'app in secondo piano.** Il suono viene piazzato sull'orologio di Web Audio nell'istante esatto in cui il blocco finirà: i browser rallentano i timer delle schede nascoste fino a un tick al minuto, quello dell'audio no. Se il dispositivo va in sospensione e quel momento passa a vuoto, il rintocco parte comunque alla riapertura. Mai due volte.
+- Mettere in pausa lo annulla, riprendere lo riprogramma sul tempo che resta.
+- **Il suono "a caso" era il promemoria dei 30 minuti** di Focus accumulato: c'era già, ma senza il suono di fine blocco sembrava capitare a caso. Adesso ha un interruttore suo in Karen OS Settings, separato dagli altri effetti sonori.
+
+### 2. "Termina sessione e salva" adesso ferma davvero il timer
+- **Il bug.** Dopo un Overdrive il pannello della sessione in sospeso resta visibile mentre il blocco nuovo gira: premendo "Termina sessione e salva" la sessione veniva salvata ma il countdown continuava, e l'unico modo per fermarlo era "Interrompi" — cioè il Blood Pact, con la sua penalità di XP.
+- Ora chiudere la sessione ferma il blocco in corso e **aggiunge i suoi minuti interi** a quelli salvati.
+- **Nuovo pulsante "Termina e salva (N min)"** durante un blocco: chiudi quando vuoi, i minuti già fatti restano tuoi, nessuna penalità.
+- La conferma del Blood Pact adesso dice quanti minuti stai buttando via e che esiste l'alternativa.
+
+### 3. Maximum Carnage Mode: spiegata e silenziabile
+- **Cosa la attiva era scritto da nessuna parte.** Il banner ora ha una riga apribile: si accende da sola dopo 5 "azioni critiche" di fila (nodi Hard completati, sessioni di Focus chiuse in Overdrive, Boss Fight vinte) e dura 2 ore, con XP doppi e Stamina senza costo.
+- **Il ronzio di sottofondo** è il drone simbionte. Adesso si zittisce con l'icona dell'altoparlante sul banner stesso, oppure dall'interruttore dedicato in Karen OS Settings, senza spegnere tutti gli altri suoni.
+- **Bug corretto:** spegnere gli effetti sonori (o entrare in Sensory Zero) non zittiva il drone già in corso — il flag valeva solo all'accensione, quindi l'interruttore sembrava non funzionare per due ore.
+
+### 4. Diagnostica Neurale: quali dati mancano davvero
+- Il briefing diceva "oggettivi 67%" senza dire quale voce mancasse. Nella scheda del Readiness c'è ora **"Com'è composto il punteggio"**: le sette voci (tre dall'iPhone, quattro dal Recovery Survey), quali sono entrate nel calcolo e, per quelle fuori, il motivo.
+- Nel tuo caso il dato non manca: il punteggio cardiaco è un **confronto** fra il battito a riposo di oggi e la tua media, e serve almeno **3 giorni registrati negli ultimi 14** perché quella media esista. Finché non c'è, quella voce resta fuori dal calcolo — senza abbassare il Readiness.
+- Il pannello mostra anche l'obiettivo di sonno usato e se è quello standard o calcolato sulle tue notti.
+
+### Verifica
+- 415 test automatici, tutti verdi. ESLint: nessun errore e nessun avviso.
+- Nel browser, con l'audio strumentato:
+  - il rintocco viene programmato all'avvio, annullato in pausa, riprogrammato al riavvio;
+  - alla scadenza suona una volta sola, sia col tempo reale sia quando l'orologio audio non è avanzato;
+  - Overdrive + "Termina sessione e salva": 32 minuti salvati, timer fermo, nessun Blood Pact;
+  - "Termina e salva" a metà blocco: 6 minuti salvati, nessuna penalità;
+  - banner Maximum Carnage: spiegazione e interruttore del drone funzionanti;
+  - Diagnostica Neurale con dati finti: il pannello indica il battito a riposo come unica voce fuori.
+- Riprovate anche le prove delle versioni precedenti: coda delle lezioni, scelta dell'argomento, pagine per fonte, sincronizzazione Cloud, 20 profili di dati anomali, resa grafica a 360 e 1280 px.
+
+---
+
 ## V40.2 — L'argomento della sintesi lo scegli tu
 
 ### Cosa cambia
