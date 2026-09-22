@@ -46,7 +46,10 @@ export function useFocusTimer({
   // effort: un permesso negato o un browser senza l'API non cambia una
   // riga del comportamento del timer.
   notificationsEnabled = false,
-  keepScreenAwake = true
+  keepScreenAwake = true,
+  // V40.3 — il rintocco ogni 30 minuti di Focus accumulato si può
+  // spegnere: senza un suono di fine blocco sembrava casuale.
+  focusReminderEnabled = true
 }) {
   const [activeFocusMateriaId, setActiveFocusMateriaId] = useState(null);
   const [activeFocusSfidaId, setActiveFocusSfidaId] = useState(null);
@@ -173,12 +176,43 @@ export function useFocusTimer({
   // callback del motore timer non devono essere ricreati (e quindi il
   // countdown non deve essere ri-agganciato) solo perché l'utente ha
   // toccato un toggle in Karen OS Settings.
+  // V40.3 — rintocco di fine blocco programmato sul clock audio (vedi
+  // scheduleEndChime): resta puntuale anche con la scheda in secondo
+  // piano, dove i timer JS vengono rallentati a un tick al minuto.
+  const rintoccoRef = useRef(null);
+  const annullaRintocco = useCallback(() => {
+    if (rintoccoRef.current) {
+      rintoccoRef.current.annulla();
+      rintoccoRef.current = null;
+    }
+  }, []);
+  const programmaRintocco = useCallback(
+    (tipo, secondi) => {
+      annullaRintocco();
+      const prog = audio.scheduleEndChime ? audio.scheduleEndChime(tipo, secondi) : null;
+      if (prog) rintoccoRef.current = { ...prog, tipo };
+    },
+    [audio, annullaRintocco]
+  );
+
+  const reminderEnabledRef = useRef(focusReminderEnabled);
+  useEffect(() => {
+    reminderEnabledRef.current = focusReminderEnabled;
+  }, [focusReminderEnabled]);
+
   const notifyRef = useRef(notificationsEnabled);
   const wakeRef = useRef(keepScreenAwake);
   useEffect(() => { notifyRef.current = notificationsEnabled; }, [notificationsEnabled]);
   useEffect(() => { wakeRef.current = keepScreenAwake; }, [keepScreenAwake]);
 
   const handleFocusComplete = useCallback(({ wasOverdrive }) => {
+    // V40.3 — IL suono che mancava: la fine di un blocco era muta se non
+    // avevi attivato le notifiche di sistema. Se era già stato programmato
+    // sul clock audio ha appena suonato da solo, e non si ripete.
+    const prog = rintoccoRef.current;
+    const giaSuonato = !!prog && prog.tipo === 'FOCUS' && prog.suonato();
+    rintoccoRef.current = null;
+    if (!giaSuonato) audio.playBlockComplete();
     const { materiaId, sfidaId, intent } = activeFocusRef.current;
     const minutes = focusTimeRef.current;
     setPendingFocus((prev) => ({
@@ -197,18 +231,63 @@ export function useFocusTimer({
       });
       vibrate();
     }
-  }, []);
+  }, [audio]);
 
   const handleBreakComplete = useCallback(() => {
+    const prog = rintoccoRef.current;
+    const giaSuonato = !!prog && prog.tipo === 'BREAK' && prog.suonato();
+    rintoccoRef.current = null;
+    if (!giaSuonato) audio.playBreakOver();
     pushToast('Pausa terminata — pronto per il prossimo blocco di Focus.', 'info');
     if (notifyRef.current) {
       notify('Pausa terminata', { body: 'Karen: pronto per il prossimo blocco di Focus.', tag: 'af-break' });
       vibrate([90]);
     }
-  }, [pushToast]);
+  }, [pushToast, audio]);
 
   const rawTimer = useTimerEngine({ onFocusComplete: handleFocusComplete, onBreakComplete: handleBreakComplete });
   const { start: timerStart, stop: timerStop, pause: timerPause, resume: timerResume } = rawTimer;
+
+  // V40.3 — lo stato del blocco in corso, leggibile dentro le callback
+  // senza doverle ricreare ad ogni tick del countdown.
+  const bloccoRef = useRef({ status: TIMER_STATUS.IDLE, remainingSeconds: 0, totalSeconds: 0, overdrive: false });
+  useEffect(() => {
+    bloccoRef.current = {
+      status: rawTimer.status,
+      remainingSeconds: rawTimer.remainingSeconds,
+      totalSeconds: rawTimer.totalSeconds,
+      overdrive: rawTimer.isOverdriveActive
+    };
+  }, [rawTimer.status, rawTimer.remainingSeconds, rawTimer.totalSeconds, rawTimer.isOverdriveActive]);
+
+  /**
+   * V40.3 — Ferma il blocco di Focus in corso e mette i suoi minuti interi
+   * in "sessione in sospeso", senza penalità. Ritorna i minuti recuperati.
+   *
+   * Prima non esisteva: "TERMINA SESSIONE E SALVA" salvava i minuti già
+   * accumulati ma lasciava il countdown in corsa (succede dopo un
+   * Overdrive, quando il pannello resta visibile mentre un nuovo blocco
+   * gira), e l'unico modo per fermarlo era il Blood Pact — cioè perdere
+   * XP per chiudere una sessione appena salvata.
+   */
+  const freezeRunningBlock = useCallback(() => {
+    const b = bloccoRef.current;
+    if (b.status !== TIMER_STATUS.FOCUS && b.status !== TIMER_STATUS.PAUSED) return 0;
+    const minuti = Math.max(0, Math.floor((b.totalSeconds - b.remainingSeconds) / 60));
+    annullaRintocco();
+    timerStop();
+    if (minuti > 0) {
+      const { materiaId, sfidaId, intent } = activeFocusRef.current;
+      setPendingFocus((prev) => ({
+        totalMinutes: prev.totalMinutes + minuti,
+        overdriveOccurred: prev.overdriveOccurred || b.overdrive,
+        materiaId: prev.materiaId || materiaId,
+        sfidaId: prev.sfidaId || sfidaId,
+        intent: prev.totalMinutes > 0 ? prev.intent || null : intent || null
+      }));
+    }
+    return minuti;
+  }, [timerStop, annullaRintocco]);
 
   // V36.0 — Wake Lock: lo schermo resta acceso per tutta la durata di un
   // blocco di Focus (mai durante una pausa: lì spegnere è il punto), e
@@ -230,7 +309,7 @@ export function useFocusTimer({
     const reachedThresholds = Math.floor(totalElapsedSeconds / REMINDER_INTERVAL_SECONDS);
     if (reachedThresholds > reminderThresholdRef.current) {
       reminderThresholdRef.current = reachedThresholds;
-      audio.playFocusReminder();
+      if (reminderEnabledRef.current) audio.playFocusReminder();
     }
   }, [rawTimer.status, rawTimer.remainingSeconds, rawTimer.totalSeconds, pendingFocus.totalMinutes, audio]);
 
@@ -242,14 +321,30 @@ export function useFocusTimer({
     // l'intento della sessione precedente.
     activeFocusRef.current = { materiaId, sfidaId, intent: intent === 'SINTESI' ? 'SINTESI' : null };
     timerStart('FOCUS', focusTimeRef.current, { overdrive });
-  }, [timerStart]);
+    programmaRintocco('FOCUS', focusTimeRef.current * 60);
+  }, [timerStart, programmaRintocco]);
 
   const startBreak = useCallback((long = false) => {
     const minutes = long ? longBreakRef.current : shortBreakRef.current;
     timerStart('BREAK', minutes);
-  }, [timerStart]);
+    programmaRintocco('BREAK', minutes * 60);
+  }, [timerStart, programmaRintocco]);
+
+  // V40.3 — mettere in pausa toglie di mezzo il rintocco programmato;
+  // riprendendo lo si riprogramma sul tempo che resta davvero.
+  const pause = useCallback(() => {
+    annullaRintocco();
+    timerPause();
+  }, [timerPause, annullaRintocco]);
+
+  const resume = useCallback(() => {
+    const b = bloccoRef.current;
+    timerResume();
+    if (b.remainingSeconds > 0) programmaRintocco(b.status === TIMER_STATUS.BREAK ? 'BREAK' : 'FOCUS', b.remainingSeconds);
+  }, [timerResume, programmaRintocco]);
 
   const interruptFocus = useCallback(() => {
+    annullaRintocco();
     const finished = timerStop();
     if (finished === 'FOCUS') {
       // Blood Pact è un abbandono volontario dell'intera sessione: forfeit
@@ -261,7 +356,7 @@ export function useFocusTimer({
       dispatch({ type: 'BLOOD_PACT_INTERRUPT' });
       pushToast(`BLOOD PACT — -${BLOOD_PACT_PENALTY} XP`, 'danger');
     }
-  }, [timerStop, dispatch, pushToast, userId]);
+  }, [timerStop, dispatch, pushToast, userId, annullaRintocco]);
 
   const overdrive = useCallback(() => {
     timerStop();
@@ -283,6 +378,14 @@ export function useFocusTimer({
   // chiamante che non lo passa (recupero automatico di una sessione
   // orfana, test) si comporta esattamente come in V37.
   const endFocusSession = useCallback((quality = DEFAULT_FOCUS_QUALITY, forgia = null) => {
+    // Difesa: chiudere la sessione ferma sempre il countdown, da qualunque
+    // punto arrivi la chiamata (i minuti interi del blocco in corso sono
+    // già stati messi in sospeso da freezeRunningBlock).
+    const inCorso = bloccoRef.current.status;
+    if (inCorso === TIMER_STATUS.FOCUS || inCorso === TIMER_STATUS.PAUSED) {
+      annullaRintocco();
+      timerStop();
+    }
     if (pendingFocus.totalMinutes > 0) {
       dispatch({
         type: 'FOCUS_COMPLETED',
@@ -313,7 +416,11 @@ export function useFocusTimer({
     reminderThresholdRef.current = 0;
     clearFocusCheckpoint(userId);
     return false;
-  }, [pendingFocus, dispatch, audio, pushToast, userId]);
+  }, [pendingFocus, dispatch, audio, pushToast, userId, timerStop, annullaRintocco]);
+
+  // Smontaggio del Provider (logout, chiusura): nessun rintocco fantasma
+  // programmato sul clock audio.
+  useEffect(() => () => annullaRintocco(), [annullaRintocco]);
 
   // V37.0 — PRESTAZIONI: anche questo era un letterale nuovo ad ogni
   // render, ed entra nel `value` del Context. Memoizzarlo non elimina il
@@ -327,11 +434,12 @@ export function useFocusTimer({
     isOverdriveActive: rawTimer.isOverdriveActive,
     startFocus,
     startBreak,
-    pause: timerPause,
-    resume: timerResume,
+    pause,
+    resume,
     interruptFocus,
     overdrive,
     endFocusSession,
+    freezeRunningBlock,
     pendingFocusMinutes: pendingFocus.totalMinutes,
     pendingFocusOverdrive: pendingFocus.overdriveOccurred,
     // V38.0 — gli id della sessione IN SOSPESO, distinti da quelli della
@@ -360,11 +468,12 @@ export function useFocusTimer({
     rawTimer.isOverdriveActive,
     startFocus,
     startBreak,
-    timerPause,
-    timerResume,
+    pause,
+    resume,
     interruptFocus,
     overdrive,
     endFocusSession,
+    freezeRunningBlock,
     pendingFocus.totalMinutes,
     pendingFocus.overdriveOccurred,
     pendingFocus.materiaId,

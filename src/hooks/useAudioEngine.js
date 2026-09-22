@@ -1,6 +1,8 @@
 import { useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   synthWebClick,
+  synthBlockComplete,
+  synthBreakOver,
   synthSuccessChime,
   synthHoverBlip,
   synthFocusReminder,
@@ -117,6 +119,83 @@ export function useAudioEngine({ enabled = true } = {}) {
     ensureRunning(ctx);
     synthFocusReminder(ctx);
   }, [ensureRunning]);
+
+  /**
+   * V40.3 — Block Complete: fine di un blocco di Focus. È il suono più
+   * importante dell'app e fino alla V40.2 non esisteva: l'unico avviso
+   * era la notifica di sistema, spenta per impostazione predefinita.
+   */
+  const playBlockComplete = useCallback(() => {
+    if (!enabledRef.current) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    ensureRunning(ctx);
+    synthBlockComplete(ctx);
+  }, [ensureRunning]);
+
+  /** V40.3 — Break Over: fine della pausa, più breve e discreto. */
+  const playBreakOver = useCallback(() => {
+    if (!enabledRef.current) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    ensureRunning(ctx);
+    synthBreakOver(ctx);
+  }, [ensureRunning]);
+
+  // V40.3 — Suoni PROGRAMMATI. Con la scheda in secondo piano i browser
+  // rallentano i timer JS fino a un tick al minuto: il rintocco di fine
+  // blocco arriverebbe in ritardo proprio quando serve di più (studi sul
+  // libro, l'app non è in primo piano). Il clock di Web Audio invece non
+  // viene rallentato: il suono viene piazzato ADESSO sulla linea del
+  // tempo audio, all'istante esatto in cui il blocco finirà, e viene
+  // annullato se il blocco si ferma prima.
+  const programmatiRef = useRef(new Set());
+
+  const annullaSuoniProgrammati = useCallback(() => {
+    programmatiRef.current.forEach((voce) => voce.annulla());
+    programmatiRef.current.clear();
+  }, []);
+
+  /**
+   * Programma il rintocco di fine blocco (o di fine pausa) fra `secondi`.
+   * Ritorna { annulla, suonato } — oppure null se l'audio è spento.
+   */
+  const scheduleEndChime = useCallback(
+    (tipo, secondi) => {
+      if (!enabledRef.current) return null;
+      const ctx = getAudioContext();
+      if (!ctx) return null;
+      ensureRunning(ctx);
+      const quando = ctx.currentTime + Math.max(0, Number(secondi) || 0);
+      const oscillatori = tipo === 'BREAK' ? synthBreakOver(ctx, quando) : synthBlockComplete(ctx, quando);
+      const voce = { timeout: null, annulla: () => {} };
+      voce.annulla = () => {
+        if (voce.timeout) clearTimeout(voce.timeout);
+        oscillatori.forEach((osc) => {
+          try {
+            osc.stop(ctx.currentTime);
+          } catch {
+            // Oscillatore già fermo: nulla da fare.
+          }
+        });
+      };
+      // Pulizia del registro poco dopo che il suono è finito.
+      voce.timeout = setTimeout(() => programmatiRef.current.delete(voce), (Math.max(0, Number(secondi) || 0) + 4) * 1000);
+      programmatiRef.current.add(voce);
+      return {
+        annulla: () => {
+          voce.annulla();
+          programmatiRef.current.delete(voce);
+        },
+        // Il rintocco è davvero già suonato? Si guarda l'orologio di Web
+        // Audio, non quello di sistema: se il dispositivo è andato in
+        // sospensione il tempo audio si ferma, e il suono va fatto
+        // partire adesso invece di darlo per suonato.
+        suonato: () => ctx.currentTime >= quando - 0.2
+      };
+    },
+    [ensureRunning]
+  );
 
   /**
    * Penalty Buzzer — ronzio distorto e grave (sawtooth + waveshaper), per
@@ -337,6 +416,17 @@ export function useAudioEngine({ enabled = true } = {}) {
     carnageDroneRef.current = null;
   }, []);
 
+  // V40.3 — Spegnere gli effetti sonori (o entrare in Sensory Zero) deve
+  // zittire ANCHE il drone simbionte già in corso. Prima il flag valeva
+  // solo all'avvio: un drone partito restava acceso per due ore, e
+  // l'interruttore in Karen OS Settings sembrava non funzionare.
+  useEffect(() => {
+    if (!enabled) {
+      stopMaxCarnageDrone();
+      annullaSuoniProgrammati();
+    }
+  }, [enabled, stopMaxCarnageDrone, annullaSuoniProgrammati]);
+
   /**
    * V27.0 — Pillar 4 (Daily Web-Sling): Web Reveal — sibilo ascendente
    * "lancio di ragnatela" (rumore filtrato + sweep), riprodotto quando il
@@ -423,6 +513,9 @@ export function useAudioEngine({ enabled = true } = {}) {
   return useMemo(
     () => ({
       playWebClick,
+      playBlockComplete,
+      playBreakOver,
+      scheduleEndChime,
       playSuccessChime,
       playGoblinAlert,
       playHoverBlip,
@@ -446,6 +539,9 @@ export function useAudioEngine({ enabled = true } = {}) {
     }),
     [
       playWebClick,
+      playBlockComplete,
+      playBreakOver,
+      scheduleEndChime,
       playSuccessChime,
       playGoblinAlert,
       playHoverBlip,

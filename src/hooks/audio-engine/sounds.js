@@ -651,3 +651,73 @@ export function synthDeleteWhoosh(ctx) {
   thudOsc.start(thudStart);
   thudOsc.stop(thudStart + 0.12);
 }
+
+/**
+ * V40.3 — Block Complete: il suono che mancava, cioè quello che conta di
+ * più in un'app col timer. Tre rintocchi in salita (C5–G5–C6) con una
+ * coda lunga: si sente dall'altra parte della stanza, non assomiglia a
+ * nessun altro suono dell'app e non è aggressivo. Prima la fine di un
+ * blocco era muta: l'unico segnale era la notifica di sistema, che però
+ * è spenta finché non la si attiva a mano.
+ */
+export function synthBlockComplete(ctx, at = null) {
+  const t0 = at != null ? Math.max(at, ctx.currentTime) : ctx.currentTime;
+
+  const master = ctx.createGain();
+  master.gain.value = 0.22;
+  master.connect(ctx.destination);
+  const oscillatori = [];
+
+  [523.25, 783.99, 1046.5].forEach((freq, i) => {
+    const start = t0 + i * 0.16;
+    // Campana: fondamentale + ottava sopra a volume basso.
+    [
+      { f: freq, vol: 1 },
+      { f: freq * 2, vol: 0.28 }
+    ].forEach(({ f, vol }) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = f;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(vol, start + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 1.5);
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(start);
+      osc.stop(start + 1.55);
+      oscillatori.push(osc);
+    });
+  });
+  return oscillatori;
+}
+
+/**
+ * V40.3 — Break Over: due note discendenti, più brevi e discrete del
+ * Block Complete. "La pausa è finita", non "hai vinto qualcosa".
+ */
+export function synthBreakOver(ctx, at = null) {
+  const t0 = at != null ? Math.max(at, ctx.currentTime) : ctx.currentTime;
+
+  const master = ctx.createGain();
+  master.gain.value = 0.16;
+  master.connect(ctx.destination);
+  const oscillatori = [];
+
+  [783.99, 523.25].forEach((freq, i) => {
+    const start = t0 + i * 0.14;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(1, start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.6);
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(start);
+    osc.stop(start + 0.65);
+    oscillatori.push(osc);
+  });
+  return oscillatori;
+}

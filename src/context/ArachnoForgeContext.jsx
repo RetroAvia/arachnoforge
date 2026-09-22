@@ -248,7 +248,9 @@ export function ArachnoForgeProvider({ children }) {
     // Settings. Entrambi best effort dentro l'hook: un permesso negato o
     // un browser senza le API non cambia nulla del resto del timer.
     notificationsEnabled: state.settings.systemNotifications === true,
-    keepScreenAwake: state.settings.keepScreenAwake !== false
+    keepScreenAwake: state.settings.keepScreenAwake !== false,
+    // V40.3 — il rintocco ogni 30 minuti di Focus accumulato.
+    focusReminderEnabled: state.settings.focusReminder !== false
   });
 
   // V26.0 — Cloud State Sync (Pillar 3): boot fetch. Un'unica query alla
@@ -832,13 +834,26 @@ export function ArachnoForgeProvider({ children }) {
     if (!wasActive && isActive) {
       pushToast('MAXIMUM CARNAGE MODE — Il simbionte prende il sopravvento. XP x2, Stamina illimitata per 2 ore.', 'danger');
       audio.playMaxCarnageActivate();
-      audio.startMaxCarnageDrone();
+      // V40.3 — il drone ambientale si può spegnere da Karen OS Settings
+      // senza rinunciare al resto degli effetti sonori.
+      if (state.settings.carnageDrone !== false) audio.startMaxCarnageDrone();
     } else if (wasActive && !isActive) {
       pushToast('Maximum Carnage Mode esaurita. Il simbionte si ritira.', 'info');
       audio.stopMaxCarnageDrone();
     }
     prevMaxCarnageRef.current = isActive;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.profile.maxCarnageActive, pushToast, audio]);
+
+  // V40.3 — l'interruttore del drone agisce anche su un drone già in
+  // corso: spegnerlo a metà finestra lo zittisce subito, riaccenderlo lo
+  // fa ripartire. Prima il flag valeva solo al momento dell'attivazione.
+  useEffect(() => {
+    if (!isMaxCarnageActive(state.profile)) return;
+    if (state.settings.carnageDrone === false) audio.stopMaxCarnageDrone();
+    else audio.startMaxCarnageDrone();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.settings.carnageDrone, state.profile.maxCarnageActive, state.profile.maxCarnageExpiresAt, audio]);
 
   // V33.1 — Suit Unlock Gating: prima d'ora lo sblocco della Symbiote
   // Suit era segnalato SOLO da una riga nel Combat Log (collassato di

@@ -157,6 +157,14 @@ export function createDefaultState() {
       // interferenza). Disattivabili in blocco: su mobile sono il primo
       // posto dove si perdono frame e batteria durante un pomodoro.
       heavyEffects: true,
+      // V40.3 — rintocco ogni 30 minuti di Focus accumulato. Separato
+      // dagli effetti sonori: è l'unico suono ricorrente durante lo
+      // studio, e chi lo trova invadente non deve spegnere tutto il resto.
+      focusReminder: true,
+      // V40.3 — drone ambientale continuo di Maximum Carnage Mode.
+      // Spegnibile da solo: due ore di ronzio grave, per quanto basso,
+      // non sono compatibili con lo studio di tutti.
+      carnageDrone: true,
       // V36.0 — data dell'ultimo export locale del profilo ("YYYY-MM-DD"),
       // usata solo per il promemoria di backup in Karen OS Settings.
       lastExportDateKey: null
