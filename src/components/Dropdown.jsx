@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icons.jsx';
-import { INPUT } from '../utils/designSystem.js';
+import { INPUT, INPUT_SM } from '../utils/designSystem.js';
 
 /** Margine minimo dal bordo del viewport. */
 const EDGE = 8;
@@ -42,7 +42,10 @@ function Dropdown({
   className = '',
   disabled = false,
   ariaLabel,
-  id
+  id,
+  // V40.2 — trigger compatto (stessa altezza dei campi INPUT_SM), per le
+  // righe dense come la coda "Da sistemare" del Campus.
+  compact = false
 }) {
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(-1);
@@ -227,7 +230,16 @@ function Dropdown({
                       : 'text-slate-300'
                   }`}
                 >
-                  <span className="min-w-0 break-words leading-snug">{opt.label}</span>
+                  {/* V40.2 — `depth` rientra le voci di un albero (nodi
+                      figli), `hint` aggiunge una riga secondaria. Entrambi
+                      facoltativi: le opzioni esistenti non cambiano. */}
+                  <span
+                    className="min-w-0 break-words leading-snug"
+                    style={opt.depth > 0 ? { paddingLeft: `${Math.min(opt.depth, 4) * 14}px` } : undefined}
+                  >
+                    {opt.label}
+                    {opt.hint && <span className="block text-xs text-slate-500 mt-0.5">{opt.hint}</span>}
+                  </span>
                   {active && <Icon name="check" className="w-4 h-4 shrink-0 text-secondary" />}
                 </li>
               );
@@ -250,7 +262,7 @@ function Dropdown({
         aria-expanded={open}
         aria-label={ariaLabel}
         title={selected ? String(selected.label) : undefined}
-        className={`${INPUT} flex items-center justify-between gap-2 text-left disabled:opacity-50 disabled:cursor-not-allowed ${
+        className={`${compact ? INPUT_SM : INPUT} flex items-center justify-between gap-2 text-left disabled:opacity-50 disabled:cursor-not-allowed ${
           open ? 'border-primary ring-1 ring-primary' : ''
         }`}
       >

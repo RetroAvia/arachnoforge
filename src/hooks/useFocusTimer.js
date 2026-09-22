@@ -50,17 +50,22 @@ export function useFocusTimer({
 }) {
   const [activeFocusMateriaId, setActiveFocusMateriaId] = useState(null);
   const [activeFocusSfidaId, setActiveFocusSfidaId] = useState(null);
+  // V40.2 — l'intento con cui è partita la sessione: 'SINTESI' quando la
+  // avvii da una lezione da sistemare (Campus o card "ADESSO"). Il
+  // Debriefing parte già in modo Sintesi e chiede le pagine fonte per fonte.
+  const [activeFocusIntent, setActiveFocusIntent] = useState(null);
   const [pendingFocus, setPendingFocus] = useState({
     totalMinutes: 0,
     overdriveOccurred: false,
     materiaId: null,
-    sfidaId: null
+    sfidaId: null,
+    intent: null
   });
 
-  const activeFocusRef = useRef({ materiaId: null, sfidaId: null });
+  const activeFocusRef = useRef({ materiaId: null, sfidaId: null, intent: null });
   useEffect(() => {
-    activeFocusRef.current = { materiaId: activeFocusMateriaId, sfidaId: activeFocusSfidaId };
-  }, [activeFocusMateriaId, activeFocusSfidaId]);
+    activeFocusRef.current = { materiaId: activeFocusMateriaId, sfidaId: activeFocusSfidaId, intent: activeFocusIntent };
+  }, [activeFocusMateriaId, activeFocusSfidaId, activeFocusIntent]);
 
   // V35.0 — Recovery-on-boot: gira UNA sola volta al mount dell'hook (il
   // guard `recoveryDoneRef` assorbe anche il doppio-invoke di
@@ -85,6 +90,9 @@ export function useFocusTimer({
         sfidaId: checkpoint.sfidaId || null,
         focusMinutes: checkpoint.totalMinutes,
         quality: DEFAULT_FOCUS_QUALITY,
+        // Una sessione avviata esplicitamente come Sintesi resta tale
+        // anche se recuperata: l'intento l'hai dichiarato tu all'avvio.
+        workMode: checkpoint.intent === 'SINTESI' ? 'SINTESI' : null,
         recovered: true
       }
     });
@@ -106,7 +114,8 @@ export function useFocusTimer({
         totalMinutes: pendingFocus.totalMinutes,
         overdriveOccurred: pendingFocus.overdriveOccurred,
         materiaId: pendingFocus.materiaId,
-        sfidaId: pendingFocus.sfidaId
+        sfidaId: pendingFocus.sfidaId,
+        intent: pendingFocus.intent || null
       });
     }
   }, [pendingFocus, userId]);
@@ -128,7 +137,8 @@ export function useFocusTimer({
           totalMinutes: pendingFocusRef.current.totalMinutes,
           overdriveOccurred: pendingFocusRef.current.overdriveOccurred,
           materiaId: pendingFocusRef.current.materiaId,
-          sfidaId: pendingFocusRef.current.sfidaId
+          sfidaId: pendingFocusRef.current.sfidaId,
+          intent: pendingFocusRef.current.intent || null
         });
       }
     };
@@ -169,13 +179,14 @@ export function useFocusTimer({
   useEffect(() => { wakeRef.current = keepScreenAwake; }, [keepScreenAwake]);
 
   const handleFocusComplete = useCallback(({ wasOverdrive }) => {
-    const { materiaId, sfidaId } = activeFocusRef.current;
+    const { materiaId, sfidaId, intent } = activeFocusRef.current;
     const minutes = focusTimeRef.current;
     setPendingFocus((prev) => ({
       totalMinutes: prev.totalMinutes + minutes,
       overdriveOccurred: prev.overdriveOccurred || wasOverdrive,
       materiaId: prev.materiaId || materiaId,
-      sfidaId: prev.sfidaId || sfidaId
+      sfidaId: prev.sfidaId || sfidaId,
+      intent: prev.totalMinutes > 0 ? prev.intent || null : intent || null
     }));
     // V36.0 — il momento esatto in cui il vecchio timer diventava muto:
     // blocco finito, schermo bloccato, nessuno te lo diceva.
@@ -223,9 +234,13 @@ export function useFocusTimer({
     }
   }, [rawTimer.status, rawTimer.remainingSeconds, rawTimer.totalSeconds, pendingFocus.totalMinutes, audio]);
 
-  const startFocus = useCallback((materiaId = null, sfidaId = null, overdrive = false) => {
+  const startFocus = useCallback((materiaId = null, sfidaId = null, overdrive = false, intent = null) => {
     setActiveFocusMateriaId(materiaId);
     setActiveFocusSfidaId(sfidaId);
+    setActiveFocusIntent(intent === 'SINTESI' ? 'SINTESI' : null);
+    // Il ref si aggiorna subito: un blocco non deve mai partire con
+    // l'intento della sessione precedente.
+    activeFocusRef.current = { materiaId, sfidaId, intent: intent === 'SINTESI' ? 'SINTESI' : null };
     timerStart('FOCUS', focusTimeRef.current, { overdrive });
   }, [timerStart]);
 
@@ -240,7 +255,7 @@ export function useFocusTimer({
       // Blood Pact è un abbandono volontario dell'intera sessione: forfeit
       // anche di eventuali minuti già accumulati in blocchi Overdrive
       // precedenti non ancora salvati.
-      setPendingFocus({ totalMinutes: 0, overdriveOccurred: false, materiaId: null, sfidaId: null });
+      setPendingFocus({ totalMinutes: 0, overdriveOccurred: false, materiaId: null, sfidaId: null, intent: null });
       reminderThresholdRef.current = 0;
       clearFocusCheckpoint(userId);
       dispatch({ type: 'BLOOD_PACT_INTERRUPT' });
@@ -250,8 +265,8 @@ export function useFocusTimer({
 
   const overdrive = useCallback(() => {
     timerStop();
-    const { materiaId, sfidaId } = activeFocusRef.current;
-    startFocus(materiaId, sfidaId, true);
+    const { materiaId, sfidaId, intent } = activeFocusRef.current;
+    startFocus(materiaId, sfidaId, true, intent);
   }, [timerStop, startFocus]);
 
   /**
@@ -274,11 +289,14 @@ export function useFocusTimer({
         payload: {
           wasOverdrive: pendingFocus.overdriveOccurred,
           materiaId: pendingFocus.materiaId,
-          sfidaId: pendingFocus.sfidaId,
+          // V40.2 — nel Debriefing puoi indicare su quale argomento hai
+          // lavorato davvero (sempre della stessa materia).
+          sfidaId: forgia && forgia.sfidaId !== undefined ? forgia.sfidaId || null : pendingFocus.sfidaId,
           focusMinutes: pendingFocus.totalMinutes,
           quality,
           workMode: forgia?.workMode || null,
           pagineFonte: forgia?.pagineFonte || 0,
+          pagineFontePer: forgia?.pagineFontePer || null,
           pagineAppuntiProdotte: forgia?.pagineAppuntiProdotte || 0
         }
       });
@@ -286,12 +304,12 @@ export function useFocusTimer({
       if (quality === FOCUS_QUALITY.DISTRACTED) {
         pushToast('Sessione faticosa registrata — attiva un Daily Protocol per recuperare Stamina.', 'info');
       }
-      setPendingFocus({ totalMinutes: 0, overdriveOccurred: false, materiaId: null, sfidaId: null });
+      setPendingFocus({ totalMinutes: 0, overdriveOccurred: false, materiaId: null, sfidaId: null, intent: null });
       reminderThresholdRef.current = 0;
       clearFocusCheckpoint(userId);
       return true;
     }
-    setPendingFocus({ totalMinutes: 0, overdriveOccurred: false, materiaId: null, sfidaId: null });
+    setPendingFocus({ totalMinutes: 0, overdriveOccurred: false, materiaId: null, sfidaId: null, intent: null });
     reminderThresholdRef.current = 0;
     clearFocusCheckpoint(userId);
     return false;
@@ -325,6 +343,7 @@ export function useFocusTimer({
     // chiedono le pagine di un argomento e si accreditano a un altro.
     pendingFocusMateriaId: pendingFocus.materiaId,
     pendingFocusSfidaId: pendingFocus.sfidaId,
+    pendingFocusIntent: pendingFocus.intent || null,
     activeFocusMateriaId,
     activeFocusSfidaId,
     // V35.0 — sostituisce la logica fragile locale (`awaitingPostFocus`,
@@ -350,6 +369,7 @@ export function useFocusTimer({
     pendingFocus.overdriveOccurred,
     pendingFocus.materiaId,
     pendingFocus.sfidaId,
+    pendingFocus.intent,
     activeFocusMateriaId,
     activeFocusSfidaId
   ]);
