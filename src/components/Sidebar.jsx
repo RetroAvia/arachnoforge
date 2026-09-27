@@ -6,7 +6,7 @@ import { ROUTES } from '../hooks/useArachnoForgeRouter.js';
 import { SCHEMA_VERSION } from '../data/defaultSchema.js';
 import { BADGE } from '../utils/designSystem.js';
 
-const NAV_ITEMS = [
+export const NAV_ITEMS = [
   { route: ROUTES.MISSION_CONTROL, label: 'Stark-Web Terminal', icon: 'terminal' },
   { route: ROUTES.QUADRANT_HUB, label: 'The Web-Matrix', icon: 'web' },
   // V39.0 — subito sotto il Web-Matrix, da cui prende le materie: è
