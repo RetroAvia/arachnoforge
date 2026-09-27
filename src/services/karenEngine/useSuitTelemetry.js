@@ -154,9 +154,11 @@ export function useSuitTelemetry() {
   const [quizGenerating, setQuizGenerating] = useState(false);
   const saveInFlightRef = useRef(false);
   const currentDateRef = useRef(todayDateOnlyKey());
-  // V37.0 — il contatore serve anche come dipendenza del useMemo di
-  // ritorno: al cambio di giorno `todayStr` cambia pur venendo da un ref.
-  const [dateTick, forceDateTick] = useState(0);
+  // V37.0 — al cambio di giorno `todayStr` deve cambiare anche per chi
+  // legge il valore di ritorno. V41: è uno stato vero (prima un contatore
+  // messo fra le dipendenze del useMemo accanto a un ref), così React sa
+  // da solo quando ricalcolare.
+  const [todayStr, setTodayStr] = useState(() => currentDateRef.current);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -168,6 +170,7 @@ export function useSuitTelemetry() {
   const fetchAll = useCallback(async (dateOverride) => {
     const targetDate = dateOverride || todayDateOnlyKey();
     currentDateRef.current = targetDate;
+    setTodayStr(targetDate);
     setLoading(true);
     setError(null);
     try {
@@ -241,7 +244,7 @@ export function useSuitTelemetry() {
       const nowDate = todayDateOnlyKey();
       if (nowDate !== currentDateRef.current) {
         currentDateRef.current = nowDate;
-        forceDateTick((t) => t + 1);
+        setTodayStr(nowDate);
         fetchAll(nowDate);
       }
     }, DATE_ROLLOVER_CHECK_MS);
@@ -464,7 +467,7 @@ export function useSuitTelemetry() {
       scanning,
       saving,
       error,
-      todayStr: currentDateRef.current,
+      todayStr,
       triggerOracleScan,
       saveSubjectiveLog,
       generateNodeQuiz,
@@ -483,10 +486,7 @@ export function useSuitTelemetry() {
       scanning,
       saving,
       error,
-      // `currentDateRef` è un ref: il rollover di mezzanotte forza già un
-      // render dedicato (forceDateTick), quindi il valore letto qui è
-      // sempre aggiornato senza doverlo mettere fra le dipendenze.
-      dateTick,
+      todayStr,
       triggerOracleScan,
       saveSubjectiveLog,
       generateNodeQuiz,

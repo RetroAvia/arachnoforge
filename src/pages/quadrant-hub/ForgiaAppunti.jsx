@@ -48,10 +48,10 @@ function FonteRow({ fonte, indice, onChange, onRemove }) {
   const meta = FONTE_TIPO_META[fonte.tipo] || FONTE_TIPO_META.ALTRO;
 
   return (
-    <div className="rounded-xl border border-accent/25 bg-surface/85 p-3 space-y-3 shadow-[0_2px_12px_rgba(0,0,0,0.35)]">
-      <div className="flex items-start gap-2">
+    <div className="rounded-lg border border-line bg-panel p-3 space-y-3">
+      <div className="flex items-center gap-2">
         <div
-          className="flex-1 min-w-0 grid grid-cols-2 gap-1.5"
+          className="ds-segmented flex-1 min-w-0 !grid grid-cols-4"
           role="radiogroup"
           aria-label={`Tipo della fonte ${indice + 1}`}
         >
@@ -64,12 +64,9 @@ function FonteRow({ fonte, indice, onChange, onRemove }) {
                 type="button"
                 role="radio"
                 aria-checked={attivo}
+                title={m.label}
                 onClick={() => onChange({ tipo: t })}
-                className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-xs font-semibold transition-colors duration-200 ${
-                  attivo
-                    ? 'border-accent/60 bg-accent/15 text-accent'
-                    : 'border-white/10 bg-white/[0.02] text-slate-400 hover:text-slate-200 hover:border-white/25'
-                }`}
+                className="justify-center !px-1.5 min-w-0"
               >
                 <Icon name={m.icon} className="w-3.5 h-3.5 shrink-0" />
                 <span className="truncate">{m.short}</span>
@@ -80,16 +77,17 @@ function FonteRow({ fonte, indice, onChange, onRemove }) {
         <button
           type="button"
           onClick={onRemove}
-          className="shrink-0 w-10 h-10 -mt-1 -mr-1 flex items-center justify-center rounded-lg text-slate-500 hover:text-primary hover:bg-primary/10 transition-colors duration-300"
+          className="ds-icon-btn shrink-0 hover:!text-primary"
           aria-label={`Rimuovi ${meta.label.toLowerCase()}${fonte.etichetta ? ` "${fonte.etichetta}"` : ''}`}
+          title="Rimuovi fonte"
         >
           <Icon name="trash" className="w-4 h-4" />
         </button>
       </div>
 
       <div>
-        <label htmlFor={`${baseId}-nome`} className="text-[11px] text-slate-400 block mb-1">
-          Nome <span className="text-slate-500">(facoltativo)</span>
+        <label htmlFor={`${baseId}-nome`} className="ds-label !text-xs">
+          Nome <span className="text-slate-500 font-normal">(facoltativo)</span>
         </label>
         <input
           id={`${baseId}-nome`}
@@ -110,7 +108,7 @@ function FonteRow({ fonte, indice, onChange, onRemove }) {
 
       <div className="grid grid-cols-2 gap-2.5">
         <div>
-          <label htmlFor={`${baseId}-tot`} className="text-[11px] text-slate-400 block mb-1">
+          <label htmlFor={`${baseId}-tot`} className="ds-label !text-xs">
             Pagine totali
           </label>
           <input
@@ -127,11 +125,11 @@ function FonteRow({ fonte, indice, onChange, onRemove }) {
               onChange({ pagine: nuovo, pagineFatte: Math.min(fatte, nuovo) });
             }}
             placeholder="Es. 600"
-            className={`${INPUT_SM} font-mono`}
+            className={`${INPUT_SM} ds-num`}
           />
         </div>
         <div>
-          <label htmlFor={`${baseId}-fatte`} className="text-[11px] text-slate-400 block mb-1">
+          <label htmlFor={`${baseId}-fatte`} className="ds-label !text-xs">
             Già snellite
           </label>
           <input
@@ -147,23 +145,20 @@ function FonteRow({ fonte, indice, onChange, onRemove }) {
             }
             placeholder="0"
             disabled={totali === 0}
-            className={`${INPUT_SM} font-mono disabled:opacity-40`}
+            className={`${INPUT_SM} ds-num`}
           />
         </div>
       </div>
 
       {totali > 0 && (
-        <div className="space-y-1">
-          <div className="h-2 rounded-full bg-surface border border-white/10 overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-accent to-accent/60 transition-all duration-500"
-              style={{ width: `${pct}%` }}
-            />
+        <div className="space-y-1.5">
+          <div className="ds-progress">
+            <span className="bg-accent" style={{ width: `${pct}%` }} />
           </div>
-          <p className="flex items-center justify-between gap-2 text-[11px] font-mono af-mono-nums">
+          <p className="flex items-center justify-between gap-2 text-[11px] ds-num">
             <span className="text-slate-400">{pct}% snellito</span>
-            <span className={residue > 0 ? 'text-accent' : 'text-emerald-400'}>
-              {residue > 0 ? `${pagineLabel(residue)} da snellire` : 'fonte completata'}
+            <span className={residue > 0 ? 'text-accent' : 'text-emerald-300'}>
+              {residue > 0 ? `${pagineLabel(residue)} da snellire` : 'Fonte completata'}
             </span>
           </p>
         </div>
@@ -194,7 +189,7 @@ export function FontiEditor({
   oreStimate,
   compact = false
 }) {
-  const lista = Array.isArray(fonti) ? fonti : [];
+  const lista = useMemo(() => (Array.isArray(fonti) ? fonti : []), [fonti]);
   const appuntiId = useId();
   const completiId = useId();
 
@@ -227,18 +222,14 @@ export function FontiEditor({
   };
 
   return (
-    <div className="space-y-3.5 rounded-2xl border border-accent/25 bg-gradient-to-b from-accent/[0.07] to-accent/[0.02] p-3.5 sm:p-4">
+    <div className="space-y-3.5 rounded-xl border border-line bg-surface/60 p-3.5 sm:p-4">
       <div>
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm font-bold text-accent flex items-center gap-1.5 tracking-wide min-w-0">
-            <Icon name="flask" className="w-4 h-4 shrink-0" />
-            <span className="truncate">FORGIA DEGLI APPUNTI</span>
+          <p className="text-sm font-semibold text-slate-100 flex items-center gap-2 min-w-0">
+            <Icon name="flask" className="w-4 h-4 shrink-0 text-accent" />
+            <span className="truncate">Forgia degli Appunti</span>
           </p>
-          <button
-            type="button"
-            onClick={aggiungi}
-            className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-accent/50 bg-accent/15 px-3 py-2 text-xs font-bold tracking-wide text-accent hover:bg-accent/25 transition-colors duration-300"
-          >
+          <button type="button" onClick={aggiungi} className="ds-btn ds-btn-ghost ds-btn-sm shrink-0">
             <Icon name="plus" className="w-3.5 h-3.5" />
             Fonte
           </button>
@@ -271,12 +262,10 @@ export function FontiEditor({
         </p>
       )}
 
-      {/* Una colonna sola: l'editor vive sempre dentro una modale, che
-          anche su desktop è larga meno di 450px — affiancati, etichetta e
-          spunta andavano a capo su tre righe. */}
+      {/* Una colonna sola: l'editor vive sempre dentro una modale. */}
       <div className="space-y-3">
         <div>
-          <label htmlFor={appuntiId} className="text-sm text-slate-300 mb-1.5 flex items-center gap-1.5">
+          <label htmlFor={appuntiId} className="ds-label flex items-center gap-1.5">
             <Icon name="note" className="w-3.5 h-3.5 text-secondary" />
             Pagine dei tuoi appunti
           </label>
@@ -289,22 +278,19 @@ export function FontiEditor({
             value={pagineAppunti}
             onChange={(e) => onPagineAppuntiChange(e.target.value)}
             placeholder="Es. 20"
-            className={`${INPUT} font-mono`}
+            className={`${INPUT} ds-num`}
           />
           <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
             Quelle già scritte. Crescono da sole a ogni sessione di sintesi.
           </p>
         </div>
 
-        {/* La spunta ha senso solo se c'è una sintesi da chiudere: senza
-            fonti non compare, invece di occupare mezzo form per niente. */}
+        {/* La spunta ha senso solo se c'è una sintesi da chiudere. */}
         {lista.length > 0 && (
           <label
             htmlFor={completiId}
-            className={`flex items-start gap-3 cursor-pointer rounded-xl border p-3 transition-colors duration-300 ${
-              appuntiCompleti
-                ? 'border-emerald-400/40 bg-emerald-500/[0.07]'
-                : 'border-white/10 bg-surface/70 hover:border-secondary/40'
+            className={`flex items-start gap-3 cursor-pointer rounded-lg border p-3 transition-colors duration-150 ${
+              appuntiCompleti ? 'border-emerald-400/35 bg-emerald-500/[0.06]' : 'border-line bg-panel hover:border-line-strong'
             }`}
           >
             <input
@@ -325,13 +311,13 @@ export function FontiEditor({
       </div>
 
       {(anteprima.haFonti || anteprima.pagineAppunti > 0) && (
-        <div className="rounded-xl border border-secondary/25 bg-surface/80 p-3 space-y-2">
+        <div className="rounded-lg border border-line bg-panel p-3 space-y-2">
           <div className="flex items-center justify-between gap-2 flex-wrap text-sm">
             <span className="text-slate-400">Appunti finali previsti</span>
-            <span className="font-mono af-mono-nums text-slate-100">
+            <span className="ds-num text-slate-100 font-medium">
               {pagineLabel(anteprima.pagineAppuntiProiettate)}
               {anteprima.pagineAppuntiDaProdurre > 0 && (
-                <span className="text-slate-500">
+                <span className="text-slate-500 font-normal">
                   {' '}
                   ({anteprima.pagineAppunti} + {anteprima.pagineAppuntiDaProdurre})
                 </span>
@@ -340,7 +326,7 @@ export function FontiEditor({
           </div>
           <div className="flex items-center justify-between gap-2 flex-wrap text-sm">
             <span className="text-slate-400">Carico di questo argomento</span>
-            <span className="font-mono af-mono-nums flex items-center gap-1.5 flex-wrap">
+            <span className="ds-num flex items-center gap-1.5 flex-wrap">
               {anteprima.oreSintesiTotali > 0 && (
                 <>
                   <span className="text-accent">{oreLabel(anteprima.oreSintesiTotali)} sintesi</span>
@@ -349,11 +335,11 @@ export function FontiEditor({
               )}
               <span className="text-secondary">{oreLabel(anteprima.oreStudioTotali)} studio</span>
               <span className="text-slate-600">=</span>
-              <span className="text-slate-100 font-bold">{oreLabel(anteprima.oreTotali)}</span>
+              <span className="text-slate-100 font-semibold">{oreLabel(anteprima.oreTotali)}</span>
             </span>
           </div>
           {(anteprima.sintesiStimata || anteprima.proiezioneStimata || anteprima.studioStimato) && (
-            <p className="text-[11px] text-slate-500 leading-relaxed pt-2 border-t border-white/5">
+            <p className="text-[11px] text-slate-500 leading-relaxed pt-2 border-t border-line">
               Karen non ha ancora misurato{' '}
               {[
                 anteprima.sintesiStimata && 'il tuo ritmo di sintesi',
@@ -381,33 +367,30 @@ export function NodeWorkSummary({ sfida, calibration }) {
   if (!b.haFonti && b.pagineAppunti === 0) return null;
 
   return (
-    <div className="rounded-xl border border-white/10 bg-surface/60 p-3 space-y-2.5">
-      <p className="text-xs font-semibold tracking-widest text-slate-400 flex items-center gap-1.5">
+    <div className="rounded-xl border border-line bg-surface/70 p-3.5 space-y-2.5">
+      <p className="ds-eyebrow flex items-center gap-1.5">
         <Icon name="flask" className="w-3.5 h-3.5 text-accent" />
-        FORGIA
+        Forgia degli Appunti
       </p>
 
       {b.haFonti && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between gap-2 text-sm">
             <span className="text-slate-400">Fonti snellite</span>
-            <span className="font-mono af-mono-nums text-slate-200">
+            <span className="ds-num text-slate-200">
               {b.fontiFatte}/{b.fontiTotali}
             </span>
           </div>
-          <div className="h-2 rounded-full bg-surface/90 border border-white/10 overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-accent to-accent/60 transition-all duration-500"
-              style={{ width: `${b.fontiPct}%` }}
-            />
+          <div className="ds-progress">
+            <span className="bg-accent" style={{ width: `${b.fontiPct}%` }} />
           </div>
           {b.oreSintesiResidue > 0 && (
-            <p className="text-[11px] text-accent">
+            <p className="text-[11px] text-accent ds-num">
               {pagineLabel(b.fontiResidue)} ancora da snellire · ≈ {oreLabel(b.oreSintesiResidue)}
             </p>
           )}
           {b.sintesiConclusa && (
-            <p className="text-[11px] text-emerald-400 flex items-center gap-1">
+            <p className="text-[11px] text-emerald-300 flex items-center gap-1">
               <Icon name="check" className="w-3.5 h-3.5" />
               Sintesi chiusa
             </p>
@@ -415,9 +398,9 @@ export function NodeWorkSummary({ sfida, calibration }) {
         </div>
       )}
 
-      <div className="flex items-center justify-between gap-2 text-sm pt-1 border-t border-white/5">
+      <div className="flex items-center justify-between gap-2 text-sm pt-2 border-t border-line">
         <span className="text-slate-400">I tuoi appunti</span>
-        <span className="font-mono af-mono-nums text-slate-200">
+        <span className="ds-num text-slate-200">
           {b.pagineAppuntiDaProdurre > 0 ? (
             <>
               {b.pagineAppunti} <span className="text-slate-500">→ {pagineLabel(b.pagineAppuntiProiettate)} previste</span>
@@ -429,7 +412,7 @@ export function NodeWorkSummary({ sfida, calibration }) {
       </div>
       <div className="flex items-center justify-between gap-2 text-sm">
         <span className="text-slate-400">Studio residuo</span>
-        <span className="font-mono af-mono-nums text-secondary">{oreLabel(b.oreStudioResidueNette)}</span>
+        <span className="ds-num text-secondary">{oreLabel(b.oreStudioResidueNette)}</span>
       </div>
     </div>
   );
@@ -440,186 +423,151 @@ export function NodeWorkSummary({ sfida, calibration }) {
  * ================================================================== */
 
 const RACC_META = {
-  SINTESI: {
-    label: 'Oggi: SINTESI',
-    tone: 'text-accent',
-    border: 'border-accent/40',
-    bg: 'bg-accent/10',
-    icon: 'flask'
-  },
-  STUDIO: {
-    label: 'Oggi: STUDIO',
-    tone: 'text-secondary',
-    border: 'border-secondary/40',
-    bg: 'bg-secondary/10',
-    icon: 'target'
-  },
-  MISTO: {
-    label: 'Oggi: SINTESI + STUDIO',
-    tone: 'text-cyan-300',
-    border: 'border-cyan-400/40',
-    bg: 'bg-cyan-500/10',
-    icon: 'multiverse'
-  },
-  NESSUNA: { label: '', tone: 'text-slate-400', border: 'border-white/10', bg: 'bg-white/[0.03]', icon: 'radar' }
+  SINTESI: { label: 'Oggi: sintesi', badge: 'ds-badge ds-badge-amber', icon: 'flask' },
+  STUDIO: { label: 'Oggi: studio', badge: 'ds-badge ds-badge-blue', icon: 'target' },
+  MISTO: { label: 'Oggi: sintesi + studio', badge: 'ds-badge ds-badge-cyan', icon: 'multiverse' },
+  NESSUNA: { label: '', badge: 'ds-badge ds-badge-slate', icon: 'radar' }
 };
+
+const PASSO_TONE = {
+  INDIETRO: { well: 'border-primary/35 bg-primary/[0.06]', text: 'text-primary', label: 'Indietro' },
+  QUASI: { well: 'border-accent/35 bg-accent/[0.05]', text: 'text-accent', label: 'Quasi al passo' },
+  IN_PARI: { well: 'border-emerald-400/30 bg-emerald-500/[0.05]', text: 'text-emerald-300', label: 'Al passo' }
+};
+
+const giorniLabel = (n) => `${n} ${n === 1 ? 'giorno' : 'giorni'}`;
+
+/**
+ * Spiegazione della scadenza degli appunti. V41 — `inRitardo` vale sia
+ * per una scadenza già superata sia per una sintesi che "non ci sta" nei
+ * giorni rimasti: prima entrambi i casi dicevano "scadenza superata",
+ * anche con la data ancora nel futuro.
+ */
+function deadlineText(plan) {
+  const g = plan.giorniAllaChiusura;
+  if (g != null && g < 0) {
+    return `Scadenza superata di ${giorniLabel(Math.abs(g))}: da qui ogni giorno speso a snellire è tolto allo studio.`;
+  }
+  if (g === 0) return 'La scadenza è oggi: da domani ogni giorno speso a snellire è tolto allo studio.';
+  if (plan.inRitardo) {
+    return `Fra ${giorniLabel(g)}: troppo pochi per la sintesi che resta. È l'ultimo giorno utile per lasciare ${giorniLabel(plan.giorniPerStudio)} di studio.`;
+  }
+  return `Fra ${giorniLabel(g)}. Non è la data d'esame: è l'ultimo giorno utile per lasciare ${giorniLabel(plan.giorniPerStudio)} di studio su quello che stai scrivendo.`;
+}
 
 /**
  * Il pannello che dà il numero che nessun'altra app dà: entro quando
- * gli appunti devono essere finiti.
+ * gli appunti devono essere finiti per fare in tempo a studiarli.
  */
 export function PianoAppuntiPanel({ plan, materiaNome, passo = null }) {
   if (!plan || !plan.attiva) return null;
   const meta = RACC_META[plan.raccomandazione] || RACC_META.NESSUNA;
   const totaleOre = plan.oreResidue || 0;
   const pctSintesi = totaleOre > 0 ? Math.round((plan.oreSintesiResidue / totaleOre) * 100) : 0;
+  const passoTone = passo ? PASSO_TONE[passo.stato] || PASSO_TONE.IN_PARI : null;
+  const showPasso = passo && passo.dovutoMin > 0;
 
   return (
-    <div className={CARD_NOPAD}>
-      <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2 flex-wrap">
-        <p className="text-sm font-bold tracking-widest text-slate-200 flex items-center gap-2">
-          <Icon name="flask" className="w-4 h-4 text-accent" />
-          PIANO APPUNTI
-        </p>
+    <section className={CARD_NOPAD} aria-label={materiaNome ? `Piano appunti di ${materiaNome}` : 'Piano appunti'}>
+      <div className="px-4 sm:px-5 py-3.5 border-b border-line flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Icon name="flask" className="w-4 h-4 text-accent shrink-0" />
+          <h3 className="text-[15px] font-semibold text-white">Piano appunti</h3>
+        </div>
         {plan.raccomandazione !== RACCOMANDAZIONE.NESSUNA && (
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-mono ${meta.border} ${meta.bg} ${meta.tone}`}
-          >
-            <Icon name={meta.icon} className="w-3.5 h-3.5" />
+          <span className={meta.badge}>
+            <Icon name={meta.icon} className="w-3 h-3" />
             {meta.label}
           </span>
         )}
       </div>
 
-      <div className="p-4 space-y-4">
+      <div className="p-4 sm:p-5 space-y-4">
         {plan.motivo && <p className="text-sm text-slate-300 leading-relaxed">{plan.motivo}</p>}
 
-        {/* La scadenza vera. */}
-        {plan.dataChiusuraAppunti && (
-          <div
-            className={`rounded-xl border p-3 ${
-              plan.inRitardo ? 'border-primary/50 bg-primary/10' : 'border-accent/30 bg-accent/[0.06]'
-            }`}
-          >
-            <p className="text-[11px] tracking-widest text-slate-400 mb-1">APPUNTI DA CHIUDERE ENTRO</p>
-            <p
-              className={`text-xl font-mono af-mono-nums font-bold ${
-                plan.inRitardo ? 'text-primary' : 'text-accent'
-              }`}
-            >
-              {formatDateOnlyHuman(plan.dataChiusuraAppunti)}
-            </p>
-            <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
-              {plan.inRitardo ? (
-                <>
-                  Scadenza superata di {Math.abs(plan.giorniAllaChiusura)} giorni. Da qui in poi ogni giorno speso a
-                  snellire è un giorno tolto allo studio.
-                </>
-              ) : (
-                <>
-                  Fra {plan.giorniAllaChiusura} giorni. Non è la data d'esame: è il giorno oltre il quale non
-                  resterebbe abbastanza tempo per studiare quello che stai scrivendo ({plan.giorniPerStudio} giorni di
-                  studio previsti).
-                </>
-              )}
-            </p>
-          </div>
-        )}
-
-        {/* V39.0 — Empire State University: se la materia è in orario
-            nel semestre in corso, il ritmo che conta durante le lezioni è
-            quello settimanale — la sintesi dovuta per le lezioni già
-            fatte, non una quota spalmata fino all'esame. */}
-        {passo && passo.dovutoMin > 0 && (
-          <div
-            className={`rounded-xl border p-3 ${
-              passo.stato === 'INDIETRO'
-                ? 'border-primary/40 bg-primary/[0.07]'
-                : passo.stato === 'QUASI'
-                ? 'border-accent/40 bg-accent/[0.06]'
-                : 'border-emerald-400/30 bg-emerald-500/[0.05]'
-            }`}
-          >
-            <p className="text-[11px] tracking-widest text-slate-400 mb-1 flex items-center gap-1.5">
-              <Icon name="calendar" className="w-3.5 h-3.5 text-cyan-300" />
-              STARE AL PASSO CON LE LEZIONI
-            </p>
-            <p className="text-sm text-slate-200">
-              Sintesi di questa settimana:{' '}
-              <span className="font-mono af-mono-nums">{oreLabel(passo.sintesiFattaMin / 60)}</span> su{' '}
-              <span className="font-mono af-mono-nums">{oreLabel(passo.dovutoMin / 60)}</span> dovute per
-              le lezioni già fatte
-              {passo.mancanoMin > 0 && (
-                <span className="text-slate-400">
-                  {' '}
-                  — mancano {oreLabel(passo.mancanoMin / 60)}
-                </span>
-              )}
-              .
-            </p>
-          </div>
-        )}
-
-        {/* Quota di oggi. */}
-        {plan.quotaSintesiOggi > 0 && (
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <span className="text-sm text-slate-400">Da snellire oggi</span>
-            <span className="font-mono af-mono-nums text-lg text-accent">{pagineLabel(plan.quotaSintesiOggi)}</span>
-          </div>
-        )}
-
-        {/* I due bilanci, uno accanto all'altro. */}
-        <div className="space-y-2">
-          <div className="flex h-2.5 rounded-full overflow-hidden border border-white/10 bg-surface/90">
-            {plan.oreSintesiResidue > 0 && (
-              <div className="h-full bg-gradient-to-r from-accent to-accent/60" style={{ width: `${pctSintesi}%` }} />
-            )}
-            {plan.oreStudioResidue > 0 && (
+        {(plan.dataChiusuraAppunti || showPasso) && (
+          <div className={`grid gap-3 ${plan.dataChiusuraAppunti && showPasso ? 'md:grid-cols-2' : ''}`}>
+            {/* La scadenza vera. */}
+            {plan.dataChiusuraAppunti && (
               <div
-                className="h-full bg-gradient-to-r from-secondary to-secondary-dark"
-                style={{ width: `${100 - pctSintesi}%` }}
-              />
+                className={`rounded-xl border p-3.5 ${
+                  plan.inRitardo ? 'border-primary/40 bg-primary/[0.07]' : 'border-line bg-surface/70'
+                }`}
+              >
+                <p className="ds-eyebrow">Appunti da chiudere entro</p>
+                <p className={`mt-1 text-xl font-bold ds-num ${plan.inRitardo ? 'text-primary' : 'text-accent'}`}>
+                  {formatDateOnlyHuman(plan.dataChiusuraAppunti)}
+                </p>
+                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">{deadlineText(plan)}</p>
+              </div>
+            )}
+
+            {/* V39.0 — durante il semestre conta il ritmo settimanale: la
+                sintesi dovuta per le lezioni già fatte. */}
+            {showPasso && (
+              <div className={`rounded-xl border p-3.5 ${passoTone.well}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="ds-eyebrow flex items-center gap-1.5">
+                    <Icon name="calendar" className="w-3.5 h-3.5 text-cyan-300" />
+                    Al passo con le lezioni
+                  </p>
+                  <span className={`text-xs font-semibold ${passoTone.text}`}>{passoTone.label}</span>
+                </div>
+                <p className="mt-1.5 text-sm text-slate-200 ds-num">
+                  {oreLabel(passo.sintesiFattaMin / 60)} <span className="text-slate-500">su</span>{' '}
+                  {oreLabel(passo.dovutoMin / 60)}
+                </p>
+                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                  Sintesi di questa settimana per le lezioni già fatte
+                  {passo.mancanoMin > 0 ? ` — ne mancano ${oreLabel(passo.mancanoMin / 60)}.` : '.'}
+                </p>
+              </div>
             )}
           </div>
-          <div className="flex items-center justify-between gap-2 text-xs font-mono flex-wrap">
-            <span className="text-accent">
+        )}
+
+        {/* I due bilanci sulla stessa barra. */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2 text-xs ds-num flex-wrap">
+            <span className="text-accent font-medium">
               {oreLabel(plan.oreSintesiResidue)} di sintesi
-              {plan.fontiResidue > 0 && <span className="text-slate-500"> · {pagineLabel(plan.fontiResidue)}</span>}
+              {plan.fontiResidue > 0 && <span className="text-slate-500 font-normal"> · {pagineLabel(plan.fontiResidue)}</span>}
             </span>
-            <span className="text-secondary">{oreLabel(plan.oreStudioResidue)} di studio</span>
+            <span className="text-secondary font-medium">{oreLabel(plan.oreStudioResidue)} di studio</span>
+          </div>
+          <div className="flex h-2 rounded-full overflow-hidden bg-white/[0.07] gap-px">
+            {plan.oreSintesiResidue > 0 && <div className="h-full bg-accent" style={{ width: `${pctSintesi}%` }} />}
+            {plan.oreStudioResidue > 0 && <div className="h-full bg-secondary" style={{ width: `${100 - pctSintesi}%` }} />}
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/5">
+        <dl className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-3 border-t border-line">
           <div>
-            <p className="text-[11px] tracking-wide text-slate-500">FONTI</p>
-            <p className="font-mono af-mono-nums text-sm text-slate-200">
-              {plan.fontiFatte}/{plan.fontiTotali} <span className="text-slate-500">({plan.fontiPct}%)</span>
-            </p>
+            <dt className="text-[11px] text-slate-500">Fonti snellite</dt>
+            <dd className="ds-num text-sm text-slate-100 mt-0.5">
+              {plan.fontiFatte}/{plan.fontiTotali} <span className="text-slate-500">· {plan.fontiPct}%</span>
+            </dd>
           </div>
           <div>
-            <p className="text-[11px] tracking-wide text-slate-500">APPUNTI FINALI</p>
-            <p className="font-mono af-mono-nums text-sm text-slate-200">
-              {plan.pagineAppuntiProiettate}{' '}
-              <span className="text-slate-500">{plan.pagineAppuntiProiettate === 1 ? 'pagina prevista' : 'pagine previste'}</span>
-            </p>
+            <dt className="text-[11px] text-slate-500">Appunti finali previsti</dt>
+            <dd className="ds-num text-sm text-slate-100 mt-0.5">{pagineLabel(plan.pagineAppuntiProiettate)}</dd>
           </div>
-        </div>
+          {plan.quotaSintesiOggi > 0 && (
+            <div>
+              <dt className="text-[11px] text-slate-500">Da snellire oggi</dt>
+              <dd className="ds-num text-sm font-semibold text-accent mt-0.5">{pagineLabel(plan.quotaSintesiOggi)}</dd>
+            </div>
+          )}
+        </dl>
 
         {plan.stimato && (
           <p className="text-[11px] text-slate-500 leading-relaxed">
-            Stima non ancora calibrata su di te: servono qualche sessione di sintesi e qualche argomento chiuso perché
-            Karen misuri il tuo ritmo reale e quanto si restringe il materiale nelle tue mani. Fino ad allora questi
-            numeri sono un punto di partenza dichiarato.
-          </p>
-        )}
-
-        {materiaNome && (
-          <p className="sr-only">
-            Piano appunti di {materiaNome}: {plan.motivo}
+            Stima non ancora calibrata su di te: dopo qualche sessione di sintesi e qualche argomento chiuso Karen misura
+            il tuo ritmo reale e quanto si restringe il materiale nelle tue mani. Fino ad allora è un punto di partenza
+            dichiarato.
           </p>
         )}
       </div>
-    </div>
+    </section>
   );
 }

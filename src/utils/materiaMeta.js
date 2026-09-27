@@ -129,7 +129,10 @@ export function computeRemainingHours(materia, calibration = null) {
  * mancano 3 giorni o meno alla data d'esame (e l'esame non è già passato).
  */
 export function isGoblinProtocol(materia) {
-  if (!materia.examDate) return false;
+  // V41 — un esame già superato non è più un'emergenza: prima una materia
+  // archiviata con l'appello di ieri restava "Goblin" (e bloccata) per
+  // tre giorni.
+  if (!materia || materia.examPassed || !materia.examDate) return false;
   const daysLeft = daysUntilDateOnly(materia.examDate);
   return daysLeft !== null && daysLeft <= GOBLIN_THRESHOLD_DAYS && daysLeft >= 0;
 }

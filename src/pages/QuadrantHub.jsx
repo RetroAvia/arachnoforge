@@ -1,16 +1,25 @@
 // =====================================================================
 // ArachnoForge — src/pages/QuadrantHub.jsx (The Web-Matrix)
-// V35.2 — "Disaccoppiamento Meccanico": i sotto-componenti puramente
-// presentazionali (Karen Suggestor/Bounty Board panels, i controlli
-// Stark-Tech dello slider/toggle, e l'intera gerarchia Nodo Padre/Nodi
-// Figlio) sono stati estratti VERBATIM in src/pages/quadrant-hub/ — zero
-// modifica comportamentale, solo un file più piccolo e componenti
-// riutilizzabili/testabili in isolamento. Questo file resta l'unico che
-// possiede lo stato/gli hook della pagina (materie, modali, editor nodo,
-// selezione multipla...). Vedi docs/PHASE5_REFACTOR.md.
+//
+// Le materie, il loro Skill Tree (argomenti e Boss), la prontezza
+// d'esame, il piano appunti e i ripassi Spider-Sense. Questo file
+// possiede lo stato e gli hook della pagina; i pezzi presentazionali
+// vivono in src/pages/quadrant-hub/.
+//
+// V41 — ridisegno completo, stessa logica:
+//   · Primary Target e Bounty Board in una riga compatta (prima
+//     riempivano da soli il primo schermo);
+//   · elenco materie a righe compatte, fisso a sinistra mentre scorri;
+//   · testata della materia con i quattro numeri che contano e
+//     l'avanzamento per stato;
+//   · dettaglio argomento con le azioni in ordine d'uso, e il nuovo
+//     "Avvia Focus su questo argomento" (un clic dal programma al timer);
+//   · etichette in parole normali ("Nuova materia", "Argomento");
+//   · messaggi di salvataggio corretti anche senza Cloud;
+//   · raggiungibile dalla palette comandi (Ctrl K).
 // =====================================================================
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useArachnoForge, useFocusTimerContext } from '../context/ArachnoForgeContext.jsx';
 import { Icon } from '../components/Icons.jsx';
 import Modal from '../components/Modal.jsx';
 import AiIndexMatrixModal from '../components/AiIndexMatrixModal.jsx';
@@ -18,8 +27,9 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import Dropdown from '../components/Dropdown.jsx';
 import Drawer from '../components/Drawer.jsx';
 import EmptyState from '../components/EmptyState.jsx';
+import PageHeader from '../components/PageHeader.jsx';
 import { deriveNodeStatus, NODE_STATUS, isDescendant, directChildrenOf } from '../utils/skillTree.js';
-import { formatDateOnlyHuman, formatHoursMinutes, todayDateOnlyKey } from '../utils/dateUtils.js';
+import { formatDateOnlyHuman, formatHoursMinutes, todayDateOnlyKey, daysUntilDateOnly } from '../utils/dateUtils.js';
 import { weeklyMinutesByMateria } from '../utils/campusEngine.js';
 import { DIFFICULTY, DIFFICULTY_META } from '../utils/xpEngine.js';
 import { REVIEW_RATING_META } from '../utils/spiderSense.js';
@@ -33,154 +43,199 @@ import {
   DIFFICULTY_SLIDER_LABELS
 } from '../data/vanvitelliCourseMap.js';
 import { MIN_VOTO, MAX_VOTO, LODE_VALUE } from '../utils/gpaEngine.js';
-import { CARD, CARD_ALERT, BTN_PRIMARY, BTN_SECONDARY, BTN_SUCCESS, BTN_GHOST, INPUT, H1, H2, BADGE } from '../utils/designSystem.js';
+import { CARD, CARD_NOPAD, BTN_PRIMARY, BTN_SECONDARY, BTN_SUCCESS, BTN_GHOST, INPUT, LABEL, BADGE } from '../utils/designSystem.js';
 import { KarenSuggestorPanel, BountyBoardPanel } from './quadrant-hub/KarenPanels.jsx';
 import { FontiEditor, NodeWorkSummary, PianoAppuntiPanel } from './quadrant-hub/ForgiaAppunti.jsx';
 import { normalizeFonti } from '../utils/sintesiEngine.js';
 import { TechSlider, ExamPassedToggle } from './quadrant-hub/TacticalControls.jsx';
 import { STATUS_META, ReviewButtons, ParentModuleCard } from './quadrant-hub/SkillTreeNodes.jsx';
+import MateriaListPanel from './quadrant-hub/MateriaList.jsx';
+import MateriaHeader from './quadrant-hub/MateriaHeader.jsx';
 import { VERDICT_META } from '../utils/examReadiness.js';
 import { useKarenBrain } from '../context/KarenBrainContext.jsx';
+import { formatNumber, minutiLabel } from '../utils/format.js';
+import { INTENT, useIntent, requestIntent } from '../utils/uiIntents.js';
+import { ROUTES, goTo } from '../hooks/useArachnoForgeRouter.js';
+import { TIMER_STATUS } from '../hooks/useTimerEngine.js';
 
-/** Barra orizzontale di un singolo pilastro dell'indice — mai un numero
- * nudo: si deve vedere a colpo d'occhio QUALE dei quattro sta trascinando
- * giù il verdetto. Un pilastro senza dati reali è dichiarato tale invece
- * di essere disegnato come se fosse misurato. */
-function ReadinessPillar({ label, value, known }) {
+const YEAR_SECTIONS = [
+  { key: 1, label: '1° anno' },
+  { key: 2, label: '2° anno' },
+  { key: 3, label: '3° anno' },
+  { key: 'libere', label: 'Materie libere' }
+];
+
+const DIFFICULTY_OPTIONS = Object.values(DIFFICULTY).map((d) => ({ value: d, label: DIFFICULTY_META[d].label }));
+
+/** "SOSTIENI" -> "Sostieni": il verdetto si legge, non si grida. */
+function sentenceCase(s) {
+  const str = String(s || '');
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+
+/* ================================================================== *
+ * PRONTEZZA D'ESAME
+ * ================================================================== */
+
+/** Pilastro dell'indice: si vede QUALE dei quattro trascina giù il verdetto; senza dati reali è dichiarato "n/d". */
+function ReadinessPillar({ label, value, known, hint }) {
   const pctValue = Math.round(value * 100);
   const tone = pctValue >= 75 ? 'bg-emerald-400' : pctValue >= 50 ? 'bg-accent' : 'bg-primary';
   return (
-    <div>
-      <div className="flex items-center justify-between gap-2 text-xs mb-1">
+    <div title={hint}>
+      <div className="flex items-center justify-between gap-2 text-xs mb-1.5">
         <span className="text-slate-400">{label}</span>
-        <span className={`font-mono ${known ? 'text-slate-300' : 'text-slate-500'}`}>
-          {known ? `${pctValue}%` : 'n/d'}
-        </span>
+        <span className={`ds-num font-semibold ${known ? 'text-slate-200' : 'text-slate-500'}`}>{known ? `${pctValue}%` : 'n/d'}</span>
       </div>
-      <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all duration-500 ${known ? tone : 'bg-slate-600'}`}
-          style={{ width: `${Math.max(2, pctValue)}%`, opacity: known ? 1 : 0.35 }}
+      <div className="ds-progress">
+        <span className={known ? tone : 'bg-slate-600'} style={{ width: `${Math.max(2, pctValue)}%`, opacity: known ? 1 : 0.4 }} />
+      </div>
+    </div>
+  );
+}
+
+/** Anello del punteggio (0–100). */
+function ScoreRing({ score, className = '' }) {
+  const r = 24;
+  const c = 2 * Math.PI * r;
+  const v = Math.max(0, Math.min(100, Number(score) || 0));
+  return (
+    <div className={`relative w-16 h-16 shrink-0 ${className}`}>
+      <svg viewBox="0 0 56 56" className="w-16 h-16 -rotate-90" aria-hidden="true">
+        <circle cx="28" cy="28" r={r} fill="none" stroke="rgb(255 255 255 / 0.08)" strokeWidth="5" />
+        <circle
+          cx="28"
+          cy="28"
+          r={r}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="5"
+          strokeLinecap="round"
+          strokeDasharray={`${(v / 100) * c} ${c}`}
+          style={{ transition: 'stroke-dasharray 0.6s cubic-bezier(0.22, 1, 0.36, 1)' }}
         />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-lg font-bold leading-none ds-num">{Math.round(v)}</span>
+        <span className="text-[9px] text-slate-500 mt-0.5">su 100</span>
       </div>
     </div>
   );
 }
 
 /**
- * V36.0 — Il verdetto sull'esame, in una card sola: punteggio, i quattro
- * pilastri che lo compongono, il motivo dominante e — quando serve — il
- * burn-down, cioè l'unico grafico che risponde davvero a "ci arrivo o
- * no": ore ancora da fare contro giorni ancora disponibili.
+ * V36.0 — Il verdetto sull'esame: punteggio, i quattro pilastri, il
+ * motivo dominante e il burn-down (ore da fare contro giorni rimasti:
+ * l'unico grafico che risponde a "ci arrivo o no").
  */
 function ExamReadinessCard({ readiness, materia, estimate }) {
   const meta = VERDICT_META[readiness.verdict] || VERDICT_META.UNKNOWN;
   const lowConfidence = readiness.confidence < 0.75;
+  const showBurnDown = materia.examDate && estimate && !estimate.done;
+  const needed = showBurnDown ? estimate.totalDaysNeeded || 0 : 0;
+  const available = showBurnDown ? Math.max(0, readiness.daysRemaining ?? 0) : 0;
+  const scale = Math.max(needed, available, 1);
+  const late = needed > available;
 
   return (
-    <div className={`${CARD} !py-4`}>
-      <div className="relative flex items-start justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="relative w-14 h-14 shrink-0 flex items-center justify-center">
-            <div className={`absolute inset-0 rounded-full blur-xl ${meta.tone} opacity-20`} />
-            <div className="relative w-14 h-14 rounded-full border border-white/10 bg-surface/80 flex flex-col items-center justify-center">
-              <span className={`text-lg font-mono font-bold leading-none ${meta.tone}`}>{readiness.score}</span>
-              <span className="text-[8px] tracking-widest text-slate-500 mt-0.5">SU 100</span>
-            </div>
-          </div>
+    <section className={CARD_NOPAD} aria-label="Prontezza d'esame">
+      <div className="p-4 sm:p-5 flex flex-col lg:flex-row gap-5">
+        <div className="flex items-center gap-4 lg:w-64 shrink-0">
+          <ScoreRing score={readiness.score} className={meta.tone} />
           <div className="min-w-0">
-            <p className="text-[11px] font-mono tracking-widest text-slate-500">PRONTEZZA D'ESAME</p>
-            <p className={`text-xl font-extrabold tracking-tight ${meta.tone}`}>{meta.label}</p>
+            <p className="ds-eyebrow">Prontezza d'esame</p>
+            <p className={`text-lg font-bold tracking-tight ${meta.tone}`}>{sentenceCase(meta.label)}</p>
             {(readiness.daysRemaining != null || readiness.dataScaduta) && (
               <p className={`text-xs mt-0.5 ${readiness.dataScaduta ? 'text-accent' : 'text-slate-500'}`}>
                 {readiness.dataScaduta
                   ? 'Appello già passato'
                   : readiness.daysRemaining === 0
-                  ? 'Esame oggi'
+                  ? "L'esame è oggi"
+                  : readiness.daysRemaining === 1
+                  ? "Un giorno all'esame"
                   : `${readiness.daysRemaining} giorni all'esame`}
               </p>
             )}
           </div>
         </div>
 
-        <div className="flex-1 min-w-[220px] grid grid-cols-2 gap-x-4 gap-y-2">
-          <ReadinessPillar label="Copertura" value={readiness.parts.coverage} known={readiness.known.hasNodes} />
-          <ReadinessPillar label="Stabilità" value={readiness.parts.stability} known={readiness.known.hasStability} />
-          <ReadinessPillar label="Fattibilità" value={readiness.parts.feasibility} known={readiness.known.hasExamDate} />
-          <ReadinessPillar label="Attrito" value={readiness.parts.friction} known={readiness.known.hasFriction} />
+        <div className="flex-1 grid grid-cols-2 gap-x-5 gap-y-3.5 content-center">
+          <ReadinessPillar
+            label="Copertura"
+            value={readiness.parts.coverage}
+            known={readiness.known.hasNodes}
+            hint="Quanta parte del programma hai già chiuso"
+          />
+          <ReadinessPillar
+            label="Stabilità"
+            value={readiness.parts.stability}
+            known={readiness.known.hasStability}
+            hint="Quanto reggono in memoria gli argomenti chiusi (ripassi)"
+          />
+          <ReadinessPillar
+            label="Fattibilità"
+            value={readiness.parts.feasibility}
+            known={readiness.known.hasExamDate}
+            hint="Ore che restano da fare contro il tempo che hai davvero"
+          />
+          <ReadinessPillar
+            label="Attrito"
+            value={readiness.parts.friction}
+            known={readiness.known.hasFriction}
+            hint="Quanto ti costano i ripassi (più alto = meno attrito)"
+          />
         </div>
       </div>
 
-      <p className="relative text-sm text-slate-300 mt-3.5 leading-relaxed">{readiness.rationale}</p>
+      <div className="px-4 sm:px-5 pb-4 sm:pb-5 space-y-3.5">
+        <p className="text-sm text-slate-300 leading-relaxed">{readiness.rationale}</p>
 
-      {/* Burn-down: ore residue contro giorni residui. Due sole barre —
-          se la prima è più lunga della seconda, non ci arrivi. */}
-      {materia.examDate && estimate && !estimate.done && (
-        <div className="relative mt-3.5 pt-3.5 border-t border-white/10 space-y-2">
-          {(() => {
-            const needed = estimate.totalDaysNeeded || 0;
-            const available = Math.max(0, readiness.daysRemaining ?? 0);
-            const scale = Math.max(needed, available, 1);
-            const late = needed > available;
-            return (
-              <>
-                <div className="flex items-center gap-3">
-                  <span className="text-[11px] font-mono text-slate-500 w-24 shrink-0">SERVONO</span>
-                  <div className="flex-1 h-2 rounded-full bg-white/[0.06] overflow-hidden">
-                    <div
-                      className={`h-full rounded-full ${late ? 'bg-primary' : 'bg-emerald-400'}`}
-                      style={{ width: `${(needed / scale) * 100}%` }}
-                    />
-                  </div>
-                  <span className="text-xs font-mono text-slate-300 w-16 text-right shrink-0">{needed}gg</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-[11px] font-mono text-slate-500 w-24 shrink-0">DISPONIBILI</span>
-                  <div className="flex-1 h-2 rounded-full bg-white/[0.06] overflow-hidden">
-                    <div className="h-full rounded-full bg-secondary" style={{ width: `${(available / scale) * 100}%` }} />
-                  </div>
-                  <span className="text-xs font-mono text-slate-300 w-16 text-right shrink-0">{available}gg</span>
-                </div>
-                <p className="text-xs text-slate-500">
-                  {formatHoursMinutes(estimate.totalHoursNeeded)} residue calibrate sul tuo storico
-                  {late
-                    ? ` — mancano ${needed - available} giorni al ritmo attuale.`
-                    : ` — ${available - needed} giorni di margine.`}
-                </p>
-              </>
-            );
-          })()}
-        </div>
-      )}
+        {showBurnDown && (
+          <div className="ds-well p-3.5 space-y-2.5">
+            <p className="ds-eyebrow">Ci arrivi in tempo?</p>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400 w-20 shrink-0">Servono</span>
+              <div className="ds-progress flex-1 !h-2">
+                <span className={late ? 'bg-primary' : 'bg-emerald-400'} style={{ width: `${(needed / scale) * 100}%` }} />
+              </div>
+              <span className="text-xs ds-num text-slate-200 w-16 text-right shrink-0">{needed} gg</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400 w-20 shrink-0">Disponibili</span>
+              <div className="ds-progress flex-1 !h-2">
+                <span className="bg-secondary" style={{ width: `${(available / scale) * 100}%` }} />
+              </div>
+              <span className="text-xs ds-num text-slate-200 w-16 text-right shrink-0">{available} gg</span>
+            </div>
+            <p className={`text-xs ${late ? 'text-primary' : 'text-slate-400'}`}>
+              {formatHoursMinutes(estimate.totalHoursNeeded)} residue, calibrate sul tuo storico
+              {late ? ` — al ritmo attuale mancano ${needed - available} giorni.` : ` — ${available - needed} giorni di margine.`}
+            </p>
+          </div>
+        )}
 
-      {lowConfidence && (
-        <p className="relative text-xs text-slate-500 mt-3 italic">
-          Confidenza parziale: alcuni pilastri non hanno ancora dati reali (n/d qui sopra). Il verdetto si affina man mano
-          che mappi i nodi, fissi la data e accumuli ripassi.
-        </p>
-      )}
-    </div>
+        {lowConfidence && (
+          <p className="text-xs text-slate-500">
+            Confidenza parziale: alcuni pilastri non hanno ancora dati reali (n/d). Il verdetto si affina man mano che mappi
+            gli argomenti, fissi la data e accumuli ripassi.
+          </p>
+        )}
+      </div>
+    </section>
   );
 }
 
+/* ================================================================== *
+ * INTERROGAZIONE K.A.R.E.N.
+ * ================================================================== */
+
 /**
- * V36.0 — INTERROGAZIONE K.A.R.E.N.
- *
- * Il punto debole strutturale di tutta la ripetizione dilazionata
- * dell'app era l'autovalutazione: i tre pulsanti Facile/Medio/Difficile
- * premuti DOPO aver riletto gli appunti. La sensazione di "sì, lo so"
- * subito dopo una rilettura è notoriamente scollegata dalla capacità di
- * richiamare davvero quel contenuto — e quando sei stanco è
- * sistematicamente generosa, cioè proprio quando l'errore costa di più.
- *
- * Qui K.A.R.E.N. legge titolo, obiettivo, blueprint e i TUOI appunti del
- * nodo e genera 6-8 domande di richiamo attivo. Rispondi a mente, poi
- * riveli la traccia per autocorreggerti, e solo allora dai il giudizio:
- * non più una sensazione, ma l'esito di un tentativo reale.
- *
- * Generata UNA volta e salvata dentro il nodo (Cloud State, nessuna
- * tabella nuova): dal secondo ripasso in poi è già lì, anche offline e
- * senza alcuna chiamata AI.
+ * V36.0 — Il punto debole della ripetizione dilazionata era
+ * l'autovalutazione "a sensazione" subito dopo una rilettura. Qui Karen
+ * genera 6-8 domande di richiamo attivo da titolo, obiettivo e appunti del
+ * nodo: rispondi a mente, riveli la traccia, e solo allora giudichi.
+ * Generata una volta e salvata nel nodo: dal secondo ripasso è già lì,
+ * anche offline.
  */
 function NodeQuizPanel({ node, materiaId, onSaveQuiz }) {
   const karen = useKarenBrain();
@@ -210,122 +265,151 @@ function NodeQuizPanel({ node, materiaId, onSaveQuiz }) {
   };
 
   return (
-    <div className="space-y-3 pt-3 border-t border-white/10">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <p className="text-sm text-secondary font-semibold flex items-center gap-1.5">
-          <Icon name="chip" className="w-4 h-4" />
+    <div className="rounded-xl border border-line bg-surface/70">
+      <div className="flex items-center justify-between gap-2 flex-wrap px-3.5 py-3 border-b border-line">
+        <p className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+          <Icon name="chip" className="w-4 h-4 text-secondary" />
           Interrogazione K.A.R.E.N.
+          {quiz && <span className="text-xs font-normal text-slate-500 ds-num">· {quiz.domande.length} domande</span>}
         </p>
-        <button
-          type="button"
-          onClick={handleGenerate}
-          disabled={karen.quizGenerating}
-          className="inline-flex items-center gap-1 text-[11px] font-mono text-slate-500 hover:text-secondary transition-colors disabled:opacity-60"
-        >
-          <Icon name="radar" className={`w-3.5 h-3.5 ${karen.quizGenerating ? 'animate-spin' : ''}`} />
-          {karen.quizGenerating ? 'In preparazione...' : quiz ? 'Rigenera' : 'Preparala'}
+        <button type="button" onClick={handleGenerate} disabled={karen.quizGenerating} className="ds-btn ds-btn-ghost ds-btn-sm">
+          <Icon name={karen.quizGenerating ? 'refresh' : 'sparkles'} className={`w-3.5 h-3.5 ${karen.quizGenerating ? 'animate-spin' : ''}`} />
+          {karen.quizGenerating ? 'In preparazione…' : quiz ? 'Rigenera' : 'Prepara le domande'}
         </button>
       </div>
 
-      {error && <p className="text-xs text-primary leading-relaxed">{error}</p>}
-      {thin && (
-        <p className="text-xs text-accent leading-relaxed">
-          Karen: su questo nodo c'è poco materiale scritto, quindi le domande restano sui fondamenti standard
-          dell'argomento. Aggiungi due righe negli Appunti e rigenerala: diventeranno mirate sul tuo contenuto.
-        </p>
-      )}
+      <div className="p-3.5 space-y-2.5">
+        {error && <p className="text-xs text-primary leading-relaxed">{error}</p>}
+        {thin && (
+          <p className="text-xs text-accent leading-relaxed">
+            Su questo argomento c'è poco materiale scritto: le domande restano sui fondamenti. Aggiungi due righe negli
+            appunti e rigenerala per averle mirate sul tuo contenuto.
+          </p>
+        )}
 
-      {!quiz ? (
-        <p className="text-xs text-slate-500 leading-relaxed">
-          Rispondere a mente prima di rileggere è ciò che fissa davvero la memoria — e rende onesto il giudizio che
-          darai qui sotto. Generata una volta, resta salvata sul nodo per tutti i ripassi successivi.
-        </p>
-      ) : (
-        <ol className="space-y-2">
-          {quiz.domande.map((d, idx) => (
-            <li key={`${d.domanda}-${idx}`} className="bg-white/[0.03] border border-white/10 rounded-xl p-3">
-              <div className="flex items-start gap-2.5">
-                <span className="text-[11px] font-mono text-secondary shrink-0 mt-0.5">{String(idx + 1).padStart(2, '0')}</span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm text-slate-200 leading-relaxed">{d.domanda}</p>
-                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                    {d.tipo && <span className="text-[10px] font-mono text-slate-500 uppercase">{d.tipo}</span>}
-                    {d.traccia && (
-                      <button
-                        type="button"
-                        onClick={() => toggleReveal(idx)}
-                        className="text-[11px] font-mono text-slate-500 hover:text-secondary transition-colors"
-                      >
-                        {revealed.has(idx) ? 'nascondi traccia' : 'mostra traccia'}
-                      </button>
+        {!quiz ? (
+          <p className="text-xs text-slate-400 leading-relaxed">
+            Rispondere a mente prima di rileggere è ciò che fissa la memoria — e rende onesto il giudizio del ripasso.
+            Generata una volta, resta salvata sull'argomento.
+          </p>
+        ) : (
+          <ol className="space-y-2">
+            {quiz.domande.map((d, idx) => (
+              <li key={`${d.domanda}-${idx}`} className="rounded-lg border border-line bg-panel px-3 py-2.5">
+                <div className="flex items-start gap-2.5">
+                  <span className="text-[11px] font-semibold text-secondary ds-num shrink-0 mt-0.5 w-5">{idx + 1}.</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-slate-100 leading-relaxed">{d.domanda}</p>
+                    <div className="flex items-center gap-3 mt-1 flex-wrap">
+                      {d.tipo && <span className="text-[11px] text-slate-500">{d.tipo}</span>}
+                      {d.traccia && (
+                        <button
+                          type="button"
+                          onClick={() => toggleReveal(idx)}
+                          aria-expanded={revealed.has(idx)}
+                          className="text-[11px] font-semibold text-slate-400 hover:text-secondary transition-colors"
+                        >
+                          {revealed.has(idx) ? 'Nascondi traccia' : 'Mostra traccia'}
+                        </button>
+                      )}
+                    </div>
+                    {revealed.has(idx) && d.traccia && (
+                      <p className="text-xs text-slate-300 mt-2 leading-relaxed border-l-2 border-secondary/40 pl-2.5">{d.traccia}</p>
                     )}
                   </div>
-                  {revealed.has(idx) && d.traccia && (
-                    <p className="text-xs text-slate-400 mt-2 leading-relaxed border-l-2 border-secondary/40 pl-2.5">{d.traccia}</p>
-                  )}
                 </div>
-              </div>
-            </li>
-          ))}
-        </ol>
-      )}
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
     </div>
   );
 }
 
+/* ================================================================== *
+ * AVVIA FOCUS SU UN ARGOMENTO
+ * ================================================================== */
+
+/**
+ * V41 — Dal programma al timer con un clic. Legge lo stato del timer da
+ * sé (il contesto del timer cambia ogni secondo: tenerlo qui dentro evita
+ * di ridisegnare l'intera pagina a ogni tick).
+ */
+function StartFocusButton({ materiaId, sfidaId, onStart, label = 'Avvia Focus', variant = 'solid', className = '' }) {
+  const timer = useFocusTimerContext();
+  const busy = timer.status !== TIMER_STATUS.IDLE;
+  const onThis = busy && timer.activeFocusSfidaId === sfidaId;
+
+  if (onThis) {
+    return (
+      <button type="button" onClick={() => onStart(null)} className={`${BTN_GHOST} ${className}`}>
+        <Icon name="clock" className="w-4 h-4 text-cyan-300" />
+        Focus in corso · apri il timer
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => onStart({ materiaId, sfidaId })}
+      disabled={busy}
+      title={
+        busy
+          ? "C'è già un blocco del timer in corso: chiudilo prima di iniziarne un altro."
+          : 'Apre lo Stark-Web Terminal e fa partire il Focus su questo argomento'
+      }
+      className={`${variant === 'solid' ? BTN_SECONDARY : BTN_GHOST} ${className}`}
+    >
+      <Icon name="play" className="w-4 h-4" />
+      {busy ? 'Timer già in uso' : label}
+    </button>
+  );
+}
+
+/* ================================================================== *
+ * PAGINA
+ * ================================================================== */
+
 export default function QuadrantHub() {
   const { state, actions, derived, pushToast } = useArachnoForge();
-  // Guardia difensiva: se lo stato persistito è corrotto o non ancora
-  // idratato, non far mai propagare un `undefined`/non-array al render
-  // (causa nota di schermo nero da eccezione non gestita su .map()).
-  const materie = Array.isArray(state.materie) ? state.materie : [];
+  // Guardia difensiva: stato corrotto o non ancora idratato non deve mai
+  // far arrivare un non-array ai .map() del render. Memoizzata: un `[]`
+  // nuovo a ogni render rompeva tutte le useMemo che ne dipendono.
+  const materie = useMemo(() => (Array.isArray(state.materie) ? state.materie : []), [state.materie]);
   // V40.0 — all'apertura si mostra la materia su cui Karen ti manda oggi
-  // (Primary Target), altrimenti la prima NON ancora superata: prima era
-  // semplicemente la prima dell'elenco, spesso un esame già archiviato.
+  // (Primary Target), altrimenti la prima non ancora superata.
   const [selectedMateriaId, setSelectedMateriaId] = useState(
-    () =>
-      derived.primaryTarget?.materia?.id ||
-      materie.find((m) => m && !m.examPassed)?.id ||
-      materie[0]?.id ||
-      ''
+    () => derived.primaryTarget?.materia?.id || materie.find((m) => m && !m.examPassed)?.id || materie[0]?.id || ''
   );
   const [materiaModalOpen, setMateriaModalOpen] = useState(false);
   const [editingMateria, setEditingMateria] = useState(null);
+  // Id delle materie presenti quando se ne aggiunge una da qui (vedi l'effetto più sotto).
+  const pendingNewMateriaRef = useRef(null);
   const [deleteMateriaTarget, setDeleteMateriaTarget] = useState(null);
   const [sfidaModalOpen, setSfidaModalOpen] = useState(false);
   const [aiIndexModalOpen, setAiIndexModalOpen] = useState(false);
   const [nodeDetail, setNodeDetail] = useState(null);
   const [deleteNodeTarget, setDeleteNodeTarget] = useState(null);
-  // V34.4 — "Riporta a da completare": undo per un nodo segnato COMPLETED
-  // per errore. Stesso pattern di deleteNodeTarget: la modale di dettaglio
-  // si chiude e la conferma vive nel proprio ConfirmDialog dedicato,
-  // cosi' un click accidentale sul bottone non riapre subito il nodo.
+  // V34.4 — "Riporta a da completare": conferma dedicata, così un clic
+  // accidentale non riapre subito il nodo.
   const [reopenNodeTarget, setReopenNodeTarget] = useState(null);
   const [spiderSenseDrawerOpen, setSpiderSenseDrawerOpen] = useState(false);
 
-  // V34.2 — "Selezione Multipla Nodi": stato dedicato, isolato dal resto
-  // dell'UI del Web-Matrix. `selectedNodeIds` è un Set (mai un array —
-  // lookup O(1) per riga, essenziale su Skill Tree con decine di nodi
-  // renderizzati). Uscire dalla modalità selezione azzera sempre il set,
-  // cosi' rientrarci in seguito parte sempre pulito.
+  // V34.2 — Selezione multipla: un Set (lookup O(1) per riga). Uscire
+  // dalla modalità azzera sempre il set.
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedNodeIds, setSelectedNodeIds] = useState(() => new Set());
   const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
 
-  // Cambiare Materia mentre la selezione multipla è attiva lascerebbe id
-  // selezionati "orfani" (appartenenti a un altro Skill Tree, invisibili
-  // nella colonna corrente) — uscita automatica e pulita ad ogni cambio.
+  // Cambiare materia con la selezione attiva lascerebbe id "orfani".
   useEffect(() => {
     setSelectionMode(false);
     setSelectedNodeIds(new Set());
   }, [selectedMateriaId]);
 
-  // V31.2 — Pillar 1 (Ultimate Node Customization): stato dedicato
-  // dell'editor olografico dentro la modale di dettaglio nodo. I campi
-  // `edit*` sono uno STAGING locale — mai scritti nel Context finché
-  // "Salva Modifiche" non viene premuto — cosi' "Annulla" può sempre
-  // ripristinare i valori originali con un semplice reset dello stato,
-  // senza toccare il nodo reale.
+  // V31.2 — Editor del nodo: i campi `edit*` sono uno STAGING locale,
+  // scritto nel Context solo con "Salva": "Annulla" è un semplice reset.
   const [nodeEditMode, setNodeEditMode] = useState(false);
   const [nodeSaveState, setNodeSaveState] = useState('idle'); // idle | saving | success | error
   const [editNome, setEditNome] = useState('');
@@ -335,30 +419,21 @@ export default function QuadrantHub() {
   const [editFonti, setEditFonti] = useState([]);
   const [editAppuntiCompleti, setEditAppuntiCompleti] = useState(false);
   const [editDifficulty, setEditDifficulty] = useState(DIFFICULTY.MEDIUM);
-  // V36.0 — Appunti del nodo: il contenuto (formule, passaggi chiave,
-  // errori tipici, riferimento alla dispensa) vive finalmente DENTRO il
-  // nodo. Senza questo campo un ripasso obbligava a uscire dall'app e
-  // ritrovare gli appunti altrove — l'attrito per cui i ripassi brevi
-  // finivano per essere saltati.
+  // V36.0 — Appunti del nodo (formule, passaggi, errori tipici...).
   const [editNote, setEditNote] = useState('');
   const [editParentId, setEditParentId] = useState('');
-  // V31.2.1 — guardia "modifiche non salvate": mostra un ConfirmDialog
-  // invece di scartare silenziosamente lo staging quando si tenta di
-  // chiudere la modale (backdrop/Esc/X) mentre l'Editor è aperto.
+  // V31.2.1 — guardia "modifiche non salvate".
   const [nodeEditCloseConfirmOpen, setNodeEditCloseConfirmOpen] = useState(false);
 
-  // Web-Path Planner — form di creazione/modifica Materia basato sul piano
-  // di studi Vanvitelli (Ingegneria Aerospaziale): dropdown ufficiale con
-  // autocompilazione CFU, oppure "Materia Libera" per corsi fuori mappa.
+  // Web-Path Planner — form materia sul piano di studi Vanvitelli
+  // (Ingegneria Aerospaziale), oppure "Materia libera".
   const [formCourseId, setFormCourseId] = useState('');
   const [formCustomNome, setFormCustomNome] = useState('');
   const [formExamDate, setFormExamDate] = useState('');
   const [formCfu, setFormCfu] = useState(6);
   const [formDifficulty, setFormDifficulty] = useState(3);
   const [formExamPassed, setFormExamPassed] = useState(false);
-  // V37.0 — data reale di verbalizzazione: alimenta lo storico della
-  // media (che prima usava il giorno in cui si spuntava la casella) e il
-  // ritmo di carriera della stima di laurea.
+  // V37.0 — data reale di verbalizzazione (storico della media, ritmo di carriera).
   const [formExamPassedDate, setFormExamPassedDate] = useState('');
   const [formVoto, setFormVoto] = useState('');
   const [formLode, setFormLode] = useState(false);
@@ -368,11 +443,8 @@ export default function QuadrantHub() {
     () => (selectedCourse ? getMissingPrerequisites(selectedCourse.id, materie, editingMateria?.id || null) : []),
     [selectedCourse, materie, editingMateria]
   );
-  // Pressure Formula (V36.0): il punteggio misura ore residue contro ore
-  // realmente disponibili prima dell'esame, quindi l'anteprima nel form
-  // include sia la data sia i CFU (peso del monte ore) per essere coerente
-  // col punteggio che Karen userà davvero. Una materia ancora senza nodi
-  // usa il fallback CFU x 10 ore, come nel calcolo reale.
+  // Anteprima dello Spider-Score con gli stessi ingressi del calcolo vero
+  // (data e CFU inclusi; senza argomenti vale il fallback CFU × 10 ore).
   const previewSpiderScore = useMemo(
     () =>
       computeSpiderScore(
@@ -391,27 +463,16 @@ export default function QuadrantHub() {
   const [sfidaNome, setSfidaNome] = useState('');
   const [sfidaObiettivo, setSfidaObiettivo] = useState('');
   const [sfidaOreStimate, setSfidaOreStimate] = useState(4);
-  // V37.0 — pagine di libro/appunti del nodo: dato oggettivo che
-  // sostituisce la stima a occhio quando K.A.R.E.N. ha misurato il tuo
-  // ritmo reale di pagine/ora.
-  // V38.0 — "La Forgia degli Appunti": il nodo non dichiara più una sola
-  // quantità di pagine, ma due cose diverse — le FONTI da cui ricavare
-  // gli appunti e le pagine degli appunti stessi. Vedi
-  // utils/sintesiEngine.js.
+  // V38.0 — "La Forgia degli Appunti": le fonti da cui ricavare gli
+  // appunti e le pagine degli appunti stessi (vedi utils/sintesiEngine.js).
   const [sfidaPagine, setSfidaPagine] = useState('');
   const [sfidaFonti, setSfidaFonti] = useState([]);
   const [sfidaAppuntiCompleti, setSfidaAppuntiCompleti] = useState(false);
   const [sfidaParentId, setSfidaParentId] = useState('');
   const [sfidaDifficulty, setSfidaDifficulty] = useState(DIFFICULTY.MEDIUM);
 
-  // Pressure Formula del Web-Path Planner (V36.0): Spider-Score
-  // decrescente — la materia in cima è quella con più ore residue rispetto
-  // al tempo che le resta, non quella con la data più vicina in assoluto.
-  // V37.0 — PRESTAZIONI: `computeSpiderScore` veniva invocata DENTRO il
-  // comparatore, quindi O(n log n) volte, e ognuna scorre tutti i nodi
-  // della materia (computeRemainingHours). Poi veniva richiamata una
-  // volta per card. Ora si calcola una volta sola per materia e si
-  // ordina sulla mappa: stesso risultato, una frazione del lavoro.
+  // Spider-Score calcolato una volta per materia (V37.0: prima dentro il
+  // comparatore del sort, O(n log n) volte).
   const spiderScoreById = useMemo(() => {
     const map = new Map();
     materie.forEach((m) => map.set(m.id, computeSpiderScore(m, derived.calibration)));
@@ -423,24 +484,19 @@ export default function QuadrantHub() {
     [materie, spiderScoreById]
   );
 
-  // Karen's Tactical Suggestor — Primary Target calcolato una sola volta a
-  // livello di Provider (ArachnoForgeContext) e riletto qui da `derived`,
-  // così Mission Control e Web-Matrix vedono sempre lo stesso identico
-  // suggerimento, mai due calcoli potenzialmente disallineati.
+  // Primary Target calcolato una sola volta nel Provider: Mission Control
+  // e Web-Matrix vedono lo stesso identico suggerimento.
   const { primaryTarget } = derived;
 
-  // V39.0 — ore di lezione settimanali di ogni materia nel semestre in
-  // corso (Empire State University), per il badge sulla card.
+  // V39.0 — minuti di lezione a settimana nel semestre in corso.
   const oreLezioneById = useMemo(() => {
     const sem = derived.campus?.semestre;
     if (!sem) return new Map();
-    return weeklyMinutesByMateria(sem, new Map(state.materie.map((m) => [m.id, m])));
-  }, [derived.campus?.semestre, state.materie]);
+    return weeklyMinutesByMateria(sem, new Map(materie.map((m) => [m.id, m])));
+  }, [derived.campus?.semestre, materie]);
 
-  // Decluttering Accordion (V20.0, Pillar 2): le Materie della colonna a
-  // sinistra sono raggruppate per Anno di corso (1°/2°/3°), con una quarta
-  // sezione "Materie Libere" per i nodi fuori piano di studi (courseId
-  // null/custom). Solo l'anno che contiene il Primary Target parte aperto.
+  // Raggruppamento per anno di corso (+ Materie libere), ordinato per
+  // Spider-Score dentro ogni gruppo.
   const materieByYear = useMemo(() => {
     const groups = new Map();
     sortedMaterie.forEach((m) => {
@@ -452,16 +508,24 @@ export default function QuadrantHub() {
     return groups;
   }, [sortedMaterie]);
 
-  const primaryTargetYearKey = useMemo(() => {
-    if (!primaryTarget) return null;
-    const course = getCourseById(primaryTarget.materia.courseId);
+  const yearKeyOf = useCallback((materia) => {
+    const course = materia ? getCourseById(materia.courseId) : null;
     return course ? course.anno : 'libere';
-  }, [primaryTarget]);
+  }, []);
 
-  // Stato iniziale calcolato una sola volta al mount (lazy initializer):
-  // è un DEFAULT, non un vincolo permanente — se l'utente chiude
-  // manualmente la sezione, non deve riaprirsi da sola ad ogni render.
-  const [openYears, setOpenYears] = useState(() => new Set([primaryTargetYearKey ?? 1]));
+  const primaryTargetYearKey = useMemo(
+    () => (primaryTarget ? yearKeyOf(primaryTarget.materia) : null),
+    [primaryTarget, yearKeyOf]
+  );
+
+  // Un DEFAULT calcolato al montaggio: si apre l'anno del Primary Target e
+  // quello della materia aperta; poi decide l'utente.
+  const [openYears, setOpenYears] = useState(() => {
+    const initial = new Set([primaryTargetYearKey ?? 1]);
+    const opened = materie.find((m) => m.id === selectedMateriaId);
+    if (opened) initial.add(yearKeyOf(opened));
+    return initial;
+  });
 
   const toggleYear = useCallback((key) => {
     setOpenYears((prev) => {
@@ -472,48 +536,70 @@ export default function QuadrantHub() {
     });
   }, []);
 
-  const YEAR_SECTIONS = [
-    { key: 1, label: '1° Anno' },
-    { key: 2, label: '2° Anno' },
-    { key: 3, label: '3° Anno' },
-    { key: 'libere', label: 'Materie Libere' }
-  ];
-
-  const selectedMateria = useMemo(
-    () => materie.find((m) => m.id === selectedMateriaId) || null,
-    [materie, selectedMateriaId]
-  );
-  const selectedSfide = Array.isArray(selectedMateria?.sfide) ? selectedMateria.sfide : [];
-  const rootNodes = useMemo(
-    () => selectedSfide.filter((s) => !s.parentId),
-    [selectedSfide]
+  /** Apre una materia e, se serve, il suo gruppo nell'elenco. */
+  const selectMateria = useCallback(
+    (id) => {
+      setSelectedMateriaId(id);
+      const m = materie.find((x) => x.id === id);
+      if (m) {
+        const key = yearKeyOf(m);
+        setOpenYears((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+      }
+    },
+    [materie, yearKeyOf]
   );
 
-  // V31.3 — Bounty Board: Set stabile di sfidaId ad alta frizione, per il
-  // badge inline su ParentModuleCard/ChildNodeRow senza ricalcolare nulla
-  // lì dentro (derived.bountyTargets è già filtrato/ordinato dal Context).
-  const bountySfidaIds = useMemo(
-    () => new Set(derived.bountyTargets.map((t) => t.sfidaId)),
-    [derived.bountyTargets]
+  // V41 — Sotto i 1200 px elenco e dettaglio stanno uno sopra l'altro:
+  // scegliere una materia porta al suo dettaglio, invece di lasciarti
+  // sull'elenco a cercare dove sia cambiato qualcosa.
+  const detailRef = useRef(null);
+  const openMateria = useCallback(
+    (id) => {
+      selectMateria(id);
+      if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+      if (!window.matchMedia('(max-width: 1199.98px)').matches) return;
+      const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      requestAnimationFrame(() => detailRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' }));
+    },
+    [selectMateria]
   );
+
+  const selectedMateria = useMemo(() => materie.find((m) => m.id === selectedMateriaId) || null, [materie, selectedMateriaId]);
+  const selectedSfide = useMemo(() => (Array.isArray(selectedMateria?.sfide) ? selectedMateria.sfide : []), [selectedMateria]);
+  const rootNodes = useMemo(() => selectedSfide.filter((s) => !s.parentId), [selectedSfide]);
+
+  // V41 — conteggio per stato, per la barra di avanzamento della testata.
+  const statusCounts = useMemo(() => {
+    const counts = {
+      [NODE_STATUS.COMPLETED]: 0,
+      [NODE_STATUS.NEEDS_REVIEW]: 0,
+      [NODE_STATUS.IN_PROGRESS]: 0,
+      [NODE_STATUS.AVAILABLE]: 0,
+      [NODE_STATUS.LOCKED]: 0
+    };
+    selectedSfide.forEach((s) => {
+      if (!s) return;
+      const st = deriveNodeStatus(s, selectedSfide);
+      if (counts[st] != null) counts[st] += 1;
+    });
+    return counts;
+  }, [selectedSfide]);
+
+  // V31.3 — Bounty Board: Set stabile degli argomenti ad alta frizione.
+  const bountySfidaIds = useMemo(() => new Set(derived.bountyTargets.map((t) => t.sfidaId)), [derived.bountyTargets]);
 
   const goblinActive = selectedMateria ? isGoblinProtocol(selectedMateria) : false;
-  // V16.0 (Pillar 2): stima "Fine Prevista" millimetrica — somma esatta dei
-  // giorni residui di ogni nodo incompleto, nessuna media generica.
+  // V36.0 — "Fine prevista" dalle ore DICHIARATE corrette dal bias reale e
+  // dalla capacità giornaliera misurata.
   const estimate = useMemo(
-    // V36.0 — la stima parte dalle ore DICHIARATE corrette dal bias reale
-    // e dalla capacità giornaliera misurata: "Fine prevista" smette di
-    // essere il calcolo di uno studente ideale.
     () => (selectedMateria ? computeEstimatedCompletion(selectedMateria, derived.calibration) : null),
     [selectedMateria, derived.calibration]
   );
 
-  // V36.0 — Exam Readiness Index della materia aperta, già calcolato una
-  // sola volta a livello di Provider (mai ricalcolato qui).
   const readiness = selectedMateria ? derived.examReadinessByMateriaId.get(selectedMateria.id) || null : null;
+  const selectedQuota = selectedMateria ? derived.karenQuotaByMateriaId.get(selectedMateria.id) : null;
 
-  // Spider-Sense Schedule: tutti i nodi tracciati dal motore SRS, raggruppati
-  // per materia — visibilità totale (non solo i ripassi già scaduti).
+  // Spider-Sense Schedule: tutti gli argomenti tracciati, per materia.
   const scheduleGroups = useMemo(() => {
     const byMateria = new Map();
     derived.allTrackedReviews.forEach((item) => {
@@ -523,20 +609,14 @@ export default function QuadrantHub() {
     return Array.from(byMateria.values());
   }, [derived.allTrackedReviews]);
 
-  // NOTA: openNodeDetail deve essere dichiarata PRIMA di ogni useCallback
-  // che la referenzia nel proprio array di dipendenze — un riferimento in
-  // avanti a un'altra `const` nello stesso component body va in Temporal
-  // Dead Zone e lancia un ReferenceError ad ogni render (causa nota di
-  // schermo nero già riscontrata in passato). Ordine dichiarativo blindato.
+  // NOTA: openNodeDetail va dichiarata PRIMA di ogni useCallback che la usa
+  // (Temporal Dead Zone: causa nota di schermo nero in passato).
   const openNodeDetail = useCallback((node) => {
     setNodeDetail(node);
     setNodeEditMode(false);
     setNodeSaveState('idle');
   }, []);
 
-  // Chiusura della modale di dettaglio: reset esplicito anche dell'Editor
-  // di Personalizzazione, cosi' una riapertura successiva (anche su un
-  // nodo diverso) parte sempre pulita, mai in edit mode residuo.
   const closeNodeDetail = useCallback(() => {
     setNodeDetail(null);
     setNodeEditMode(false);
@@ -544,11 +624,8 @@ export default function QuadrantHub() {
     setNodeEditCloseConfirmOpen(false);
   }, []);
 
-  // Punto d'ingresso UNICO per la chiusura "utente" della modale (backdrop,
-  // Esc, pulsante X — tutti passano dalla prop onClose di <Modal>): se
-  // l'Editor è aperto con modifiche in staging non ancora salvate, chiede
-  // conferma invece di scartarle silenziosamente. Un salvataggio in corso
-  // blocca del tutto la chiusura, per non interrompere la sincronizzazione.
+  // Chiusura "utente" (sfondo, Esc, X): con modifiche in staging chiede
+  // conferma; un salvataggio in corso blocca la chiusura.
   const requestCloseNodeDetail = useCallback(() => {
     if (nodeSaveState === 'saving') return;
     if (nodeEditMode) {
@@ -558,16 +635,19 @@ export default function QuadrantHub() {
     closeNodeDetail();
   }, [nodeEditMode, nodeSaveState, closeNodeDetail]);
 
-  const openNodeFromSchedule = useCallback((materiaId, sfidaId) => {
-    const materia = materie.find((m) => m.id === materiaId);
-    const node = materia?.sfide.find((s) => s.id === sfidaId);
-    if (materia && node) {
-      setSelectedMateriaId(materiaId);
-      openNodeDetail(node);
-    }
-  }, [materie, openNodeDetail]);
+  const openNodeFromSchedule = useCallback(
+    (materiaId, sfidaId) => {
+      const materia = materie.find((m) => m.id === materiaId);
+      const node = Array.isArray(materia?.sfide) ? materia.sfide.find((s) => s.id === sfidaId) : null;
+      if (materia && node) {
+        selectMateria(materiaId);
+        openNodeDetail(node);
+      }
+    },
+    [materie, openNodeDetail, selectMateria]
+  );
 
-  const openAddMateria = () => {
+  const openAddMateria = useCallback(() => {
     setEditingMateria(null);
     setFormCourseId('');
     setFormCustomNome('');
@@ -579,7 +659,16 @@ export default function QuadrantHub() {
     setFormVoto('');
     setFormLode(false);
     setMateriaModalOpen(true);
-  };
+  }, []);
+
+  // V41 — comandi dalla palette (Ctrl K) e da altre pagine.
+  useIntent(INTENT.WEBMATRIX_OPEN, (payload) => {
+    if (!payload || typeof payload !== 'object' || !payload.materiaId) return;
+    if (payload.sfidaId) openNodeFromSchedule(payload.materiaId, payload.sfidaId);
+    else if (materie.some((m) => m.id === payload.materiaId)) selectMateria(payload.materiaId);
+  });
+  useIntent(INTENT.WEBMATRIX_NEW_MATERIA, () => openAddMateria());
+  useIntent(INTENT.WEBMATRIX_SPIDER_SENSE, () => setSpiderSenseDrawerOpen(true));
 
   const openEditMateria = (materia) => {
     setEditingMateria(materia);
@@ -604,31 +693,45 @@ export default function QuadrantHub() {
   const submitMateria = () => {
     const nome = selectedCourse ? selectedCourse.nome : formCustomNome.trim();
     if (!formCourseId || !nome) return;
-    // Multiverse Simulator (V18.0): il Voto conta SOLO se l'Esame è
-    // dichiarato Superato — se l'utente disattiva il toggle, il voto non
-    // viene mai persistito (niente medie sporcate da esami non superati).
+    // Il voto conta SOLO se l'esame è superato: niente medie sporcate.
     const parsedVoto = Number(formVoto);
     const voto = formExamPassed && Number.isFinite(parsedVoto) && parsedVoto >= MIN_VOTO && parsedVoto <= MAX_VOTO ? parsedVoto : null;
     const payload = {
       nome,
       courseId: selectedCourse ? selectedCourse.id : null,
-      examDate: formExamDate || null, // stringa "YYYY-MM-DD" pura: aritmetica sempre in UTC assoluto (fix timezone shift).
+      examDate: formExamDate || null, // "YYYY-MM-DD" puro: aritmetica sempre in UTC assoluto.
       cfu: selectedCourse ? selectedCourse.cfu : Math.max(1, Number(formCfu) || 6),
       perceivedDifficulty: formDifficulty,
       examPassed: formExamPassed,
-      // Se l'esame non è superato la data non ha senso e non viene
-      // persistita: mai un campo che sopravvive al suo significato.
+      // Senza esame superato la data di verbalizzazione non ha senso.
       examPassedDate: formExamPassed ? formExamPassedDate || null : null,
       voto,
       lode: voto === LODE_VALUE && formLode
     };
     if (editingMateria) {
       actions.updateMateria(editingMateria.id, payload);
+      pushToast(`${nome}: modifiche salvate.`, 'success');
     } else {
+      pendingNewMateriaRef.current = new Set(materie.map((m) => m.id));
       actions.addMateria(payload);
+      pushToast(`${nome} aggiunta al Web-Matrix.`, 'success');
     }
     setMateriaModalOpen(false);
   };
+
+  // V41 — una materia appena creata DA QUI viene aperta subito (prima
+  // restava selezionata quella di prima e la nuova andava cercata). Si
+  // ricordano gli id presenti al momento dell'aggiunta: la prima materia
+  // che compare fuori da quell'elenco è la nuova. Un aggiornamento da un
+  // altro dispositivo non sposta mai la selezione.
+  useEffect(() => {
+    const before = pendingNewMateriaRef.current;
+    if (!before) return;
+    const created = materie.find((m) => m && !before.has(m.id));
+    if (!created) return;
+    pendingNewMateriaRef.current = null;
+    selectMateria(created.id);
+  }, [materie, selectMateria]);
 
   const openAddSfida = () => {
     setSfidaNome('');
@@ -657,10 +760,21 @@ export default function QuadrantHub() {
     setSfidaModalOpen(false);
   };
 
-  // V31.2 — Pillar 1 (Ultimate Node Customization): ingresso in modalità
-  // interattiva — copia i valori correnti del nodo nello staging locale
-  // `edit*`, cosi' "Annulla" può sempre tornare indietro senza toccare il
-  // nodo reale nel Context.
+  /** Stesso argomento, pronto per il prossimo: il programma si mappa a raffica. */
+  const submitSfidaAndContinue = () => {
+    if (!selectedMateria || !sfidaNome.trim() || goblinActive) return;
+    const nome = sfidaNome.trim();
+    submitSfida();
+    setSfidaNome('');
+    setSfidaObiettivo('');
+    setSfidaPagine('');
+    setSfidaFonti([]);
+    setSfidaAppuntiCompleti(false);
+    setSfidaModalOpen(true);
+    pushToast(`"${nome}" aggiunto. Scrivi il prossimo.`, 'success', { duration: 2500 });
+  };
+
+  // V31.2 — ingresso nell'editor: copia i valori correnti nello staging.
   const openNodeEditMode = useCallback((node) => {
     setEditNome(node.nome);
     setEditObiettivo(node.obiettivo || '');
@@ -681,84 +795,90 @@ export default function QuadrantHub() {
     setNodeSaveState('idle');
   }, []);
 
-  // Pillar 2 — persistenza: dispatcha la patch al Context (istantaneo,
-  // Pillar 2.1) e sincronizza su Supabase tramite l'azione dedicata
-  // (Pillar 2.2/2.3). `nodeDetail` viene aggiornato in loco con la patch
-  // già confermata, cosi' la modale mostra subito i nuovi valori senza
-  // dover essere richiusa e riaperta.
-  const saveNodeEdits = useCallback(async (node) => {
-    if (!selectedMateria || !editNome.trim() || nodeSaveState === 'saving') return;
-    setNodeSaveState('saving');
-    const patch = {
-      nome: editNome.trim(),
-      obiettivo: editObiettivo.trim(),
-      oreStimate: Math.max(0.5, Number(editOreStimate) || 2),
-      pagineAppunti: Math.max(0, Number(editPagine) || 0),
-      fonti: normalizeFonti(editFonti),
-      appuntiCompleti: !!editAppuntiCompleti,
-      difficulty: editDifficulty,
-      note: editNote,
-      parentId: editParentId || null
-    };
-    const result = await actions.updateSfidaAndSync(selectedMateria.id, node.id, patch);
-    if (result.success) {
+  // Salvataggio: la patch va subito nello stato (e quindi sul
+  // dispositivo); col Cloud attivo parte anche il salvataggio immediato.
+  // V41 — se il Cloud non risponde le modifiche NON sono perse: restano
+  // qui e l'autosave ritenta da solo. Prima il messaggio diceva "riprova
+  // a salvare" e lasciava l'editor aperto come se niente fosse stato
+  // registrato; e senza Cloud parlava comunque di Supabase.
+  const saveNodeEdits = useCallback(
+    async (node) => {
+      if (!selectedMateria || !editNome.trim() || nodeSaveState === 'saving') return;
+      setNodeSaveState('saving');
+      const patch = {
+        nome: editNome.trim(),
+        obiettivo: editObiettivo.trim(),
+        oreStimate: Math.max(0.5, Number(editOreStimate) || 2),
+        pagineAppunti: Math.max(0, Number(editPagine) || 0),
+        fonti: normalizeFonti(editFonti),
+        appuntiCompleti: !!editAppuntiCompleti,
+        difficulty: editDifficulty,
+        note: editNote,
+        parentId: editParentId || null
+      };
+      const result = await actions.updateSfidaAndSync(selectedMateria.id, node.id, patch);
       setNodeDetail((prev) => (prev && prev.id === node.id ? { ...prev, ...patch } : prev));
-      setNodeSaveState('success');
-      pushToast('Nodo aggiornato — modifiche sincronizzate su Supabase.', 'success');
-      setTimeout(() => {
-        setNodeEditMode(false);
-        setNodeSaveState('idle');
-      }, 1000);
-    } else {
-      setNodeSaveState('error');
-      pushToast('Karen: sincronizzazione Cloud fallita. Riprova a salvare.', 'danger');
-    }
-  }, [selectedMateria, editNome, editObiettivo, editOreStimate, editPagine, editFonti, editAppuntiCompleti, editDifficulty, editNote, editParentId, nodeSaveState, actions, pushToast]);
+      setNodeEditMode(false);
+      setNodeSaveState('idle');
+      if (result.success) {
+        pushToast('Argomento aggiornato.', 'success', { duration: 2500 });
+      } else {
+        pushToast('Modifiche salvate su questo dispositivo. Il Cloud non ha risposto: ritento in automatico.', 'warning');
+      }
+    },
+    [selectedMateria, editNome, editObiettivo, editOreStimate, editPagine, editFonti, editAppuntiCompleti, editDifficulty, editNote, editParentId, nodeSaveState, actions, pushToast]
+  );
 
-  /** V36.0 — persiste l'interrogazione DENTRO il nodo, con la stessa
-   * azione già usata per ogni altra modifica di un nodo: nessun canale di
-   * scrittura nuovo, nessuna tabella nuova. `nodeDetail` viene aggiornato
-   * in loco così le domande compaiono senza richiudere la modale. */
+  /** V36.0 — l'interrogazione si salva DENTRO il nodo, con la stessa azione di ogni altra modifica. */
   const handleSaveQuiz = useCallback(
     async (quiz) => {
       if (!selectedMateria || !nodeDetail) return;
       setNodeDetail((prev) => (prev && prev.id === nodeDetail.id ? { ...prev, quiz } : prev));
       const result = await actions.updateSfidaAndSync(selectedMateria.id, nodeDetail.id, { quiz });
-      if (!result.success) pushToast('Karen: interrogazione generata ma non sincronizzata sul Cloud.', 'danger');
+      if (!result.success) pushToast('Domande pronte e salvate qui. Il Cloud non ha risposto: ritento in automatico.', 'warning');
     },
     [selectedMateria, nodeDetail, actions, pushToast]
   );
 
-  const handleReview = useCallback((node, rating) => {
-    const materia = materie.find((m) => Array.isArray(m?.sfide) && m.sfide.some((s) => s.id === node.id));
-    if (materia) actions.reviewSfida(materia.id, node.id, rating);
-  }, [materie, actions]);
+  const handleReview = useCallback(
+    (node, rating) => {
+      const materia = materie.find((m) => Array.isArray(m?.sfide) && m.sfide.some((s) => s.id === node.id));
+      if (materia) actions.reviewSfida(materia.id, node.id, rating);
+    },
+    [materie, actions]
+  );
 
-  // V16.0 (Pillar 1) — tentativo di completare un nodo "Boss" prima che
-  // tutti i suoi figli diretti siano COMPLETED: nessuna azione distruttiva,
-  // solo un alert elegante (toast) a spiegare cosa manca. Il reducer
-  // (COMPLETE_SFIDA) resta comunque l'ultima linea di difesa idempotente.
-  const handleAttemptComplete = useCallback((node) => {
-    actions.completeSfida(selectedMateria.id, node.id);
-    closeNodeDetail();
-  }, [actions, selectedMateria, closeNodeDetail]);
+  // V16.0 — il reducer (COMPLETE_SFIDA) resta l'ultima linea di difesa
+  // idempotente per un Boss chiuso troppo presto.
+  const handleAttemptComplete = useCallback(
+    (node) => {
+      actions.completeSfida(selectedMateria.id, node.id);
+      closeNodeDetail();
+    },
+    [actions, selectedMateria, closeNodeDetail]
+  );
 
   const handleBossLockedAttempt = useCallback(() => {
     pushToast('Completa prima tutti i sotto-argomenti', 'danger');
   }, [pushToast]);
 
-  // V34.4 — Conferma effettiva del "Riporta a da completare": eseguita solo
-  // dopo la conferma nel ConfirmDialog dedicato (mai un click diretto sul
-  // bottone nella modale di dettaglio, per evitare un undo accidentale
-  // tanto quanto lo era stato il "Completa Nodo" di partenza).
   const confirmReopenNode = useCallback(() => {
     if (!selectedMateria || !reopenNodeTarget) return;
     actions.reopenSfida(selectedMateria.id, reopenNodeTarget.id);
     setReopenNodeTarget(null);
   }, [actions, selectedMateria, reopenNodeTarget]);
 
-  // V34.2 — "Selezione Multipla Nodi": toggle di un singolo id nel Set —
-  // immutabile (nuovo Set ad ogni chiamata), coerente col resto dell'app.
+  /** V41 — dal dettaglio di un argomento allo Stark-Web Terminal, con il Focus già avviato. */
+  const startFocusFromNode = useCallback(
+    (target) => {
+      closeNodeDetail();
+      if (target) requestIntent(INTENT.TIMER_FOCUS_ON, target);
+      goTo(ROUTES.MISSION_CONTROL);
+    },
+    [closeNodeDetail]
+  );
+
+  // V34.2 — Selezione multipla.
   const toggleNodeSelection = useCallback((sfidaId) => {
     setSelectedNodeIds((prev) => {
       const next = new Set(prev);
@@ -770,7 +890,7 @@ export default function QuadrantHub() {
 
   const toggleSelectionMode = useCallback(() => {
     setSelectionMode((prev) => {
-      if (prev) setSelectedNodeIds(new Set()); // uscita: selezione sempre azzerata.
+      if (prev) setSelectedNodeIds(new Set());
       return !prev;
     });
   }, []);
@@ -782,477 +902,218 @@ export default function QuadrantHub() {
     setBulkDeleteConfirmOpen(false);
   }, [selectedMateria, selectedNodeIds, actions]);
 
+  const reviewsDue = derived.upcomingReviews.length;
+  const selectedCourseOfMateria = selectedMateria ? getCourseById(selectedMateria.courseId) : null;
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className={H1}>The Web-Matrix</h1>
-          <p className="text-base text-slate-400 mt-1.5">
-            Karen: Web-Path Planner attivo. Skill Tree ordinato per Spider-Score — sotto-argomenti sempre liberi, il Nodo Padre è un Boss da sconfiggere per ultimo.
-          </p>
+      <PageHeader
+        eyebrow="Piano di studi"
+        icon="web"
+        title="The Web-Matrix"
+        subtitle="Le tue materie in ordine di priorità. Per ognuna: l'albero degli argomenti, la prontezza d'esame e i ripassi."
+        actions={
+          <>
+            <button type="button" onClick={() => setSpiderSenseDrawerOpen(true)} className={BTN_GHOST}>
+              <Icon name="radar" className={`w-4 h-4 ${reviewsDue > 0 ? 'text-accent' : ''}`} />
+              Spider-Sense
+              {reviewsDue > 0 ? (
+                <span className="ml-0.5 min-w-[1.25rem] h-5 px-1.5 rounded-full bg-accent text-[11px] font-bold text-black/80 flex items-center justify-center ds-num">
+                  {reviewsDue}
+                </span>
+              ) : (
+                <span className="text-xs font-normal text-slate-500">· tutto ripassato</span>
+              )}
+            </button>
+            <button type="button" onClick={openAddMateria} className={BTN_PRIMARY}>
+              <Icon name="plus" className="w-4 h-4" />
+              Nuova materia
+            </button>
+          </>
+        }
+      />
+
+      {/* Karen: su cosa lavorare adesso, e dove fai più fatica. */}
+      <div className={`grid grid-cols-1 gap-4 ${derived.bountyTargets.length > 0 ? 'xl:grid-cols-3' : ''}`}>
+        <div className={derived.bountyTargets.length > 0 ? 'xl:col-span-2' : ''}>
+          <KarenSuggestorPanel primaryTarget={primaryTarget} onSelect={openMateria} selectedId={selectedMateriaId} />
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <button type="button" onClick={() => setSpiderSenseDrawerOpen(true)} className={`relative ${BTN_SECONDARY}`}>
-            <Icon name="alertTriangle" className="w-5 h-5" />
-            Attiva Spider-Sense
-            {derived.upcomingReviews.length > 0 && (
-              <span className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-primary text-white text-[11px] flex items-center justify-center font-mono shadow-primary-glow">
-                {derived.upcomingReviews.length}
-              </span>
-            )}
-          </button>
-          <button type="button" onClick={openAddMateria} className={BTN_PRIMARY}>
-            <Icon name="plus" className="w-5 h-5" />
-            Nuovo Nodo Web-Matrix
-          </button>
-        </div>
+        <BountyBoardPanel targets={derived.bountyTargets} onSelect={openNodeFromSchedule} />
       </div>
 
-      <KarenSuggestorPanel primaryTarget={primaryTarget} onSelect={setSelectedMateriaId} />
-      <BountyBoardPanel targets={derived.bountyTargets} onSelect={openNodeFromSchedule} />
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-        {/* Colonna materie — Decluttering Accordion per Anno (V20.0, Pillar
-            2): raggruppate 1°/2°/3° Anno + Materie Libere, ordinate
-            internamente per Spider-Score decrescente (Time-Weaver Formula:
-            Difficoltà + Esami Sbloccati + 1000/Giorni Mancanti). Solo
-            l'anno del Primary Target parte aperto di default. */}
-        <div className="lg:col-span-1 min-w-0 space-y-3">
-          {materie.length === 0 && (
-            <div className={CARD}>
-              <EmptyState
-                variant="tree"
-                compact
-                title="Karen: nessun nodo del Web-Matrix rilevato."
-                subtitle="Apri il tuo primo corso dal piano di studi per iniziare a tracciare lo Skill Tree."
-              />
-            </div>
-          )}
-          {YEAR_SECTIONS.filter((sec) => (materieByYear.get(sec.key) || []).length > 0).map((sec) => {
-            const items = materieByYear.get(sec.key) || [];
-            const isOpen = openYears.has(sec.key);
-            const hasPrimaryTarget = sec.key === primaryTargetYearKey;
-            return (
-              <div key={sec.key} className="rounded-2xl border border-secondary/15 bg-surface/40 backdrop-blur-xl overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => toggleYear(sec.key)}
-                  className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left hover:bg-surface/60 transition-all duration-300"
-                >
-                  <span className="text-sm font-bold tracking-wide text-slate-200 flex items-center gap-2 flex-wrap">
-                    {sec.label}
-                    <span className={BADGE.slate}>{items.length}</span>
-                    {hasPrimaryTarget && (
-                      <span className={BADGE.amber}>
-                        <Icon name="crosshair" className="w-3 h-3" />
-                        target
-                      </span>
-                    )}
-                  </span>
-                  <Icon name="chevronDown" className={`w-4 h-4 text-slate-500 transition-transform duration-300 shrink-0 ${isOpen ? 'rotate-180' : ''}`} />
-                </button>
-                {isOpen && (
-                  <div className="px-3 pb-3 space-y-3">
-                    {items.map((m) => {
-                      const spiderScore = spiderScoreById.get(m.id) ?? 0;
-                      const mReadiness = derived.examReadinessByMateriaId.get(m.id) || null;
-                      const mSfide = Array.isArray(m?.sfide) ? m.sfide : [];
-                      const total = mSfide.length;
-                      const done = mSfide.filter((s) => s.status === 'COMPLETED').length;
-                      const active = m.id === selectedMateriaId;
-                      const goblin = isGoblinProtocol(m);
-                      const quota = derived.karenQuotaByMateriaId.get(m.id);
-                      // Quantum Router (V23.0, Modulo 1): 3 stati invece del
-                      // vecchio booleano eventHorizon — Ottimale non riceve
-                      // mai uno stile speciale (nessun falso allarme),
-                      // Attenzione un respiro ambra morbido, Critico il
-                      // lampeggio rosso di prima.
-                      // V37.0 — Materia ARCHIVIATA: esame verbalizzato.
-                      //
-                      // Una materia superata non ha più né urgenza né ritmo
-                      // da recuperare: continuare a mostrarle Spider-Score,
-                      // verdetto di Exam Readiness e allarmi rossi era
-                      // rumore che competeva visivamente con le materie su
-                      // cui stai davvero lavorando. Da qui in giù la card
-                      // diventa un archivio: nessun allarme, badge
-                      // "Archiviata", barra piena, accento verde.
-                      const archiviata = !!m.examPassed;
-                      const status = archiviata ? 'ARCHIVIATA' : quota?.status;
-                      const critico = status === 'CRITICO';
-                      // V40.0 — "Attenzione" solo con una data vera: una
-                      // materia senza esame fissato (es. un corso che segui
-                      // a lezione) non ha niente da rischiare e non deve
-                      // pulsare in ambra accanto agli esami veri.
-                      const attenzione = status === 'ATTENZIONE' && quota?.daysRemaining != null;
-                      // V29.0 — Pillar 2 (Automatic Precedence Engine): la
-                      // Materia resta pienamente visibile/cliccabile (mai
-                      // bloccata) ma segnalata come "congelata" per il
-                      // planner automatico finché le propedeuticità
-                      // ufficiali non sono soddisfatte.
-                      const congelata = status === 'CONGELATA';
-                      return (
-                        <button
-                          key={m.id}
-                          type="button"
-                          onClick={() => setSelectedMateriaId(m.id)}
-                          className={`relative w-full text-left p-3 sm:p-4 rounded-2xl border transition-all duration-300 backdrop-blur-lg overflow-hidden ${
-                            archiviata
-                              ? `bg-emerald-950/20 border-emerald-400/25 hover:border-emerald-400/50 ${
-                                  active ? 'border-emerald-400/60 shadow-[0_0_16px_rgba(52,211,153,0.25)]' : ''
-                                }`
-                              : critico
-                              ? 'af-event-horizon border-primary/70 bg-primary/10'
-                              : goblin
-                              ? 'af-goblin border-primary/60 bg-primary/10'
-                              : attenzione
-                              ? 'af-attenzione-pulse border-accent/60 bg-accent/10'
-                              : congelata
-                              ? 'bg-surface/40 border-slate-500/20 opacity-70'
-                              : active
-                              ? 'bg-surface/80 border-secondary/60 shadow-secondary-glow'
-                              : 'bg-surface/60 border-secondary/15 hover:border-secondary/40'
-                          }`}
-                        >
-                          {/* V39 — nome su una riga propria (fino a 2 righe, mai
-                              troncato a "Anali…") e badge sotto, liberi di
-                              andare a capo: prima i due gruppi si
-                              contendevano la stessa riga e i badge uscivano
-                              dalla card nelle colonne strette. */}
-                          <div className="flex flex-col gap-2">
-                            <span
-                              className={`font-semibold text-base leading-snug flex items-start gap-1.5 min-w-0 ${
-                                archiviata ? 'text-slate-400' : 'text-slate-100'
-                              }`}
-                            >
-                              {archiviata ? (
-                                <Icon name="check" className="w-4 h-4 mt-0.5 text-emerald-400 shrink-0" />
-                              ) : critico ? (
-                                <Icon name="alertTriangle" className="w-4 h-4 mt-0.5 text-primary shrink-0" />
-                              ) : attenzione ? (
-                                <Icon name="alertTriangle" className="w-4 h-4 mt-0.5 text-accent shrink-0" />
-                              ) : congelata ? (
-                                <Icon name="lock" className="w-4 h-4 mt-0.5 text-slate-500 shrink-0" />
-                              ) : (
-                                goblin && <Icon name="skull" className="w-4 h-4 mt-0.5 text-primary shrink-0" />
-                              )}
-                              <span className="min-w-0 line-clamp-2 break-words">{m.nome}</span>
-                            </span>
-                            <span className="flex items-center gap-1.5 flex-wrap">
-                              {congelata && (
-                                <span className="inline-flex items-center gap-1 rounded-full bg-slate-800/60 text-slate-400 border border-slate-500/30 px-2.5 py-0.5 text-[11px] font-mono">
-                                  Congelata
-                                </span>
-                              )}
-                              {archiviata && (
-                                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/10 text-emerald-300 border border-emerald-400/30 px-2.5 py-0.5 text-[11px] font-mono">
-                                  <Icon name="trophy" className="w-3 h-3" />
-                                  Archiviata
-                                </span>
-                              )}
-                              <span className={BADGE.blue}>{m.cfu} CFU</span>
-                              {!archiviata && (
-                                <span
-                                  className={BADGE.amber}
-                                  title="Spider-Score — Pressure Formula: ore residue contro ore disponibili prima dell'esame, pesate per importanza strategica"
-                                >
-                                  <Icon name="bolt" className="w-3.5 h-3.5" />
-                                  {spiderScore}
-                                </span>
-                              )}
-                              {/* V36.0 — il verdetto d'esame a colpo d'occhio,
-                                  già nell'elenco: non serve aprire la materia
-                                  per sapere se ti ci puoi presentare.
-                                  V37.0 — tranne quando l'esame è già stato
-                                  verbalizzato: lì non c'è più niente da
-                                  prevedere. */}
-                              {!archiviata && mReadiness && mReadiness.verdict !== 'UNKNOWN' && (
-                                <span
-                                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-mono border ${VERDICT_META[mReadiness.verdict].badge}`}
-                                  title={mReadiness.rationale}
-                                >
-                                  <Icon name="gauge" className="w-3.5 h-3.5" />
-                                  {VERDICT_META[mReadiness.verdict].short}
-                                </span>
-                              )}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                            {!archiviata && m.examDate && !quota?.dataScaduta && (
-                              <p className="text-sm text-slate-500">Esame: {formatDateOnlyHuman(m.examDate)}</p>
-                            )}
-                            {/* V39.0 — appello nel passato ma esame non
-                                segnato come superato: di solito è un esito
-                                che deve ancora arrivare. Lo si dice, invece
-                                di lasciare la materia in allarme rosso. */}
-                            {!archiviata && quota?.dataScaduta && (
-                              <span className="text-xs text-accent flex items-center gap-1">
-                                <Icon name="alertTriangle" className="w-3.5 h-3.5" />
-                                Appello del {formatDateOnlyHuman(m.examDate)} passato: segna l'esito o imposta il prossimo
-                              </span>
-                            )}
-                            {/* V39.0 — Empire State University: ore di
-                                lezione a settimana nel semestre in corso. */}
-                            {!archiviata && oreLezioneById.has(m.id) && (
-                              <span className={BADGE.cyan} title="Ore di lezione a settimana nel semestre in corso">
-                                <Icon name="calendar" className="w-3 h-3" />
-                                {formatHoursMinutes(oreLezioneById.get(m.id) / 60)}/sett
-                              </span>
-                            )}
-                            {archiviata && (
-                              <span className="text-xs font-mono text-emerald-400 flex items-center gap-1">
-                                <Icon name="check" className="w-3.5 h-3.5" />
-                                superato{Number.isFinite(m.voto) ? ` · ${m.voto}${m.lode ? ' e lode' : ''}/30` : ''}
-                                {m.examPassedDate ? ` · ${formatDateOnlyHuman(m.examPassedDate)}` : ''}
-                              </span>
-                            )}
-                          </div>
-                          <div
-                            className={`mt-3 h-2 af-web-bar rounded-full overflow-hidden border ${
-                              archiviata ? 'bg-surface/60 border-emerald-400/20' : 'bg-surface/80 border-secondary/15'
-                            }`}
-                          >
-                            <div
-                              className={`h-full ${
-                                archiviata
-                                  ? 'bg-gradient-to-r from-emerald-500/70 to-emerald-400/70'
-                                  : 'bg-gradient-to-r from-secondary to-secondary-dark'
-                              }`}
-                              style={{ width: archiviata ? '100%' : total > 0 ? `${(done / total) * 100}%` : '0%' }}
-                            />
-                          </div>
-                          <p className="text-sm text-slate-500 mt-1.5">
-                            {archiviata ? (total > 0 ? `${total}/${total} nodi · archiviati` : 'Esame archiviato') : `${done}/${total} nodi`}
-                          </p>
-                          {/* V40.0 — nell'elenco basta una parola: il dettaglio
-                              (e il consiglio) sta nella scheda della materia.
-                              Sei card con la stessa frase di tre righe in
-                              rosso erano rumore, non informazione. */}
-                          {critico && (
-                            <p className="text-xs text-primary mt-2 font-semibold flex items-center gap-1.5">
-                              <Icon name="alertTriangle" className="w-3.5 h-3.5 shrink-0" />
-                              Traiettoria insostenibile
-                            </p>
-                          )}
-                          {attenzione && (
-                            <p className="text-xs text-accent mt-2 font-medium flex items-center gap-1.5">
-                              <Icon name="alertTriangle" className="w-3.5 h-3.5 shrink-0" />
-                              Leggermente indietro
-                            </p>
-                          )}
-                          {congelata && (
-                            <p className="text-xs text-slate-500 mt-2 flex items-start gap-1.5">
-                              <Icon name="lock" className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                              Propedeuticità mancante: {quota.missingPrereqNames.join(', ')}. Esclusa dal planner automatico, preparabile a mano.
-                            </p>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+      {/* Due colonne da 1200 px: sotto, con la barra laterale dell'app, il
+          dettaglio resterebbe largo come un telefono. */}
+      <div className="grid grid-cols-1 min-[1200px]:grid-cols-[288px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)] gap-5 items-start">
+        {/* Elenco materie: resta in vista mentre scorri l'albero. */}
+        <div className="min-w-0 min-[1200px]:sticky min-[1200px]:top-4 min-[1200px]:max-h-[calc(100vh-2rem)] min-[1200px]:overflow-y-auto af-scroll rounded-[var(--af-radius-card)]">
+          <MateriaListPanel
+            sections={YEAR_SECTIONS}
+            materieByYear={materieByYear}
+            openYears={openYears}
+            onToggleYear={toggleYear}
+            primaryTargetYearKey={primaryTargetYearKey}
+            selectedMateriaId={selectedMateriaId}
+            onSelect={openMateria}
+            onAdd={openAddMateria}
+            spiderScoreById={spiderScoreById}
+            readinessById={derived.examReadinessByMateriaId}
+            quotaById={derived.karenQuotaByMateriaId}
+            oreLezioneById={oreLezioneById}
+            verdictMeta={VERDICT_META}
+            totalCount={materie.length}
+          />
         </div>
 
-        {/* Colonna Skill Tree */}
-        <div className="lg:col-span-2 xl:col-span-3 min-w-0 space-y-5">
+        {/* Materia aperta */}
+        <div ref={detailRef} className="min-w-0 space-y-5 scroll-mt-16 lg:scroll-mt-4">
           {selectedMateria ? (
             <>
-              {/* Livello 1 — Macro-Materia / Esame */}
-              <div className={goblinActive ? `${CARD_ALERT} space-y-4 af-goblin` : `${CARD} space-y-4`}>
-                {goblinActive && (
-                  <div className="relative bg-primary/10 border border-primary/40 rounded-xl px-4 py-3.5 flex items-start gap-3">
-                    <Icon name="skull" className="w-6 h-6 text-primary shrink-0" />
-                    <div>
-                      <p className="text-base font-semibold text-primary">Green Goblin Protocol Attivo</p>
-                      <p className="text-sm text-slate-400 mt-0.5">
-                        Esame imminente (≤3 giorni). Creazione di nuovi nodi bloccata: concentrati esclusivamente su ripasso e Sinister Six Simulator.
-                      </p>
-                    </div>
-                  </div>
-                )}
-                <div className="relative flex items-start justify-between flex-wrap gap-4">
+              <MateriaHeader
+                materia={selectedMateria}
+                course={selectedCourseOfMateria}
+                quota={selectedQuota}
+                estimate={estimate}
+                readiness={readiness}
+                verdictMeta={VERDICT_META}
+                goblinActive={goblinActive}
+                statusCounts={statusCounts}
+                totalNodes={selectedSfide.length}
+                oreLezioneMin={oreLezioneById.get(selectedMateria.id) || 0}
+                onEdit={() => openEditMateria(selectedMateria)}
+                onDelete={() => setDeleteMateriaTarget(selectedMateria)}
+                onShowReadiness={() => {
+                  const el = document.getElementById('wm-readiness');
+                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }}
+              />
+
+              {/* Skill Tree: il cuore della pagina, subito sotto la testata. */}
+              <section aria-label="Skill Tree" className="space-y-3">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h2 className={`${H2} break-words min-w-0`}>{selectedMateria.nome}</h2>
-                      <span className={BADGE.blue}>{selectedMateria.cfu} CFU</span>
-                    </div>
-                    <div className="flex items-center gap-x-5 gap-y-1 flex-wrap mt-3">
-                      {selectedMateria.examDate && (
-                        <span className="text-sm text-slate-400 flex items-center gap-1.5">
-                          <Icon name="radar" className="w-4 h-4 text-slate-500" />
-                          Esame: <span className="font-mono text-slate-200">{formatDateOnlyHuman(selectedMateria.examDate)}</span>
-                        </span>
-                      )}
-                      {estimate && !estimate.done && estimate.dateKey && (
-                        <span
-                          className="text-sm text-secondary flex items-center gap-1.5 flex-wrap"
-                          title={
-                            estimate.senzaNodi
-                              ? `Nessun nodo ancora: ${formatHoursMinutes(estimate.totalHoursNeeded)} stimate dai CFU (~${estimate.totalDaysNeeded}gg al tuo ritmo). Mappa il programma per una stima vera.`
-                              : `${formatHoursMinutes(estimate.totalHoursNeeded)} totali stimate sui ${estimate.remaining} nodi ancora incompleti (~${estimate.totalDaysNeeded}gg a ritmo sostenibile)`
-                          }
-                        >
-                          <Icon name="bolt" className="w-4 h-4" />
-                          Fine prevista: <span className="font-mono">{formatDateOnlyHuman(estimate.dateKey)}</span>
-                          <span className="text-slate-500">
-                            · {formatHoursMinutes(estimate.totalHoursNeeded)} residue{estimate.senzaNodi ? ' (stima dai CFU)' : ''}
-                          </span>
-                        </span>
-                      )}
-                      {estimate && estimate.done && (
-                        <span className="text-sm text-emerald-400 flex items-center gap-1.5">
-                          <Icon name="check" className="w-4 h-4" />
-                          Nodo Web-Matrix completato
-                        </span>
-                      )}
-                    </div>
+                    <h2 className="ds-h2 flex items-center gap-2">
+                      Skill Tree
+                      {selectedSfide.length > 0 && <span className={BADGE.slate}>{selectedSfide.length}</span>}
+                    </h2>
+                    <p className="text-[13px] text-slate-500 mt-0.5">Un argomento con sotto-argomenti è un Boss: si chiude per ultimo.</p>
                   </div>
-                  {/* V39 — la riga va a capo invece di uscire dalla card: su
-                      telefono "Seleziona Nodi" finiva tagliato a metà. */}
-                  <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => openEditMateria(selectedMateria)}
-                      className="p-2.5 rounded-xl bg-white/[0.03] border border-white/10 text-slate-400 hover:text-secondary hover:border-secondary/40 transition-all duration-300"
-                      aria-label="Modifica nodo Web-Matrix"
+                      onClick={toggleSelectionMode}
+                      disabled={rootNodes.length === 0}
+                      title={rootNodes.length === 0 ? 'Nessun argomento da selezionare' : 'Seleziona più argomenti per eliminarli insieme'}
+                      className={`ds-btn ds-btn-sm ${selectionMode ? 'ds-btn-secondary' : 'ds-btn-ghost'}`}
                     >
-                      <Icon name="edit" className="w-5 h-5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDeleteMateriaTarget(selectedMateria)}
-                      className="p-2.5 rounded-xl bg-white/[0.03] border border-white/10 text-slate-400 hover:text-primary hover:border-primary/40 transition-all duration-300"
-                      aria-label="Elimina nodo Web-Matrix"
-                    >
-                      <Icon name="trash" className="w-5 h-5" />
+                      <Icon name={selectionMode ? 'close' : 'check'} className="w-3.5 h-3.5" />
+                      {selectionMode ? 'Fine selezione' : 'Seleziona'}
                     </button>
                     <button
                       type="button"
                       onClick={() => setAiIndexModalOpen(true)}
                       disabled={goblinActive}
-                      title={goblinActive ? 'Goblin Protocol attivo: importazione nodi bloccata' : 'AI Index Matrix — importa un indice generato via IA'}
-                      className={`hidden sm:inline-flex ${BTN_GHOST}`}
+                      title={goblinActive ? 'Goblin Protocol attivo: importazione bloccata' : "Importa l'indice del programma generato con l'IA"}
+                      className="ds-btn ds-btn-ghost ds-btn-sm"
                     >
-                      <Icon name="chip" className="w-5 h-5" />
+                      <Icon name="chip" className="w-3.5 h-3.5" />
                       AI Index Matrix
                     </button>
                     <button
                       type="button"
                       onClick={openAddSfida}
                       disabled={goblinActive}
-                      title={goblinActive ? 'Goblin Protocol attivo: aggiunta nodi bloccata' : ''}
-                      className={BTN_SECONDARY}
+                      title={goblinActive ? 'Goblin Protocol attivo: niente argomenti nuovi a ridosso dell’esame' : 'Aggiungi un argomento allo Skill Tree'}
+                      className="ds-btn ds-btn-secondary ds-btn-sm"
                     >
-                      <Icon name="plus" className="w-5 h-5" />
-                      Nodo
-                    </button>
-                    {/* V34.2 — "Selezione Multipla Nodi": disattivato senza
-                        nodi da selezionare, mai un pulsante che entra in
-                        una modalità vuota e inutile. */}
-                    <button
-                      type="button"
-                      onClick={toggleSelectionMode}
-                      disabled={rootNodes.length === 0}
-                      title={rootNodes.length === 0 ? 'Nessun nodo da selezionare' : ''}
-                      className={selectionMode ? BTN_SECONDARY : BTN_GHOST}
-                    >
-                      <Icon name={selectionMode ? 'close' : 'check'} className="w-5 h-5" />
-                      {selectionMode ? 'Esci Selezione' : 'Seleziona Nodi'}
+                      <Icon name="plus" className="w-3.5 h-3.5" />
+                      Argomento
                     </button>
                   </div>
                 </div>
-                {/* AI Index Matrix — su mobile il pulsante ghost non entra
-                    comodamente nella riga: riga dedicata a piena larghezza
-                    sotto l'header, mai un'icona-only che nasconde il
-                    significato dell'azione. */}
-                <button
-                  type="button"
-                  onClick={() => setAiIndexModalOpen(true)}
-                  disabled={goblinActive}
-                  className={`sm:hidden w-full ${BTN_GHOST}`}
-                >
-                  <Icon name="chip" className="w-5 h-5" />
-                  AI Index Matrix
-                </button>
-              </div>
 
-              {/* V36.0 — EXAM READINESS INDEX: il verdetto esplicito
-                  "sostieni / rimanda" che l'app non ha mai dato. Fino alla
-                  V35 sapeva dire "sei in ritardo" e "finirai il giorno X",
-                  ma non rispondeva alla domanda del giorno in cui si
-                  aprono le prenotazioni. Nessun numero inventato: i
-                  pilastri senza dati valgono un neutro dichiarato e la
-                  confidenza scende (vedi utils/examReadiness.js). */}
-              {readiness && (
-                <ExamReadinessCard readiness={readiness} materia={selectedMateria} estimate={estimate} />
-              )}
-
-              {/* V38.0 — "La Forgia degli Appunti". Subito sotto il
-                  verdetto d'esame perché risponde alla domanda
-                  immediatamente successiva: bene, e allora oggi cosa
-                  faccio — scrivo o studio? E soprattutto dà la scadenza
-                  che nessun'altra app dà, quella entro cui gli appunti
-                  vanno chiusi per fare in tempo a studiarli. Il pannello
-                  non compare affatto per le materie che non dichiarano
-                  né fonti né pagine: non avrebbe niente da dire. */}
-              <PianoAppuntiPanel
-                plan={derived.sintesiPlanByMateriaId.get(selectedMateria.id)}
-                materiaNome={selectedMateria.nome}
-                passo={derived.campus?.passo?.find((r) => r.materiaId === selectedMateria.id) || null}
-              />
-
-              {/* V34.2 — "Selezione Multipla Nodi": barra azioni di gruppo,
-                  sempre visibile mentre la modalità è attiva (0 o più nodi
-                  selezionati) — mai nascosta finché l'utente non ne
-                  seleziona almeno uno, cosi' resta chiaro come uscirne. */}
-              {selectionMode && (
-                <div className="relative flex items-center justify-between flex-wrap gap-3 bg-primary/10 border border-primary/40 rounded-2xl px-4 py-3.5 af-holo-alert-in">
-                  <span className="text-sm font-semibold text-primary flex items-center gap-2">
-                    <Icon name="check" className="w-4 h-4" />
-                    {selectedNodeIds.size} nodo/i selezionato/i
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button type="button" onClick={toggleSelectionMode} className={BTN_GHOST}>
-                      Annulla
-                    </button>
-                    <button
-                      type="button"
-                      disabled={selectedNodeIds.size === 0}
-                      onClick={() => setBulkDeleteConfirmOpen(true)}
-                      className={BTN_PRIMARY}
-                    >
-                      <Icon name="trash" className="w-5 h-5" />
-                      Elimina Selezionati
-                    </button>
+                {/* V34.2 — barra della selezione multipla, sempre visibile
+                    mentre la modalità è attiva (così è chiaro come uscirne). */}
+                {selectionMode && (
+                  <div className="sticky top-3 z-20 flex items-center justify-between flex-wrap gap-3 rounded-xl border border-primary/35 bg-panel-2/95 backdrop-blur px-4 py-2.5 shadow-pop">
+                    <span className="text-sm font-medium text-slate-100 flex items-center gap-2 ds-num">
+                      <Icon name="check" className="w-4 h-4 text-primary" />
+                      {selectedNodeIds.size === 0
+                        ? 'Tocca gli argomenti da selezionare'
+                        : selectedNodeIds.size === 1
+                        ? '1 argomento selezionato'
+                        : `${selectedNodeIds.size} argomenti selezionati`}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button type="button" onClick={toggleSelectionMode} className="ds-btn ds-btn-ghost ds-btn-sm">
+                        Annulla
+                      </button>
+                      <button
+                        type="button"
+                        disabled={selectedNodeIds.size === 0}
+                        onClick={() => setBulkDeleteConfirmOpen(true)}
+                        className="ds-btn ds-btn-danger ds-btn-sm"
+                      >
+                        <Icon name="trash" className="w-3.5 h-3.5" />
+                        Elimina
+                      </button>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* Livelli 2 + 3 — Nodi Padre e relativi Nodi Figli */}
-              {rootNodes.length === 0 ? (
-                <div className={CARD}>
-                  <EmptyState
-                    variant="tree"
-                    title="Karen: nessun nodo in questo ramo del Web-Matrix."
-                    subtitle="Aggiungi il primo Nodo Padre per cominciare a costruire lo Skill Tree."
-                  />
-                </div>
-              ) : (
-                <div className="space-y-5">
-                  {rootNodes.map((node) => (
-                    <ParentModuleCard
-                      key={node.id}
-                      node={node}
-                      materia={selectedMateria}
-                      onSelect={openNodeDetail}
-                      bountyIds={bountySfidaIds}
-                      selectionMode={selectionMode}
-                      selectedIds={selectedNodeIds}
-                      onToggleSelect={toggleNodeSelection}
+                {rootNodes.length === 0 ? (
+                  <div className={CARD}>
+                    <EmptyState
+                      variant="tree"
+                      title="Nessun argomento ancora"
+                      subtitle="Mappa il programma: aggiungi gli argomenti a mano oppure importa l'indice con l'AI Index Matrix."
+                      action={
+                        <div className="flex flex-wrap items-center justify-center gap-2 mt-1">
+                          <button type="button" onClick={openAddSfida} disabled={goblinActive} className={BTN_SECONDARY}>
+                            <Icon name="plus" className="w-4 h-4" />
+                            Primo argomento
+                          </button>
+                          <button type="button" onClick={() => setAiIndexModalOpen(true)} disabled={goblinActive} className={BTN_GHOST}>
+                            <Icon name="chip" className="w-4 h-4" />
+                            AI Index Matrix
+                          </button>
+                        </div>
+                      }
                     />
-                  ))}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {rootNodes.map((node) => (
+                      <ParentModuleCard
+                        key={node.id}
+                        node={node}
+                        materia={selectedMateria}
+                        onSelect={openNodeDetail}
+                        bountyIds={bountySfidaIds}
+                        selectionMode={selectionMode}
+                        selectedIds={selectedNodeIds}
+                        onToggleSelect={toggleNodeSelection}
+                      />
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              {/* Analisi della materia: verdetto d'esame (V36.0) e piano
+                  appunti (V38.0). Una materia superata non ha più niente
+                  da prevedere; il piano compare solo se la materia
+                  dichiara fonti o pagine. */}
+              {!selectedMateria.examPassed && (
+                <div className="space-y-5">
+                  {readiness && (
+                    <div id="wm-readiness" className="scroll-mt-4">
+                      <ExamReadinessCard readiness={readiness} materia={selectedMateria} estimate={estimate} />
+                    </div>
+                  )}
+                  <PianoAppuntiPanel
+                    plan={derived.sintesiPlanByMateriaId.get(selectedMateria.id)}
+                    materiaNome={selectedMateria.nome}
+                    passo={derived.campus?.passo?.find((r) => r.materiaId === selectedMateria.id) || null}
+                  />
                 </div>
               )}
             </>
@@ -1260,93 +1121,117 @@ export default function QuadrantHub() {
             <div className={CARD}>
               <EmptyState
                 variant="tree"
-                title="Karen: nessun nodo selezionato."
-                subtitle="Seleziona un nodo del Web-Matrix dalla colonna a sinistra, o aprine uno nuovo dal piano di studi, per visualizzare lo Skill Tree."
+                title={materie.length === 0 ? 'Il Web-Matrix è vuoto' : 'Nessuna materia aperta'}
+                subtitle={
+                  materie.length === 0
+                    ? 'Aggiungi la prima materia dal piano di studi: da lì costruirai l’albero degli argomenti.'
+                    : 'Scegli una materia dall’elenco per vederne l’albero degli argomenti.'
+                }
+                action={
+                  materie.length === 0 ? (
+                    <button type="button" onClick={openAddMateria} className={`${BTN_PRIMARY} mt-1`}>
+                      <Icon name="plus" className="w-4 h-4" />
+                      Nuova materia
+                    </button>
+                  ) : null
+                }
               />
             </div>
           )}
         </div>
       </div>
 
-      {/* Spider-Sense Schedule — visibilità totale sui ripassi tracciati, dovuti o futuri. */}
-      <div className={`${CARD} space-y-5`}>
-        <div className="relative flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-secondary/10 border border-secondary/30 flex items-center justify-center text-secondary shrink-0">
-              <Icon name="radar" className="w-6 h-6" />
-            </div>
-            <div>
-              <h2 className={H2}>Spider-Sense Schedule</h2>
-              <p className="text-sm text-slate-500">Timeline completa dei ripassi tracciati, materia per materia.</p>
+      {/* Spider-Sense Schedule — tutti i ripassi tracciati, dovuti o futuri. */}
+      <section className={CARD_NOPAD} aria-label="Spider-Sense Schedule">
+        <div className="flex items-center justify-between flex-wrap gap-3 px-4 sm:px-5 py-3.5 border-b border-line">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="ds-icon-tile text-secondary">
+              <Icon name="radar" className="w-[18px] h-[18px]" />
+            </span>
+            <div className="min-w-0">
+              <h2 className="text-[15px] font-semibold text-white">Spider-Sense Schedule</h2>
+              <p className="text-xs text-slate-500">Quando torna ogni argomento già studiato, materia per materia.</p>
             </div>
           </div>
-          <span className={BADGE.blue}>{derived.allTrackedReviews.length} nodi tracciati</span>
+          <div className="flex items-center gap-2">
+            {reviewsDue > 0 && <span className={BADGE.amber}>{reviewsDue} da ripassare ora</span>}
+            <span className={BADGE.slate}>{derived.allTrackedReviews.length} tracciati</span>
+          </div>
         </div>
 
-        {scheduleGroups.length === 0 ? (
-          <EmptyState
-            variant="radar"
-            compact
-            title="Nessun nodo tracciato"
-            subtitle="Completa il primo nodo di uno Skill Tree per iniziare a tracciare i ripassi con lo Spider-Sense."
-          />
-        ) : (
-          <div className="relative space-y-5">
-            {scheduleGroups.map((group) => (
-              <div key={group.materiaId}>
-                <p className="text-sm font-semibold text-slate-500 tracking-widest mb-2.5">{group.materiaNome.toUpperCase()}</p>
-                <div className="flex flex-wrap gap-2">
-                  {group.items.map((item) => {
-                    const overdue = item.daysUntil < 0;
-                    const dueToday = item.daysUntil === 0;
-                    const urgent = overdue || dueToday;
-                    return (
-                      <button
-                        key={item.sfidaId}
-                        type="button"
-                        onClick={() => openNodeFromSchedule(item.materiaId, item.sfidaId)}
-                        className={`${urgent ? BADGE.red : BADGE.blue} min-h-[36px] !py-1.5 max-w-full text-left hover:brightness-125 transition-all duration-200`}
-                      >
-                        <Icon name={urgent ? 'alertTriangle' : 'check'} className="w-3.5 h-3.5 shrink-0" />
-                        <span className="min-w-0 break-words">
-                          {item.sfidaNome}{' '}
-                          <span className="opacity-70 font-normal whitespace-nowrap">
-                            {overdue ? `— scaduto da ${Math.abs(item.daysUntil)}gg` : dueToday ? '— ripassa ora' : `— tra ${item.daysUntil}gg`}
+        <div className="p-4 sm:p-5">
+          {scheduleGroups.length === 0 ? (
+            <EmptyState
+              variant="radar"
+              compact
+              title="Nessun argomento tracciato"
+              subtitle="Completa il primo argomento di uno Skill Tree: da lì lo Spider-Sense ti dirà quando ripassarlo."
+            />
+          ) : (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-6 gap-y-5">
+              {scheduleGroups.map((group) => (
+                <div key={group.materiaId} className="min-w-0">
+                  <p className="text-xs font-semibold text-slate-400 mb-2 truncate">{group.materiaNome}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {group.items.map((item) => {
+                      const overdue = item.daysUntil < 0;
+                      const dueToday = item.daysUntil === 0;
+                      const urgent = overdue || dueToday;
+                      return (
+                        <button
+                          key={item.sfidaId}
+                          type="button"
+                          onClick={() => openNodeFromSchedule(item.materiaId, item.sfidaId)}
+                          className={`inline-flex items-center gap-1.5 max-w-full rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
+                            urgent
+                              ? 'border-accent/35 bg-accent/[0.08] text-slate-100 hover:border-accent/60'
+                              : 'border-line bg-surface text-slate-300 hover:border-line-strong hover:text-white'
+                          }`}
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${urgent ? 'bg-accent' : 'bg-secondary/70'}`} aria-hidden="true" />
+                          <span className="min-w-0 truncate">{item.sfidaNome}</span>
+                          <span className={`shrink-0 ds-num ${urgent ? 'text-accent' : 'text-slate-500'}`}>
+                            {overdue ? `scaduto da ${Math.abs(item.daysUntil)} gg` : dueToday ? 'oggi' : `tra ${item.daysUntil} gg`}
                           </span>
-                        </span>
-                      </button>
-                    );
-                  })}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
 
-      {/* Modal: Web-Path Planner — crea/modifica Materia dal piano di studi Vanvitelli */}
+      {/* Modale: nuova / modifica materia (Web-Path Planner) */}
       <Modal
         open={materiaModalOpen}
         onClose={() => setMateriaModalOpen(false)}
-        title={editingMateria ? 'Modifica Nodo Web-Matrix' : 'Web-Path Planner — Nuovo Nodo'}
+        title={editingMateria ? `Modifica ${editingMateria.nome}` : 'Nuova materia'}
         maxWidth="max-w-xl"
       >
-        <div className="space-y-4">
+        <div className="space-y-5">
           <div>
-            <label className="text-sm text-slate-400 block mb-1.5">Corso (piano di studi Ingegneria Aerospaziale — Vanvitelli)</label>
+            <label className={LABEL}>Corso</label>
             <Dropdown
               value={formCourseId}
               onChange={handleCourseChange}
               options={courseOptions}
-              placeholder="Seleziona un corso ufficiale o una Materia Libera..."
+              placeholder="Scegli dal piano di studi o una materia libera…"
+              ariaLabel="Corso"
             />
+            <p className="text-xs text-slate-500 mt-1.5">Piano di studi di Ingegneria Aerospaziale (Vanvitelli): CFU e anno si compilano da soli.</p>
           </div>
 
           {formCourseId === CUSTOM_COURSE_ID && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_120px] gap-3">
               <div>
-                <label className="text-sm text-slate-400 block mb-1.5">Nome materia</label>
+                <label className={LABEL} htmlFor="wm-materia-nome">
+                  Nome della materia
+                </label>
                 <input
+                  id="wm-materia-nome"
                   type="text"
                   value={formCustomNome}
                   onChange={(e) => setFormCustomNome(e.target.value)}
@@ -1355,65 +1240,60 @@ export default function QuadrantHub() {
                 />
               </div>
               <div>
-                <label className="text-sm text-slate-400 block mb-1.5">CFU</label>
+                <label className={LABEL} htmlFor="wm-materia-cfu">
+                  CFU
+                </label>
                 <input
+                  id="wm-materia-cfu"
                   type="number"
                   min={1}
                   max={30}
                   value={formCfu}
                   onChange={(e) => setFormCfu(e.target.value)}
-                  className={INPUT}
+                  className={`${INPUT} ds-num`}
                 />
               </div>
             </div>
           )}
 
           {selectedCourse && (
-            <div className="flex items-center gap-3 bg-surface/70 border border-secondary/20 rounded-xl px-4 py-3">
-              <span className={BADGE.blue}>{selectedCourse.cfu} CFU — autocompilati</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={BADGE.blue}>{selectedCourse.cfu} CFU</span>
               <span className={BADGE.slate}>{selectedCourse.anno}° anno</span>
             </div>
           )}
 
-          {/* Soft-Lock Propedeuticità — Warning UI elegante, MAI bloccante:
-              il nodo resta sempre creabile per studiare gli appunti in anticipo. */}
+          {/* Propedeuticità: avviso, MAI un blocco — si può studiare in anticipo. */}
           {missingPrereqs.length > 0 && (
-            <div className="relative bg-accent/10 border border-accent/40 rounded-xl px-4 py-3.5 flex items-start gap-3">
-              <Icon name="alertTriangle" className="w-5 h-5 text-accent shrink-0 mt-0.5" />
-              <div>
-                <p className="text-sm font-semibold text-accent">
-                  Richiede {missingPrereqs.map((c) => c.nome).join(', ')} per l'esame ufficiale.
-                </p>
-                <p className="text-sm text-slate-400 mt-0.5">
-                  Karen: permesso di studio simultaneo accordato — puoi comunque tracciare gli appunti in anticipo su questo nodo.
+            <div className="rounded-xl border border-accent/35 bg-accent/[0.06] px-4 py-3 flex items-start gap-3">
+              <Icon name="alertTriangle" className="w-4 h-4 text-accent shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-accent">Per l'esame servono prima: {missingPrereqs.map((c) => c.nome).join(', ')}.</p>
+                <p className="text-[13px] text-slate-400 mt-0.5">
+                  Puoi comunque aggiungerla e prepararne gli appunti in anticipo: resta fuori dal planner automatico finché non le superi.
                 </p>
               </div>
             </div>
           )}
 
           <div>
-            <label className="text-sm text-slate-400 block mb-1.5">Data esame</label>
-            <input
-              type="date"
-              value={formExamDate}
-              onChange={(e) => setFormExamDate(e.target.value)}
-              className={INPUT}
-            />
+            <label className={LABEL} htmlFor="wm-materia-data">
+              Data dell'esame <span className="text-slate-500 font-normal">(facoltativa)</span>
+            </label>
+            <input id="wm-materia-data" type="date" value={formExamDate} onChange={(e) => setFormExamDate(e.target.value)} className={INPUT} />
           </div>
 
-          <div className="bg-surface/70 border border-secondary/15 rounded-xl px-4 py-4">
+          <div className="ds-well px-4 py-3.5">
             <TechSlider value={formDifficulty} onChange={setFormDifficulty} labels={DIFFICULTY_SLIDER_LABELS} accent="primary" />
           </div>
 
-          {/* Time-Weaver Formula (V20.0, Pillar 2): l'Urgenza manuale è
-              stata rimossa — il fattore tempo ora arriva SOLO dalla Data
-              Esame reale (1000/giorni mancanti), calcolato automaticamente
-              da Karen. Nessuno slider soggettivo può più scavalcarlo. */}
-          <div className="flex items-center justify-between gap-3 bg-surface/70 border border-secondary/15 rounded-xl px-4 py-3">
-            <span className="text-sm text-slate-400">Spider-Score risultante (Time-Weaver Formula)</span>
+          {/* Time-Weaver Formula (V20.0): la pressione temporale arriva
+              solo dalla data d'esame reale, calcolata da Karen. */}
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-line px-4 py-3">
+            <span className="text-sm text-slate-400">Spider-Score risultante</span>
             <span className={BADGE.amber}>
-              <Icon name="bolt" className="w-3.5 h-3.5" />
-              {previewSpiderScore}
+              <Icon name="bolt" className="w-3 h-3" />
+              {formatNumber(previewSpiderScore, 1)}
             </span>
           </div>
 
@@ -1421,9 +1301,7 @@ export default function QuadrantHub() {
             checked={formExamPassed}
             onChange={() => {
               // V39 — attivando "superato" con un appello già passato, la
-              // data di verbalizzazione parte da quella (si corregge se
-              // serve): senza data l'esame restava fuori dallo storico
-              // della media e dal ritmo di carriera.
+              // data di verbalizzazione parte da quella.
               const next = !formExamPassed;
               setFormExamPassed(next);
               if (next && !formExamPassedDate && formExamDate && formExamDate <= todayDateOnlyKey()) {
@@ -1432,78 +1310,74 @@ export default function QuadrantHub() {
             }}
           />
 
-          {/* Multiverse Simulator (V18.0, Pillar 3) — il Voto ufficiale entra
-              nella Media Ponderata Reale solo se l'Esame è Superato. */}
+          {/* Il voto entra nella media ponderata (Multiverse Simulator) solo se l'esame è superato. */}
           {formExamPassed && (
-            <div className="bg-surface/70 border border-accent/25 rounded-xl px-4 py-4 space-y-3">
-              <p className="text-sm text-accent font-semibold flex items-center gap-1.5">
-                <Icon name="chartBar" className="w-4 h-4" />
-                Voto — alimenta il Multiverse Simulator (Media Ponderata / Proiezione di Laurea)
+            <div className="rounded-xl border border-line bg-surface/60 p-4 space-y-4">
+              <p className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                <Icon name="chartBar" className="w-4 h-4 text-accent" />
+                Voto e verbalizzazione
               </p>
-              {/* V37.0 — la data di verbalizzazione. Senza, lo storico
-                  della media segnava il giorno in cui spuntavi la
-                  casella: registrare un esame di due mesi prima
-                  schiacciava il grafico su una data sbagliata. È anche
-                  ciò che permette di misurare il tuo ritmo reale di
-                  CFU/mese e quindi la stima del tempo di laurea. */}
-              <div>
-                <label className="text-sm text-slate-400 block mb-1.5 flex items-center gap-1.5">
-                  <Icon name="calendar" className="w-3.5 h-3.5 text-accent" />
-                  Data di verbalizzazione
-                </label>
-                <input
-                  type="date"
-                  value={formExamPassedDate}
-                  onChange={(e) => setFormExamPassedDate(e.target.value)}
-                  max={todayDateOnlyKey()}
-                  className={INPUT}
-                />
-                <p className="text-xs text-slate-500 mt-1.5">
-                  Il giorno in cui l'esame è stato registrato, non quello in cui lo inserisci qui. Alimenta lo storico
-                  della media e la stima del tempo di laurea.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 items-end">
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-end">
                 <div>
-                  <label className="text-sm text-slate-400 block mb-1.5">Voto (18-30)</label>
+                  <label className={LABEL} htmlFor="wm-materia-verbale">
+                    Data di verbalizzazione
+                  </label>
                   <input
+                    id="wm-materia-verbale"
+                    type="date"
+                    value={formExamPassedDate}
+                    onChange={(e) => setFormExamPassedDate(e.target.value)}
+                    max={todayDateOnlyKey()}
+                    className={INPUT}
+                  />
+                </div>
+                <div>
+                  <label className={LABEL} htmlFor="wm-materia-voto">
+                    Voto (18–30)
+                  </label>
+                  <input
+                    id="wm-materia-voto"
                     type="number"
                     min={MIN_VOTO}
                     max={MAX_VOTO}
                     value={formVoto}
                     onChange={(e) => setFormVoto(e.target.value)}
                     placeholder="Es. 27"
-                    className={INPUT}
+                    className={`${INPUT} ds-num`}
                   />
                 </div>
                 <button
                   type="button"
                   onClick={() => setFormLode((v) => !v)}
                   disabled={Number(formVoto) !== LODE_VALUE}
-                  className={`h-[50px] rounded-xl border font-semibold text-sm transition-all duration-300 flex items-center justify-center gap-2 ${
-                    formLode && Number(formVoto) === LODE_VALUE
-                      ? 'bg-accent/20 border-accent/60 text-accent'
-                      : 'bg-surface/80 border-white/10 text-slate-500'
-                  } disabled:opacity-40 disabled:pointer-events-none`}
+                  aria-pressed={formLode && Number(formVoto) === LODE_VALUE}
+                  className={`ds-btn h-[46px] ${formLode && Number(formVoto) === LODE_VALUE ? 'ds-btn-amber' : 'ds-btn-ghost'}`}
+                  title={Number(formVoto) !== LODE_VALUE ? 'La lode si assegna solo con 30' : ''}
                 >
-                  <Icon name="trophy" className="w-4 h-4" />
-                  e Lode
+                  <Icon name="trophy" className="w-4 h-4" />e lode
                 </button>
               </div>
-              <p className="text-xs text-slate-500">Lasciando il campo vuoto, questo esame non entrerà nel calcolo della media ponderata.</p>
+              <p className="text-xs text-slate-500">
+                La data è quella del verbale, non di oggi: alimenta lo storico della media e la stima del tempo di laurea. Senza
+                voto l'esame resta fuori dalla media ponderata.
+              </p>
             </div>
           )}
 
-          <p className="text-sm text-slate-500">XP nodo = XP_Base × (1 + CFU × 0.05): più CFU, più XP per ogni traguardo.</p>
-          <button
-            type="button"
-            disabled={!formCourseId || (formCourseId === CUSTOM_COURSE_ID && !formCustomNome.trim())}
-            onClick={submitMateria}
-            className={`w-full ${BTN_PRIMARY}`}
-          >
-            {editingMateria ? 'Salva Modifiche' : 'Apri Nodo nel Web-Matrix'}
-          </button>
+          <p className="text-xs text-slate-500">Più CFU ha la materia, più XP vale ogni argomento che chiudi.</p>
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button type="button" onClick={() => setMateriaModalOpen(false)} className={BTN_GHOST}>
+              Annulla
+            </button>
+            <button
+              type="button"
+              disabled={!formCourseId || (formCourseId === CUSTOM_COURSE_ID && !formCustomNome.trim())}
+              onClick={submitMateria}
+              className={BTN_PRIMARY}
+            >
+              {editingMateria ? 'Salva modifiche' : 'Aggiungi materia'}
+            </button>
+          </div>
         </div>
       </Modal>
 
@@ -1512,20 +1386,18 @@ export default function QuadrantHub() {
         onClose={() => setDeleteMateriaTarget(null)}
         onConfirm={() => {
           actions.deleteMateria(deleteMateriaTarget.id);
-          // V37.0 — invece di lasciare la colonna vuota, si passa alla
-          // materia successiva in ordine di priorità: eliminare una
-          // materia non deve costare anche un click per ritrovarsi.
+          // V37.0 — si passa alla materia successiva in ordine di priorità.
           if (selectedMateriaId === deleteMateriaTarget.id) {
             const prossima = sortedMaterie.find((m) => m.id !== deleteMateriaTarget.id);
             setSelectedMateriaId(prossima ? prossima.id : '');
           }
         }}
-        title="Elimina Nodo Web-Matrix"
-        message={`Eliminare "${deleteMateriaTarget?.nome}"? Tutti i nodi e i progressi collegati andranno persi.`}
-        confirmLabel="Elimina"
+        title="Eliminare la materia?"
+        message={`"${deleteMateriaTarget?.nome}" verrà eliminata con tutti i suoi argomenti e le sue lezioni in orario. Per qualche secondo potrai annullare dalla notifica; una copia di sicurezza resta comunque in Karen OS Settings → Backup.`}
+        confirmLabel="Elimina materia"
       />
 
-      {/* V27.0 — Pillar 2: AI Index Matrix — importazione bulk dello Skill Tree. */}
+      {/* V27.0 — AI Index Matrix: importazione dell'indice del programma. */}
       <AiIndexMatrixModal
         open={aiIndexModalOpen}
         onClose={() => setAiIndexModalOpen(false)}
@@ -1533,56 +1405,87 @@ export default function QuadrantHub() {
         materiaNome={selectedMateria?.nome || ''}
       />
 
-      {/* Modal: nuovo nodo */}
-      <Modal open={sfidaModalOpen} onClose={() => setSfidaModalOpen(false)} title="Nuovo Nodo dello Skill Tree">
-        <div className="space-y-4">
+      {/* Modale: nuovo argomento */}
+      <Modal
+        open={sfidaModalOpen}
+        onClose={() => setSfidaModalOpen(false)}
+        title={selectedMateria ? `Nuovo argomento · ${selectedMateria.nome}` : 'Nuovo argomento'}
+        maxWidth="max-w-lg"
+      >
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitSfida();
+          }}
+        >
           <div>
-            <label className="text-sm text-slate-400 block mb-1.5">Nome nodo</label>
+            <label className={LABEL} htmlFor="wm-sfida-nome">
+              Titolo
+            </label>
             <input
+              id="wm-sfida-nome"
               type="text"
               value={sfidaNome}
               onChange={(e) => setSfidaNome(e.target.value)}
               className={INPUT}
               placeholder="Es. Equazioni di Navier-Stokes"
+              autoFocus
             />
           </div>
           <div>
-            <label className="text-sm text-slate-400 block mb-1.5">Obiettivo</label>
+            <label className={LABEL} htmlFor="wm-sfida-obiettivo">
+              Obiettivo <span className="text-slate-500 font-normal">(facoltativo)</span>
+            </label>
             <textarea
+              id="wm-sfida-obiettivo"
               value={sfidaObiettivo}
               onChange={(e) => setSfidaObiettivo(e.target.value)}
-              rows={3}
+              rows={2}
               className={`${INPUT} resize-none`}
-              placeholder="Cosa significa completare questo nodo?"
+              placeholder="Cosa vuol dire averlo chiuso? Es. saper ricavare le equazioni e risolvere gli esercizi tipo"
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-sm text-slate-400 block mb-1.5">Ore previste</label>
+              <label className={LABEL} htmlFor="wm-sfida-ore">
+                Ore previste
+              </label>
               <input
+                id="wm-sfida-ore"
                 type="number"
                 min={0.5}
                 step={0.5}
                 value={sfidaOreStimate}
                 onChange={(e) => setSfidaOreStimate(e.target.value)}
-                className={INPUT}
+                className={`${INPUT} ds-num`}
               />
             </div>
             <div>
-              <label className="text-sm text-slate-400 block mb-1.5">Difficoltà</label>
-              <Dropdown
-                value={sfidaDifficulty}
-                onChange={setSfidaDifficulty}
-                options={Object.values(DIFFICULTY).map((d) => ({ value: d, label: DIFFICULTY_META[d].label }))}
-              />
+              <label className={LABEL}>Difficoltà</label>
+              <Dropdown value={sfidaDifficulty} onChange={setSfidaDifficulty} options={DIFFICULTY_OPTIONS} ariaLabel="Difficoltà" />
             </div>
           </div>
 
-          {/* V38.0 — "La Forgia degli Appunti". Le pagine restano l'unico
-              numero che conosci con certezza prima di iniziare, ma sono
-              due numeri diversi: quelle da cui PARTI (libro, slide,
-              dispense) e quelle che ne RICAVI. Il piano di studio si
-              basa sulle seconde, il lavoro di sintesi sulle prime. */}
+          <div>
+            <label className={LABEL}>Dentro a</label>
+            <Dropdown
+              value={sfidaParentId}
+              onChange={setSfidaParentId}
+              placeholder="Nessuno: argomento principale"
+              ariaLabel="Argomento padre"
+              options={[
+                { value: '', label: 'Nessuno: argomento principale' },
+                ...selectedSfide.map((s) => ({ value: s.id, label: s.nome }))
+              ]}
+            />
+            <p className="text-xs text-slate-500 mt-1.5">
+              Scegli un argomento esistente per farne un sotto-argomento: quello diventa un Boss e si chiude per ultimo.
+            </p>
+          </div>
+
+          {/* V38.0 — "La Forgia degli Appunti": le pagine da cui PARTI e
+              quelle che ne RICAVI sono due numeri diversi. */}
           <FontiEditor
             fonti={sfidaFonti}
             onFontiChange={setSfidaFonti}
@@ -1593,109 +1496,58 @@ export default function QuadrantHub() {
             calibration={derived.calibration}
             oreStimate={sfidaOreStimate}
           />
-          <div>
-            <label className="text-sm text-slate-400 block mb-1.5">Nodo Padre (Categoria / prerequisito)</label>
-            <Dropdown
-              value={sfidaParentId}
-              onChange={setSfidaParentId}
-              placeholder="Nessuno (Nodo Padre — categoria di primo livello)"
-              options={[
-                { value: '', label: 'Nessuno (Nodo Padre — categoria di primo livello)' },
-                ...selectedSfide.map((s) => ({ value: s.id, label: s.nome }))
-              ]}
-            />
-            <p className="text-sm text-slate-500 mt-1.5">
-              Questo nodo sarà sempre liberamente completabile. Se in futuro diventerà a sua volta un Nodo Padre
-              (altri nodi lo useranno come prerequisito), potrà chiudersi solo a sotto-argomenti tutti completati.
-            </p>
+
+          <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-1">
+            <button type="button" onClick={submitSfidaAndContinue} disabled={!sfidaNome.trim()} className={BTN_GHOST}>
+              Aggiungi e scrivi il prossimo
+            </button>
+            <button type="submit" disabled={!sfidaNome.trim()} className={BTN_SECONDARY}>
+              <Icon name="plus" className="w-4 h-4" />
+              Aggiungi argomento
+            </button>
           </div>
-          <button type="button" disabled={!sfidaNome.trim()} onClick={submitSfida} className={`w-full ${BTN_SECONDARY}`}>
-            Aggiungi Nodo
-          </button>
-        </div>
+        </form>
       </Modal>
 
-      {/* Modal / pannello di dettaglio nodo — qui vivono tutte le azioni
-          rapide (Ripassa, Forza Ripasso, Editor di Personalizzazione),
-          tenute fuori dalle righe dell'albero per non affollarle. */}
-      <Modal open={!!nodeDetail} onClose={requestCloseNodeDetail} title={nodeDetail?.nome || ''}>
-        {nodeDetail && selectedMateria && (() => {
-          const status = deriveNodeStatus(nodeDetail, selectedSfide);
-          // V35.5 — "In Corso" è un valore NODE_STATUS aggiuntivo: senza
-          // questo fallback un lookup su un nodo con minuti di Focus già
-          // investiti tornerebbe `undefined` qui (STATUS_META.LOCKED è già
-          // il fallback usato altrove in SkillTreeNodes.jsx per lo stesso
-          // motivo di robustezza).
-          const meta = STATUS_META[status] || STATUS_META.LOCKED;
-          const diffMeta = DIFFICULTY_META[nodeDetail.difficulty];
-          const ownChildren = directChildrenOf(nodeDetail, selectedSfide);
-          const isBoss = ownChildren.length > 0;
-          const pendingOwnChildren = ownChildren.filter((c) => c.status !== 'COMPLETED').length;
-          // V35.5 — un nodo "In Corso" (Focus già investito) resta
-          // liberamente completabile esattamente come uno "Disponibile":
-          // IN_PROGRESS è solo un segnale visivo di avanzamento, mai un
-          // secondo cancello da sbloccare.
-          const canComplete = status === NODE_STATUS.AVAILABLE || status === NODE_STATUS.IN_PROGRESS;
-          const bossLocked = isBoss && status === NODE_STATUS.LOCKED;
-          const parentOptions = selectedSfide.filter(
-            (s) => s.id !== nodeDetail.id && !isDescendant(selectedSfide, nodeDetail.id, s.id)
-          );
-          const currentParent = selectedSfide.find((s) => s.id === nodeDetail.parentId) || null;
-          const isSaving = nodeSaveState === 'saving';
+      {/* Modale: dettaglio argomento — qui vivono tutte le azioni, tenute
+          fuori dalle righe dell'albero per non affollarle. */}
+      <Modal open={!!nodeDetail} onClose={requestCloseNodeDetail} title={nodeDetail?.nome || ''} maxWidth="max-w-lg">
+        {nodeDetail &&
+          selectedMateria &&
+          (() => {
+            const status = deriveNodeStatus(nodeDetail, selectedSfide);
+            // V35.5 — fallback robusto per stati futuri.
+            const meta = STATUS_META[status] || STATUS_META.LOCKED;
+            const diffMeta = DIFFICULTY_META[nodeDetail.difficulty] || DIFFICULTY_META.MEDIUM;
+            const ownChildren = directChildrenOf(nodeDetail, selectedSfide);
+            const isBoss = ownChildren.length > 0;
+            const pendingOwnChildren = ownChildren.filter((c) => c.status !== 'COMPLETED').length;
+            // V35.5 — "In corso" resta completabile come "Da studiare".
+            const canComplete = status === NODE_STATUS.AVAILABLE || status === NODE_STATUS.IN_PROGRESS;
+            const bossLocked = isBoss && status === NODE_STATUS.LOCKED;
+            const isDone = status === NODE_STATUS.COMPLETED || status === NODE_STATUS.NEEDS_REVIEW;
+            const parentOptions = selectedSfide.filter((s) => s.id !== nodeDetail.id && !isDescendant(selectedSfide, nodeDetail.id, s.id));
+            const currentParent = selectedSfide.find((s) => s.id === nodeDetail.parentId) || null;
+            const isSaving = nodeSaveState === 'saving';
+            const canFocus = !selectedMateria.examPassed;
+            const focusMin = Number(nodeDetail.focusMinutes) || 0;
+            const focusSintesiMin = Number(nodeDetail.focusMinutesSintesi) || 0;
 
-          return (
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className={meta.badge}>{meta.label}</span>
-                {!nodeEditMode && (
-                  <span className={`text-sm font-mono px-2.5 py-1 rounded-full border ${diffMeta.border} ${diffMeta.color}`}>
-                    {diffMeta.label}{nodeDetail.difficulty === 'HARD' ? ' (+30% XP)' : ''}
-                  </span>
-                )}
-                {isBoss && <span className="text-sm font-mono px-2.5 py-1 rounded-full border border-secondary/30 text-secondary">Boss — {ownChildren.length} figlio/i</span>}
-                {bountySfidaIds.has(nodeDetail.id) && (
-                  <span className={BADGE.red} title="Bounty Target — alta frizione nei ripassi">
-                    <Icon name="crosshair" className="w-3.5 h-3.5" />
-                    Bounty Target
-                  </span>
-                )}
-              </div>
-
-              {/* V31.2 — Pillar 1: pulsante olografico Karen OS. Design
-                  adattivo — glow/etichetta cambiano col nodo, e sparisce
-                  del tutto quando l'Editor è già aperto (mai due ingressi
-                  contemporanei nella stessa modale). */}
-              {!nodeEditMode && (
-                <button
-                  type="button"
-                  onClick={() => openNodeEditMode(nodeDetail)}
-                  className="group relative w-full flex items-center justify-between gap-3 bg-secondary/10 border border-secondary/40 rounded-xl px-4 py-3.5 overflow-hidden hover:border-secondary/70 hover:bg-secondary/15 hover:-translate-y-0.5 transition-all duration-300"
+            if (nodeEditMode) {
+              return (
+                <form
+                  className="space-y-4"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    saveNodeEdits(nodeDetail);
+                  }}
                 >
-                  <span className="absolute -top-10 -right-10 w-32 h-32 rounded-full bg-secondary/20 blur-2xl pointer-events-none group-hover:bg-secondary/30 transition-all duration-500" />
-                  <span className="relative flex items-center gap-3 min-w-0">
-                    <span className="w-9 h-9 rounded-lg bg-secondary/15 border border-secondary/50 flex items-center justify-center text-secondary shrink-0 shadow-secondary-glow">
-                      <Icon name="chip" className="w-[18px] h-[18px]" />
-                    </span>
-                    <span className="text-left min-w-0">
-                      <span className="block text-[10px] tracking-[0.25em] text-secondary font-mono">KAREN OS</span>
-                      <span className="block text-sm font-bold text-white truncate">Personalizza / Modifica</span>
-                    </span>
-                  </span>
-                  <Icon name="edit" className="relative w-4 h-4 text-secondary shrink-0 group-hover:scale-110 transition-transform duration-300" />
-                </button>
-              )}
-
-              {nodeEditMode ? (
-                <div className="relative bg-secondary/5 border border-secondary/25 rounded-2xl p-4 sm:p-5 space-y-4 overflow-hidden af-edit-mode-in">
-                  <div className="absolute -top-14 -left-14 w-48 h-48 rounded-full bg-secondary/10 blur-3xl pointer-events-none" />
-                  <div className="relative flex items-center gap-2 text-secondary">
-                    <Icon name="chip" className="w-4 h-4" />
-                    <span className="text-xs font-mono tracking-[0.2em]">MODALITÀ PERSONALIZZAZIONE ATTIVA</span>
-                  </div>
-
-                  <div className="relative">
-                    <label className="text-sm text-slate-400 block mb-1.5">Titolo del nodo</label>
+                  <div>
+                    <label className={LABEL} htmlFor="wm-edit-nome">
+                      Titolo
+                    </label>
                     <input
+                      id="wm-edit-nome"
                       type="text"
                       value={editNome}
                       onChange={(e) => setEditNome(e.target.value)}
@@ -1705,354 +1557,378 @@ export default function QuadrantHub() {
                     />
                   </div>
 
-                  <div className="relative">
-                    <label className="text-sm text-slate-400 block mb-1.5">Obiettivo</label>
+                  <div>
+                    <label className={LABEL} htmlFor="wm-edit-obiettivo">
+                      Obiettivo
+                    </label>
                     <textarea
+                      id="wm-edit-obiettivo"
                       value={editObiettivo}
                       onChange={(e) => setEditObiettivo(e.target.value)}
-                      rows={3}
+                      rows={2}
                       className={`${INPUT} resize-none`}
-                      placeholder="Cosa significa completare questo nodo?"
+                      placeholder="Cosa vuol dire averlo chiuso?"
                       disabled={isSaving}
                     />
                   </div>
 
-                  <div className="relative">
-                    <label className="text-sm text-slate-400 block mb-1.5 flex items-center gap-1.5">
+                  <div>
+                    <label className={`${LABEL} flex items-center gap-1.5`} htmlFor="wm-edit-note">
                       <Icon name="note" className="w-3.5 h-3.5 text-secondary" />
-                      Appunti del nodo
+                      Appunti
                     </label>
                     <textarea
+                      id="wm-edit-note"
                       value={editNote}
                       onChange={(e) => setEditNote(e.target.value)}
                       rows={6}
-                      className={`${INPUT} resize-y font-mono text-sm leading-relaxed`}
-                      placeholder={'Formule, passaggi chiave, errori tipici, pagina della dispensa...\nQuello che serve per ripassare senza cercare altrove.'}
+                      className={`${INPUT} resize-y font-mono text-[13px] leading-relaxed`}
+                      placeholder={'Formule, passaggi chiave, errori tipici, pagina della dispensa…\nQuello che serve per ripassare senza cercare altrove.'}
                       disabled={isSaving}
                     />
-                    <p className="text-xs text-slate-500 mt-1.5">
-                      Compaiono qui sotto ad ogni apertura del nodo e ad ogni ripasso Spider-Sense.
-                    </p>
+                    <p className="text-xs text-slate-500 mt-1.5">Li ritrovi aprendo l'argomento e a ogni ripasso Spider-Sense.</p>
                   </div>
 
-                  <div className="relative grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="text-sm text-slate-400 block mb-1.5">Ore previste</label>
+                      <label className={LABEL} htmlFor="wm-edit-ore">
+                        Ore previste
+                      </label>
                       <input
+                        id="wm-edit-ore"
                         type="number"
                         min={0.5}
                         step={0.5}
                         value={editOreStimate}
                         onChange={(e) => setEditOreStimate(e.target.value)}
-                        className={INPUT}
+                        className={`${INPUT} ds-num`}
                         disabled={isSaving}
                       />
                     </div>
                     <div>
-                      <label className="text-sm text-slate-400 block mb-1.5">Difficoltà</label>
-                      <Dropdown
-                        value={editDifficulty}
-                        onChange={setEditDifficulty}
-                        options={Object.values(DIFFICULTY).map((d) => ({ value: d, label: DIFFICULTY_META[d].label }))}
-                        disabled={isSaving}
-                      />
+                      <label className={LABEL}>Difficoltà</label>
+                      <Dropdown value={editDifficulty} onChange={setEditDifficulty} options={DIFFICULTY_OPTIONS} disabled={isSaving} ariaLabel="Difficoltà" />
                     </div>
                   </div>
 
-                  <div className="relative">
-                    <FontiEditor
-                      fonti={editFonti}
-                      onFontiChange={setEditFonti}
-                      pagineAppunti={editPagine}
-                      onPagineAppuntiChange={setEditPagine}
-                      appuntiCompleti={editAppuntiCompleti}
-                      onAppuntiCompletiChange={setEditAppuntiCompleti}
-                      calibration={derived.calibration}
-                      oreStimate={editOreStimate}
-                      compact
-                    />
-                  </div>
-
-                  <div className="relative">
-                    <label className="text-sm text-slate-400 block mb-1.5">Nodo Padre (Categoria / prerequisito)</label>
+                  <div>
+                    <label className={LABEL}>Dentro a</label>
                     <Dropdown
                       value={editParentId}
                       onChange={setEditParentId}
-                      placeholder="Nessuno (Nodo Padre — categoria di primo livello)"
-                      options={[
-                        { value: '', label: 'Nessuno (Nodo Padre — categoria di primo livello)' },
-                        ...parentOptions.map((s) => ({ value: s.id, label: s.nome }))
-                      ]}
+                      placeholder="Nessuno: argomento principale"
+                      ariaLabel="Argomento padre"
+                      options={[{ value: '', label: 'Nessuno: argomento principale' }, ...parentOptions.map((s) => ({ value: s.id, label: s.nome }))]}
                       disabled={isSaving}
                     />
                   </div>
 
-                  {nodeSaveState === 'error' && (
-                    <div className="relative bg-primary/10 border border-primary/40 rounded-xl px-4 py-3 flex items-start gap-3 af-holo-alert-in">
-                      <Icon name="cloudOff" className="w-5 h-5 text-primary af-sync-error shrink-0 mt-0.5" />
-                      <p className="text-sm text-primary">Karen: sincronizzazione Cloud fallita. Le modifiche non sono ancora confermate — riprova a salvare.</p>
-                    </div>
-                  )}
+                  <FontiEditor
+                    fonti={editFonti}
+                    onFontiChange={setEditFonti}
+                    pagineAppunti={editPagine}
+                    onPagineAppuntiChange={setEditPagine}
+                    appuntiCompleti={editAppuntiCompleti}
+                    onAppuntiCompletiChange={setEditAppuntiCompleti}
+                    calibration={derived.calibration}
+                    oreStimate={editOreStimate}
+                    compact
+                  />
 
-                  {nodeSaveState === 'success' && (
-                    <div className="relative bg-emerald-900/20 border border-emerald-400/40 rounded-xl px-4 py-3 flex items-center gap-3 af-holo-alert-in">
-                      <Icon name="cloudCheck" className="w-5 h-5 text-emerald-400 shrink-0" />
-                      <p className="text-sm text-emerald-300">Modifiche salvate e sincronizzate su Supabase.</p>
-                    </div>
-                  )}
-
-                  <div className="relative flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={cancelNodeEdit}
-                      disabled={isSaving}
-                      className={`flex-1 ${BTN_GHOST}`}
-                    >
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button type="button" onClick={cancelNodeEdit} disabled={isSaving} className={BTN_GHOST}>
                       Annulla
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => saveNodeEdits(nodeDetail)}
-                      disabled={!editNome.trim() || isSaving}
-                      className={`flex-[2] ${BTN_SUCCESS}`}
-                    >
+                    <button type="submit" disabled={!editNome.trim() || isSaving} className={BTN_SUCCESS}>
                       {isSaving ? (
                         <>
                           <Icon name="cloud" className="w-4 h-4 af-cloud-syncing" />
-                          Salvataggio in corso...
+                          Salvataggio…
                         </>
                       ) : (
                         <>
                           <Icon name="check" className="w-4 h-4" />
-                          Salva Modifiche
+                          Salva modifiche
                         </>
                       )}
                     </button>
                   </div>
-                </div>
-              ) : (
-                <>
-                  {nodeDetail.obiettivo && <p className="text-base text-slate-300">{nodeDetail.obiettivo}</p>}
+                </form>
+              );
+            }
 
-                  {/* V36.0 — Appunti del nodo in sola lettura: la prima
-                      cosa che serve quando lo Spider-Sense chiede un
-                      ripasso. `whitespace-pre-wrap` conserva a capo e
-                      rientri scritti a mano, senza introdurre un parser
-                      markdown (e il suo peso) per un campo personale. */}
-                  {nodeDetail.note && (
-                    <div className="relative bg-secondary/5 border border-secondary/20 rounded-xl p-3.5">
-                      <p className="text-[11px] font-mono tracking-widest text-secondary mb-2 flex items-center gap-1.5">
-                        <Icon name="note" className="w-3.5 h-3.5" />
-                        APPUNTI
-                      </p>
-                      <p className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed font-mono">{nodeDetail.note}</p>
-                    </div>
-                  )}
-
-                  {/* V38.0 — i due bilanci del nodo (fonti da snellire e
-                      appunti da studiare), in sola lettura. */}
-                  <NodeWorkSummary sfida={nodeDetail} calibration={derived.calibration} />
-
-                  <p className="text-sm text-slate-500">
-                    Ore previste: {formatHoursMinutes(Number(nodeDetail.oreStimate) || 0)}
-                    {' · '}{formatHoursMinutes((Number(nodeDetail.focusMinutes) || 0) / 60)} di Focus accumulati
-                    {Number(nodeDetail.focusMinutesSintesi) > 0 && (
-                      <> (<span className="text-accent">{nodeDetail.focusMinutesSintesi} di sintesi</span>)</>
+            return (
+              <div className="space-y-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2 flex-wrap min-w-0">
+                    <span className={meta.badge}>
+                      <Icon name={meta.icon} className="w-3 h-3" />
+                      {meta.label}
+                    </span>
+                    <span className={BADGE.slate}>
+                      {diffMeta.label}
+                      {nodeDetail.difficulty === 'HARD' ? ' · +30% XP' : ''}
+                    </span>
+                    {isBoss && (
+                      <span className={BADGE.violet}>
+                        <Icon name="skull" className="w-3 h-3" />
+                        Boss · {ownChildren.length}
+                      </span>
                     )}
-                    {currentParent && <> · Nodo Padre: <span className="text-slate-300">{currentParent.nome}</span></>}
-                  </p>
-                  {(status === NODE_STATUS.COMPLETED || status === NODE_STATUS.NEEDS_REVIEW) && nodeDetail.nextReviewDate && (
-                    <p className="text-sm text-slate-500">
-                      Prossimo ripasso: <span className="font-mono text-slate-300">{nodeDetail.nextReviewDate}</span>
-                      {nodeDetail.lastReviewRating && ` · ultimo giudizio: ${REVIEW_RATING_META[nodeDetail.lastReviewRating].label}`}
-                      {nodeDetail.reviewCount > 0 && ` · ${nodeDetail.reviewCount} ripassi totali`}
-                      {nodeDetail.srsIntervalDays > 0 && (
-                        <span className="text-slate-600"> · intervallo attuale {nodeDetail.srsIntervalDays}gg</span>
-                      )}
+                    {bountySfidaIds.has(nodeDetail.id) && (
+                      <span className={BADGE.red} title="Bounty: alta frizione nei ripassi">
+                        <Icon name="crosshair" className="w-3 h-3" />
+                        Bounty
+                      </span>
+                    )}
+                  </div>
+                  <button type="button" onClick={() => openNodeEditMode(nodeDetail)} className="ds-btn ds-btn-ghost ds-btn-sm shrink-0">
+                    <Icon name="edit" className="w-3.5 h-3.5" />
+                    Modifica
+                  </button>
+                </div>
+
+                {nodeDetail.obiettivo && <p className="text-[15px] text-slate-200 leading-relaxed">{nodeDetail.obiettivo}</p>}
+
+                {/* Fatti essenziali dell'argomento. */}
+                <dl className="grid grid-cols-2 gap-3 rounded-xl border border-line bg-surface/60 p-3.5">
+                  <div>
+                    <dt className="text-[11px] text-slate-500">Ore previste</dt>
+                    <dd className="text-sm font-semibold text-slate-100 ds-num mt-0.5">{formatHoursMinutes(Number(nodeDetail.oreStimate) || 0)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-[11px] text-slate-500">Focus accumulato</dt>
+                    <dd className="text-sm font-semibold text-slate-100 ds-num mt-0.5">
+                      {minutiLabel(focusMin)}
+                      {focusSintesiMin > 0 && <span className="text-accent font-normal text-xs"> · {minutiLabel(focusSintesiMin)} di sintesi</span>}
+                    </dd>
+                  </div>
+                  {currentParent && (
+                    <div className="col-span-2">
+                      <dt className="text-[11px] text-slate-500">Dentro a</dt>
+                      <dd className="text-sm text-slate-200 mt-0.5 break-words">{currentParent.nome}</dd>
+                    </div>
+                  )}
+                  {isDone && nodeDetail.nextReviewDate && (
+                    <div className="col-span-2">
+                      <dt className="text-[11px] text-slate-500">Prossimo ripasso</dt>
+                      <dd className="text-sm text-slate-200 mt-0.5 ds-num">
+                        {formatDateOnlyHuman(nodeDetail.nextReviewDate)}
+                        {(() => {
+                          const d = daysUntilDateOnly(nodeDetail.nextReviewDate);
+                          if (d == null) return null;
+                          if (d < 0) return <span className="text-accent"> · in ritardo di {d === -1 ? '1 giorno' : `${-d} giorni`}</span>;
+                          if (d === 0) return <span className="text-accent"> · oggi</span>;
+                          return null;
+                        })()}
+                        <span className="text-slate-500">
+                          {nodeDetail.lastReviewRating && REVIEW_RATING_META[nodeDetail.lastReviewRating]
+                            ? ` · ultimo giudizio ${REVIEW_RATING_META[nodeDetail.lastReviewRating].label.toLowerCase()}`
+                            : ''}
+                          {nodeDetail.reviewCount > 0 ? ` · ${nodeDetail.reviewCount} ripassi` : ''}
+                          {nodeDetail.srsIntervalDays > 0 ? ` · intervallo ${nodeDetail.srsIntervalDays} gg` : ''}
+                        </span>
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+
+                {/* V36.0 — Appunti in sola lettura: la prima cosa che
+                    serve quando lo Spider-Sense chiede un ripasso. */}
+                {nodeDetail.note && (
+                  <div className="rounded-xl border border-line bg-surface/60 p-3.5">
+                    <p className="ds-eyebrow flex items-center gap-1.5 mb-2">
+                      <Icon name="note" className="w-3.5 h-3.5 text-secondary" />
+                      Appunti
                     </p>
-                  )}
+                    <p className="text-[13px] text-slate-200 whitespace-pre-wrap leading-relaxed font-mono">{nodeDetail.note}</p>
+                  </div>
+                )}
 
-                  {/* V36.0 — l'interrogazione viene PRIMA dei pulsanti di
-                      giudizio, perché è l'ordine corretto: si tenta di
-                      richiamare, poi si giudica. Disponibile su qualunque
-                      nodo già completato, sia in allerta Spider-Sense sia
-                      per un ripasso anticipato. */}
-                  {(status === NODE_STATUS.COMPLETED || status === NODE_STATUS.NEEDS_REVIEW) && selectedMateria && (
+                {/* V38.0 — i due bilanci dell'argomento (fonti e appunti). */}
+                <NodeWorkSummary sfida={nodeDetail} calibration={derived.calibration} />
+
+                {/* Da studiare / in corso: Focus o completamento. */}
+                {canComplete && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                    {canFocus ? (
+                      <StartFocusButton materiaId={selectedMateria.id} sfidaId={nodeDetail.id} onStart={startFocusFromNode} />
+                    ) : (
+                      <span />
+                    )}
+                    <button type="button" onClick={() => handleAttemptComplete(nodeDetail)} className={BTN_SUCCESS}>
+                      <Icon name="check" className="w-4 h-4" />
+                      Completa argomento
+                    </button>
+                  </div>
+                )}
+
+                {/* V16.0 — Boss non ancora sconfitto: si spiega cosa manca. */}
+                {bossLocked && (
+                  <div className="space-y-2 pt-1">
+                    <div className="rounded-xl border border-line bg-surface/60 px-4 py-3 flex items-start gap-3">
+                      <Icon name="lock" className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                      <p className="text-[13px] text-slate-300">
+                        È un Boss: si chiude quando tutti i suoi sotto-argomenti sono completati.{' '}
+                        <span className="text-slate-500 ds-num">
+                          {pendingOwnChildren === 1 ? 'Ne manca 1' : `Ne mancano ${pendingOwnChildren}`} su {ownChildren.length}.
+                        </span>
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {canFocus ? (
+                        <StartFocusButton materiaId={selectedMateria.id} sfidaId={nodeDetail.id} onStart={startFocusFromNode} />
+                      ) : (
+                        <span />
+                      )}
+                      <button type="button" onClick={handleBossLockedAttempt} aria-disabled="true" className={`${BTN_SUCCESS} opacity-40`}>
+                        <Icon name="lock" className="w-4 h-4" />
+                        Completa argomento
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Già studiato: interrogazione, poi il giudizio del ripasso
+                    (V36.0: prima si tenta di richiamare, poi si giudica). */}
+                {isDone && (
+                  <>
                     <NodeQuizPanel node={nodeDetail} materiaId={selectedMateria.id} onSaveQuiz={handleSaveQuiz} />
-                  )}
-
-                  {status === NODE_STATUS.NEEDS_REVIEW && (
                     <div className="space-y-2">
-                      <p className="text-sm text-accent font-semibold flex items-center gap-1.5">
-                        <Icon name="alertTriangle" className="w-4 h-4" />
-                        Lo Spider-Sense formicola: è ora di ripassare.
+                      <p className={`text-sm font-semibold flex items-center gap-2 ${status === NODE_STATUS.NEEDS_REVIEW ? 'text-accent' : 'text-slate-200'}`}>
+                        <Icon name="radar" className="w-4 h-4" />
+                        {status === NODE_STATUS.NEEDS_REVIEW ? 'Lo Spider-Sense formicola: com’è andato il ripasso?' : 'Ripasso anticipato: com’è andato?'}
                       </p>
-                      <ReviewButtons sfida={nodeDetail} examDate={selectedMateria?.examDate} onReview={(rating) => { handleReview(nodeDetail, rating); closeNodeDetail(); }} />
+                      <ReviewButtons
+                        sfida={nodeDetail}
+                        examDate={selectedMateria?.examDate}
+                        onReview={(rating) => {
+                          handleReview(nodeDetail, rating);
+                          closeNodeDetail();
+                        }}
+                      />
                     </div>
-                  )}
+                    {canFocus && (
+                      <StartFocusButton
+                        materiaId={selectedMateria.id}
+                        sfidaId={nodeDetail.id}
+                        onStart={startFocusFromNode}
+                        label="Ripassa con un blocco di Focus"
+                        variant="ghost"
+                        className="w-full"
+                      />
+                    )}
+                  </>
+                )}
 
-                  {status === NODE_STATUS.COMPLETED && (
-                    <div className="space-y-2 pt-3 border-t border-white/10">
-                      <p className="text-sm text-secondary font-semibold flex items-center gap-1.5">
-                        <Icon name="bolt" className="w-4 h-4" />
-                        Forza Ripasso Manuale — rinforza subito la memoria, senza aspettare lo Spider-Sense.
-                      </p>
-                      <ReviewButtons sfida={nodeDetail} examDate={selectedMateria?.examDate} onReview={(rating) => { handleReview(nodeDetail, rating); closeNodeDetail(); }} />
-                    </div>
-                  )}
-
-                  {/* V34.4 — "Riporta a da completare": undo per un
-                      "Completa Nodo" fatto per errore. Visibile su
-                      qualunque nodo con stato persistito COMPLETED (sia
-                      NEEDS_REVIEW che COMPLETED "puro"), sempre in coda
-                      alle azioni di ripasso cosi' da non essere il primo
-                      bottone cliccabile per sbaglio. */}
-                  {(status === NODE_STATUS.COMPLETED || status === NODE_STATUS.NEEDS_REVIEW) && (
+                {/* Azioni secondarie, in fondo: mai il primo pulsante cliccabile per sbaglio. */}
+                <div className="flex items-center justify-between gap-2 pt-3 border-t border-line flex-wrap">
+                  {isDone ? (
                     <button
                       type="button"
                       onClick={() => {
                         setReopenNodeTarget(nodeDetail);
                         closeNodeDetail();
                       }}
-                      className={`w-full ${BTN_GHOST}`}
+                      className="ds-btn ds-btn-quiet ds-btn-sm"
                     >
-                      <Icon name="undo" className="w-4 h-4" />
+                      <Icon name="undo" className="w-3.5 h-3.5" />
                       Riporta a "da completare"
                     </button>
+                  ) : (
+                    <span />
                   )}
-
-                  {/* V16.0 (Pillar 1) — alert elegante "Boss non ancora sconfitto":
-                      il pulsante resta visibile ma disattivato in stile, e un
-                      click mostra il toast esplicativo invece di completare nulla. */}
-                  {bossLocked && (
-                    <>
-                      <div className="relative bg-primary/10 border border-primary/40 rounded-xl px-4 py-3.5 flex items-start gap-3">
-                        <Icon name="alertTriangle" className="w-5 h-5 text-primary shrink-0 mt-0.5" />
-                        <div>
-                          <p className="text-base font-semibold text-primary">Completa prima tutti i sotto-argomenti</p>
-                          <p className="text-sm text-slate-400 mt-0.5">
-                            {pendingOwnChildren} sotto-argomento/i ancora incompleto/i su {ownChildren.length}: questo nodo è un Boss e si chiude solo a battaglia vinta.
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleBossLockedAttempt}
-                        className={`w-full ${BTN_SUCCESS} opacity-40 grayscale`}
-                      >
-                        Completa Nodo
-                      </button>
-                    </>
-                  )}
-
-                  {canComplete && (
-                    <button
-                      type="button"
-                      onClick={() => handleAttemptComplete(nodeDetail)}
-                      className={`w-full ${BTN_SUCCESS}`}
-                    >
-                      Completa Nodo
-                    </button>
-                  )}
-
                   <button
                     type="button"
                     onClick={() => {
                       setDeleteNodeTarget(nodeDetail);
                       closeNodeDetail();
                     }}
-                    className={`w-full ${BTN_GHOST}`}
+                    className="ds-btn ds-btn-quiet ds-btn-sm hover:!text-primary"
                   >
-                    <Icon name="trash" className="w-4 h-4" />
-                    Elimina Nodo
+                    <Icon name="trash" className="w-3.5 h-3.5" />
+                    Elimina argomento
                   </button>
-                </>
-              )}
-            </div>
-          );
-        })()}
+                </div>
+              </div>
+            );
+          })()}
       </Modal>
 
       <ConfirmDialog
         open={!!deleteNodeTarget}
         onClose={() => setDeleteNodeTarget(null)}
         onConfirm={() => actions.deleteSfida(selectedMateria.id, deleteNodeTarget.id)}
-        title="Elimina Nodo"
-        message={`Eliminare il nodo "${deleteNodeTarget?.nome}"? Eventuali nodi figli verranno promossi a Nodo Padre, non cancellati.`}
+        title="Eliminare l'argomento?"
+        message={`"${deleteNodeTarget?.nome}" verrà eliminato (potrai annullare dalla notifica). I suoi sotto-argomenti non si perdono: diventano argomenti principali.`}
         confirmLabel="Elimina"
       />
 
-      {/* V34.4 — "Riporta a da completare": conferma dedicata (mai danger=true,
-          non è un'eliminazione) prima di rimettere il nodo tra i "da fare". */}
       <ConfirmDialog
         open={!!reopenNodeTarget}
         onClose={() => setReopenNodeTarget(null)}
         onConfirm={confirmReopenNode}
-        title="Riporta a da completare"
-        message={`Riportare il nodo "${reopenNodeTarget?.nome}" tra i nodi da completare? XP, Tech Token e streak già assegnati restano acquisiti — solo lo stato del nodo torna indietro.`}
+        title="Riportare a da completare?"
+        message={`"${reopenNodeTarget?.nome}" torna fra gli argomenti da studiare. XP, Tech Token e streak già guadagnati restano tuoi: cambia solo lo stato.`}
         confirmLabel="Riporta indietro"
         danger={false}
       />
 
-      {/* V34.2 — "Selezione Multipla Nodi": conferma unica per l'intero
-          lotto selezionato, stessa semantica di orfanizzazione (mai
-          cancellazione a cascata) del singolo "Elimina Nodo" sopra. */}
       <ConfirmDialog
         open={bulkDeleteConfirmOpen}
         onClose={() => setBulkDeleteConfirmOpen(false)}
         onConfirm={confirmBulkDeleteNodes}
-        title="Elimina Nodi Selezionati"
-        message={`Eliminare ${selectedNodeIds.size} nodo/i selezionato/i? Eventuali nodi figli non selezionati verranno promossi a Nodo Padre, non cancellati.`}
-        confirmLabel="Elimina Tutti"
+        title={selectedNodeIds.size === 1 ? "Eliminare l'argomento selezionato?" : `Eliminare ${selectedNodeIds.size} argomenti?`}
+        message="I sotto-argomenti non selezionati non si perdono: diventano argomenti principali."
+        confirmLabel="Elimina"
       />
 
-      {/* V31.2.1 — guardia "modifiche non salvate" sull'Editor di
-          Personalizzazione: mai uno scarto silenzioso di dati non
-          persistiti quando l'utente tenta di chiudere la modale. */}
       <ConfirmDialog
         open={nodeEditCloseConfirmOpen}
         onClose={() => setNodeEditCloseConfirmOpen(false)}
         onConfirm={closeNodeDetail}
         title="Modifiche non salvate"
-        message="Hai modifiche non ancora salvate nell'Editor di Personalizzazione. Chiudendo ora andranno perse. Vuoi scartarle?"
+        message="Chiudendo ora le modifiche all'argomento andranno perse. Vuoi scartarle?"
         confirmLabel="Scarta modifiche"
       />
 
-      {/* Drawer globale: Attiva Spider-Sense — pannello a scorrimento
-          laterale per le azioni rapide di ripasso in blocco. */}
+      {/* Drawer: ripassi in sospeso, da fare in blocco. */}
       <Drawer
         open={spiderSenseDrawerOpen}
         onClose={() => setSpiderSenseDrawerOpen(false)}
-        eyebrow="SPIDER-SENSE ENGINE"
-        title={`Ripassi in sospeso (${derived.upcomingReviews.length})`}
+        eyebrow="Spider-Sense"
+        title={reviewsDue === 0 ? 'Nessun ripasso in sospeso' : reviewsDue === 1 ? '1 ripasso in sospeso' : `${reviewsDue} ripassi in sospeso`}
+        subtitle={reviewsDue > 0 ? 'Rispondi a mente, poi giudica com’è andata: il prossimo ripasso si sposta di conseguenza.' : undefined}
       >
-            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain af-scroll p-5 sm:p-6 space-y-3">
-              {derived.upcomingReviews.length === 0 ? (
-                <EmptyState
-                  variant="safe"
-                  title="La città è sicura."
-                  subtitle="Nessun ripasso in sospeso: lo Spider-Sense è tranquillo. Torna dopo aver completato nuovi nodi."
-                />
-              ) : (
-                derived.upcomingReviews.map((r) => {
-                  const diffMeta = DIFFICULTY_META[r.difficulty];
-                  return (
-                    <div key={r.sfidaId} className="bg-surface/70 border border-accent/30 rounded-2xl p-4 space-y-2.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-base font-medium break-words text-slate-100">{r.sfidaNome}</p>
-                          <p className="text-sm text-slate-500">{r.materiaNome}</p>
-                        </div>
-                        <span className={`text-xs font-mono px-2 py-0.5 rounded-full border shrink-0 ${diffMeta.border} ${diffMeta.color}`}>
-                          {diffMeta.label}
-                        </span>
-                      </div>
-                      <ReviewButtons size="small" sfida={r} examDate={r.materiaExamDate} onReview={(rating) => actions.reviewSfida(r.materiaId, r.sfidaId, rating)} />
-                    </div>
-                  );
-                })
-              )}
-            </div>
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain af-scroll p-4 sm:p-5 space-y-2.5">
+          {reviewsDue === 0 ? (
+            <EmptyState variant="safe" title="La città è sicura." subtitle="Nessun ripasso in sospeso. Torna dopo aver completato nuovi argomenti." />
+          ) : (
+            derived.upcomingReviews.map((r) => {
+              const diffMeta = DIFFICULTY_META[r.difficulty] || DIFFICULTY_META.MEDIUM;
+              return (
+                <div key={r.sfidaId} className="rounded-xl border border-line bg-surface/70 p-3.5 space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSpiderSenseDrawerOpen(false);
+                        openNodeFromSchedule(r.materiaId, r.sfidaId);
+                      }}
+                      className="min-w-0 text-left group"
+                      title="Apri l'argomento (appunti e interrogazione)"
+                    >
+                      <p className="text-sm font-medium break-words text-slate-100 group-hover:text-white">{r.sfidaNome}</p>
+                      <p className="text-xs text-slate-500">{r.materiaNome}</p>
+                    </button>
+                    <span className={`${BADGE.slate} shrink-0`}>{diffMeta.label}</span>
+                  </div>
+                  <ReviewButtons size="small" sfida={r} examDate={r.materiaExamDate} onReview={(rating) => actions.reviewSfida(r.materiaId, r.sfidaId, rating)} />
+                </div>
+              );
+            })
+          )}
+        </div>
       </Drawer>
     </div>
   );

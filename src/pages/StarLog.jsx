@@ -1,45 +1,55 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
 import { Icon } from '../components/Icons.jsx';
 import Dropdown from '../components/Dropdown.jsx';
 import EmptyState from '../components/EmptyState.jsx';
+import PageHeader from '../components/PageHeader.jsx';
 import { getDateKey, formatHoursMinutes, daysUntilDateOnly, formatDateOnlyHuman, monthKeyFromDateKey, currentMonthKey, formatMonthYearHuman } from '../utils/dateUtils.js';
 import { DIFFICULTY_META, FOCUS_QUALITY, FOCUS_QUALITY_META } from '../utils/xpEngine.js';
 import { REVIEW_RATING, REVIEW_RATING_META } from '../utils/spiderSense.js';
-import { CARD, CARD_NOPAD, H1, H2 } from '../utils/designSystem.js';
+import { CARD, CARD_NOPAD, BADGE } from '../utils/designSystem.js';
 import { computeGradeHistory, computeWeightedAverage } from '../utils/gpaEngine.js';
+import { formatInt, formatDecimal, minutiLabel } from '../utils/format.js';
 
 const DIFFICULTY_RANK = { EASY: 0, MEDIUM: 1, HARD: 2 };
 
 const QUALITY_ORDER = [FOCUS_QUALITY.FLOW, FOCUS_QUALITY.NORMAL, FOCUS_QUALITY.DISTRACTED];
 
-/** Classi Tailwind reattive al costume (mai concatenate a runtime) per la
- * barra di ciascuna valutazione — Primario/Secondario/Accento dinamici. */
+/** Colore della barra di ciascuna valutazione (classi statiche, reattive al costume). */
 const QUALITY_BAR_CLASS = {
-  FLOW: 'bg-gradient-to-r from-primary to-primary-dark shadow-primary-glow',
-  NORMAL: 'bg-gradient-to-r from-secondary to-secondary-dark shadow-secondary-glow',
-  DISTRACTED: 'bg-gradient-to-r from-accent to-accent/70 shadow-accent-glow'
+  FLOW: 'bg-primary',
+  NORMAL: 'bg-secondary',
+  DISTRACTED: 'bg-accent'
 };
 
 const SORT_OPTIONS = [
-  { value: 'data', label: 'Ordina per Data ripasso' },
-  { value: 'materia', label: 'Ordina per Materia' },
-  { value: 'difficolta', label: 'Ordina per Difficoltà' }
+  { value: 'data', label: 'Per data del ripasso' },
+  { value: 'materia', label: 'Per materia' },
+  { value: 'difficolta', label: 'Per difficoltà' }
 ];
 
 const GYM_QUEST_HINT = 'palestra';
 
-const WEEKS_VISIBLE = 18;
-const DAY_MS = 86400000;
-const WEEK_MS = 7 * DAY_MS;
+// V41 — un anno intero di attività (53 settimane), come i calendari dei
+// contributi: prima erano 18 settimane con quadrati da 50 px.
+const HEATMAP_WEEKS = 53;
+const WEEK_MS = 7 * 86400000;
+const MESI_BREVI = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
 
 /**
- * V37.0 — Somma l'XP di un tratto di starLog contando ogni guadagno UNA
- * volta sola. Lo Star Log è deliberatamente ridondante: ogni sessione
- * scrive sia l'aggregato giornaliero `FOCUS_MINUTES` (che porta l'XP del
- * giorno, per i tooltip della heatmap) sia la voce puntuale
- * `FOCUS_SESSION` (che porta l'XP di quella singola sessione). Sommarle
- * entrambe raddoppia il totale: qui si contano solo le voci-evento.
+ * V41 — Giorni di calendario sommati in ora LOCALE. Prima si sommavano
+ * multipli di 24 ore: attraversando il cambio dell'ora legale un giorno
+ * diventava le 23:00 del precedente, e la heatmap (e la media dei 14
+ * giorni) attribuiva i minuti al giorno sbagliato per mezzo anno.
+ */
+function addLocalDays(date, n) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + n);
+}
+
+/**
+ * V37.0 — XP di un tratto di starLog contando ogni guadagno UNA volta:
+ * ogni sessione scrive sia l'aggregato giornaliero `FOCUS_MINUTES` sia la
+ * voce `FOCUS_SESSION` con lo stesso XP. Si contano solo le voci-evento.
  */
 const XP_EVENT_TYPES = new Set(['FOCUS_SESSION', 'BOSS_WIN', 'BOSS_LOSS']);
 function sumXpOnce(entries) {
@@ -57,146 +67,117 @@ function intensityLevel(minutes) {
   return 4;
 }
 
-/** V16.0 (Pillar 3) — intensità della Heatmap sul canale Primario dinamico:
- * cambia costume, cambia colore, sempre coerente col resto dell'app. */
-const LEVEL_CLASSES = [
-  'bg-surface/80 border-secondary/15',
-  'bg-primary/20 border-primary/30',
-  'bg-primary/45 border-primary/50',
-  'bg-primary/70 border-primary/70',
-  'bg-primary border-primary shadow-primary-glow'
-];
+/** Intensità della heatmap sul colore Primario del costume. */
+const LEVEL_CLASSES = ['bg-white/[0.05]', 'bg-primary/25', 'bg-primary/45', 'bg-primary/70', 'bg-primary'];
 
-/**
- * Web-Matrix Radar — anello HUD che mostra la percentuale di nodi
- * "stabili" nella memoria a lungo termine (ultimo giudizio Facile/Medio,
- * non attualmente in allerta Spider-Sense) rispetto al totale dei nodi
- * già entrati nel motore SRS. Puro SVG, nessuna libreria esterna.
- */
-function RadarRing({ pct, size = 128, stroke = 12 }) {
+/** Anello percentuale (SVG puro). */
+function Ring({ pct, size = 96, stroke = 8, tone = 'text-secondary', label }) {
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
-  const filled = pct == null ? 0 : Math.max(0, Math.min(100, pct)) / 100 * c;
+  const v = pct == null ? 0 : Math.max(0, Math.min(100, pct));
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="af-radar-ring shrink-0 text-secondary">
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgb(var(--af-attack-rgb) / 0.18)" strokeWidth={stroke} />
-      {pct != null && (
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={stroke}
-          strokeLinecap="round"
-          strokeDasharray={`${filled} ${c - filled}`}
-          transform={`rotate(-90 ${size / 2} ${size / 2})`}
-          style={{ transition: 'stroke-dasharray 0.8s ease' }}
-        />
-      )}
-      <text
-        x="50%"
-        y="50%"
-        textAnchor="middle"
-        dominantBaseline="central"
-        fill="#f8fafc"
-        className="font-mono font-bold"
-        style={{ fontSize: size * 0.22 }}
-      >
-        {pct == null ? 'N/D' : `${pct}%`}
-      </text>
-    </svg>
-  );
-}
-
-function RadarCard({ title, radar, compact = false }) {
-  return (
-    <div className={`flex items-center gap-4 ${compact ? 'bg-surface/60 border border-secondary/15 rounded-2xl p-4' : ''}`}>
-      <RadarRing pct={radar.stabilityPct} size={compact ? 84 : 128} stroke={compact ? 8 : 12} />
-      <div className="min-w-0">
-        <p className={`font-semibold truncate text-white ${compact ? 'text-base' : 'text-lg'}`}>{title}</p>
-        {radar.total === 0 ? (
-          <p className="text-base text-slate-500 mt-0.5">Nessun nodo tracciato.</p>
-        ) : (
-          <div className="mt-1.5 space-y-1">
-            <p className="text-base text-secondary flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-secondary shrink-0" /> {radar.stable} stabili
-            </p>
-            <p className="text-base text-primary flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-primary shrink-0" /> {radar.attention} da rinforzare
-            </p>
-            {radar.observing > 0 && (
-              <p className="text-base text-slate-500 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-slate-500 shrink-0" /> {radar.observing} in osservazione
-              </p>
-            )}
-          </div>
+    <div className={`relative shrink-0 ${tone}`} style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90" aria-hidden="true">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgb(255 255 255 / 0.08)" strokeWidth={stroke} />
+        {pct != null && (
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            strokeDasharray={`${(v / 100) * c} ${c}`}
+            style={{ transition: 'stroke-dasharray 0.8s ease' }}
+          />
         )}
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="font-bold text-white ds-num leading-none" style={{ fontSize: size * 0.22 }}>
+          {pct == null ? 'n/d' : `${pct}%`}
+        </span>
+        {label && <span className="text-[10px] text-slate-500 mt-1">{label}</span>}
       </div>
     </div>
   );
 }
 
-/** V16.0 (Pillar 4) — quadratino della Heatmap con tooltip preciso
- * "Data: X Focus, Y XP" a comparsa (hover), stile HUD coerente col resto
- * dell'app invece del solo `title` nativo del browser. */
-function HeatmapDay({ day }) {
+/** Numero grande di una card KPI. */
+function Kpi({ icon, iconTone, label, value, hint, valueTone = 'text-white' }) {
   return (
-    <div className="relative group w-full">
-      <div
-        className={`w-full aspect-square rounded-sm border transition-all duration-300 group-hover:scale-125 group-hover:z-10 ${LEVEL_CLASSES[intensityLevel(day.minutes)]}`}
-      />
-      <div className="pointer-events-none absolute z-20 bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:flex flex-col items-center whitespace-nowrap">
-        <div className="bg-surface border border-secondary/30 rounded-lg px-2.5 py-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.5)]">
-          <p className="text-[11px] font-mono text-slate-200">{formatDateOnlyHuman(day.key)}</p>
-          <p className="text-[11px] font-mono text-secondary">{day.minutes} min Focus</p>
-          <p className="text-[11px] font-mono text-accent">{day.xp} XP</p>
+    <div className={`${CARD} !p-4 sm:!p-5`}>
+      <p className="text-xs text-slate-400 flex items-center gap-1.5">
+        <Icon name={icon} className={`w-3.5 h-3.5 ${iconTone}`} />
+        {label}
+      </p>
+      <p className={`mt-2 text-2xl font-bold tracking-tight ds-num ${valueTone}`}>{value}</p>
+      {hint && <p className="text-xs text-slate-500 mt-0.5">{hint}</p>}
+    </div>
+  );
+}
+
+/** Testata di una card della pagina. */
+function CardHead({ icon, iconTone = 'text-slate-300', title, subtitle, children }) {
+  return (
+    <div className="flex items-start justify-between gap-3 flex-wrap">
+      <div className="flex items-start gap-3 min-w-0">
+        <span className={`ds-icon-tile ${iconTone}`}>
+          <Icon name={icon} className="w-[18px] h-[18px]" />
+        </span>
+        <div className="min-w-0">
+          <h2 className="text-[15px] font-semibold text-white leading-snug">{title}</h2>
+          {subtitle && <p className="text-[13px] text-slate-400 mt-0.5 leading-relaxed">{subtitle}</p>}
         </div>
       </div>
+      {children}
     </div>
   );
 }
 
-/** V16.0 (Pillar 5) — riga di un singolo evento dentro l'Accordion mensile. */
+/** V16.0 (Pillar 5) — un evento della cronologia mensile. */
 function TimelineEntry({ entry }) {
   if (entry.type === 'FOCUS_SESSION') {
     const qualityMeta = FOCUS_QUALITY_META[entry.quality] || null;
     return (
-      <div className="flex items-center justify-between gap-3 py-2.5 px-3.5 rounded-xl bg-surface/60 border border-secondary/10">
+      <div className="flex items-center justify-between gap-3 py-2 px-3 rounded-lg bg-surface/70 border border-line">
         <div className="flex items-center gap-2.5 min-w-0">
           <Icon name="target" className="w-4 h-4 text-secondary shrink-0" />
           <div className="min-w-0">
             <p className="text-sm text-slate-200 truncate">
-              Sessione Focus{typeof entry.hour === 'number' ? ` · ${String(entry.hour).padStart(2, '0')}:00` : ''}
+              Sessione di Focus{typeof entry.hour === 'number' ? ` · ${String(entry.hour).padStart(2, '0')}:00` : ''}
             </p>
             <p className="text-xs text-slate-500 truncate">
-              {formatDateOnlyHuman(entry.dateKey)}{qualityMeta ? ` · ${qualityMeta.shortLabel}` : ''}
+              {formatDateOnlyHuman(entry.dateKey)}
+              {qualityMeta ? ` · ${qualityMeta.shortLabel}` : ''}
             </p>
           </div>
         </div>
-        <div className="text-right shrink-0 font-mono text-xs">
-          <p className="text-slate-300">{entry.minutes} min</p>
-          {entry.xp > 0 && <p className="text-accent">+{entry.xp} XP</p>}
-          {/* V31.3 — Spider-Sense Surge scorporato dalla voce storica (era
-              impastato nel totale XP): visibile qui riga per riga. */}
-          {entry.surgeXp > 0 && <p className="text-secondary">+{entry.surgeXp} Surge</p>}
-        </div>
+        <p className="shrink-0 text-xs ds-num text-right">
+          <span className="text-slate-200 font-medium">{minutiLabel(entry.minutes)}</span>
+          {entry.xp > 0 && <span className="text-accent"> · +{formatInt(entry.xp)} XP</span>}
+          {/* V31.3 — Spider-Sense Surge scorporato, riga per riga. */}
+          {entry.surgeXp > 0 && <span className="text-secondary"> · +{formatInt(entry.surgeXp)} Surge</span>}
+        </p>
       </div>
     );
   }
   const won = entry.type === 'BOSS_WIN';
   return (
-    <div className={`flex items-center justify-between gap-3 py-2.5 px-3.5 rounded-xl bg-surface/60 border ${won ? 'border-emerald-400/20' : 'border-primary/20'}`}>
+    <div className={`flex items-center justify-between gap-3 py-2 px-3 rounded-lg bg-surface/70 border ${won ? 'border-emerald-400/20' : 'border-primary/20'}`}>
       <div className="flex items-center gap-2.5 min-w-0">
-        <Icon name={won ? 'trophy' : 'skull'} className={`w-4 h-4 shrink-0 ${won ? 'text-emerald-400' : 'text-primary'}`} />
+        <Icon name={won ? 'trophy' : 'skull'} className={`w-4 h-4 shrink-0 ${won ? 'text-emerald-300' : 'text-primary'}`} />
         <div className="min-w-0">
           <p className="text-sm text-slate-200 truncate">
-            {won ? 'Sinister Six Simulator vinta' : 'Sinister Six Simulator persa'}{entry.materiaNome ? ` · ${entry.materiaNome}` : ''}
+            {won ? 'Sinister Six vinta' : 'Sinister Six persa'}
+            {entry.materiaNome ? ` · ${entry.materiaNome}` : ''}
           </p>
-          <p className="text-xs text-slate-500">{formatDateOnlyHuman(entry.dateKey)} · HP residui {entry.hpRemaining}</p>
+          <p className="text-xs text-slate-500">
+            {formatDateOnlyHuman(entry.dateKey)} · HP residui {formatInt(entry.hpRemaining)}
+          </p>
         </div>
       </div>
-      {entry.xp > 0 && <p className="text-accent font-mono text-xs shrink-0">+{entry.xp} XP</p>}
+      {entry.xp > 0 && <p className="text-accent ds-num text-xs shrink-0">+{formatInt(entry.xp)} XP</p>}
     </div>
   );
 }
@@ -231,31 +212,65 @@ export default function StarLog() {
     return map;
   }, [state.starLog]);
 
-  const weeks = useMemo(() => {
-    const totalDays = WEEKS_VISIBLE * 7;
+  // Heatmap: colonne = settimane (da lunedì), righe = giorni. Aritmetica
+  // di calendario locale (vedi addLocalDays), i giorni futuri della
+  // settimana in corso restano vuoti.
+  const heatmap = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const startOffset = today.getDay();
-    const gridStart = new Date(today.getTime() - (totalDays - 1 - startOffset) * DAY_MS);
-
+    const todayKey = getDateKey(today);
+    const dow = (today.getDay() + 6) % 7; // lunedì = 0
+    const lastMonday = addLocalDays(today, -dow);
+    const gridStart = addLocalDays(lastMonday, -(HEATMAP_WEEKS - 1) * 7);
     const cols = [];
-    for (let w = 0; w < WEEKS_VISIBLE; w += 1) {
+    const monthLabels = [];
+    let prevMonth = -1;
+    let activeDays = 0;
+    let best = null;
+    let activeMinutes = 0;
+    for (let w = 0; w < HEATMAP_WEEKS; w += 1) {
       const col = [];
       for (let d = 0; d < 7; d += 1) {
-        const date = new Date(gridStart.getTime() + (w * 7 + d) * DAY_MS);
+        const date = addLocalDays(gridStart, w * 7 + d);
         const key = getDateKey(date);
-        const stats = dayStatsByDay.get(key);
-        col.push({ key, date, minutes: stats?.minutes || 0, xp: stats?.xp || 0 });
+        const future = key > todayKey;
+        const stats = future ? null : dayStatsByDay.get(key);
+        const minutes = stats?.minutes || 0;
+        if (minutes > 0) {
+          activeDays += 1;
+          activeMinutes += minutes;
+          if (!best || minutes > best.minutes) best = { key, minutes };
+        }
+        col.push({ key, minutes, xp: stats?.xp || 0, future });
       }
+      const firstOfCol = addLocalDays(gridStart, w * 7);
+      const m = firstOfCol.getMonth();
+      monthLabels.push(m !== prevMonth ? MESI_BREVI[m] : '');
+      prevMonth = m;
       cols.push(col);
     }
-    return cols;
+    return {
+      cols,
+      monthLabels,
+      activeDays,
+      best,
+      avgActive: activeDays > 0 ? Math.round(activeMinutes / activeDays) : 0
+    };
   }, [dayStatsByDay]);
+  const [hoverDay, setHoverDay] = useState(null);
+  const heatmapScrollRef = useRef(null);
+  // Su schermi stretti la heatmap scorre di lato: si parte dalla settimana di oggi.
+  useEffect(() => {
+    const el = heatmapScrollRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, []);
 
   const totalMinutes = useMemo(
     () => Array.from(dayStatsByDay.values()).reduce((a, b) => a + b.minutes, 0),
     [dayStatsByDay]
   );
+
+  const totalSessions = useMemo(() => state.starLog.filter((e) => e && e.type === 'FOCUS_SESSION').length, [state.starLog]);
 
   const bossStats = useMemo(() => {
     const wins = state.starLog.filter((e) => e.type === 'BOSS_WIN').length;
@@ -392,8 +407,7 @@ export default function StarLog() {
     today.setHours(0, 0, 0, 0);
     let sum = 0;
     for (let i = 0; i < WINDOW_DAYS; i += 1) {
-      const d = new Date(today.getTime() - i * DAY_MS);
-      sum += dayStatsByDay.get(getDateKey(d))?.minutes || 0;
+      sum += dayStatsByDay.get(getDateKey(addLocalDays(today, -i)))?.minutes || 0;
     }
     const avgDailyMinutes = Math.round((sum / WINDOW_DAYS) * 10) / 10;
 
@@ -412,7 +426,7 @@ export default function StarLog() {
     // un pomodoro" (10 nodi, 25 min, 20 giorni = 12 min al giorno): un
     // numero che non aveva niente a che vedere con il piano di studio e
     // dava "in anticipo" anche a chi era indietro.
-    const cutoffKey = getDateKey(new Date(today.getTime() - (WINDOW_DAYS - 1) * DAY_MS));
+    const cutoffKey = getDateKey(addLocalDays(today, -(WINDOW_DAYS - 1)));
     let subjectSum = 0;
     (Array.isArray(state.starLog) ? state.starLog : []).forEach((e) => {
       if (e?.type === 'FOCUS_SESSION' && e.materiaId === nextExam.id && typeof e.dateKey === 'string' && e.dateKey >= cutoffKey) {
@@ -475,382 +489,418 @@ export default function StarLog() {
       });
   }, [state.starLog]);
 
+  const flowPct =
+    focusQualityStats.ratedTotal > 0 ? Math.round((focusQualityStats.counts.FLOW / focusQualityStats.ratedTotal) * 100) : null;
+  const delta = weeklyBugle.previousWeek.minutesDeltaPct;
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className={H1}>Daily Bugle Archives</h1>
-        <p className="text-base text-slate-400 mt-1.5">Karen: archivio cronologico delle tue imprese. Heatmap dell'attività, Radar Spider-Sense e cronologia sessioni.</p>
-      </div>
+      <PageHeader
+        eyebrow="Storico e statistiche"
+        icon="newspaper"
+        title="Daily Bugle Archives"
+        subtitle="Cosa hai fatto, quanto e come: attività giorno per giorno, qualità del Focus, memoria e ripassi."
+      />
 
       {derived.burnoutRisk && (
-        <div className="relative bg-surface/70 backdrop-blur-lg border border-primary/40 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] px-5 py-4 flex items-start gap-3 overflow-hidden">
-          <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-primary/15 blur-3xl pointer-events-none" />
-          <Icon name="alertTriangle" className="relative w-6 h-6 text-primary shrink-0 mt-0.5" />
-          <div className="relative flex-1">
-            <p className="text-base font-semibold text-primary">Rischio Burnout Rilevato</p>
-            <p className="text-base text-slate-400 mt-1 leading-relaxed">
-              Hai registrato {derived.todayMinutes} minuti di Focus oggi, oltre la soglia di sicurezza (300 min).
-              Considera una pausa fisica prima di continuare a spingere.
+        <div className="ds-card ds-card-alert !py-4 flex items-start gap-3 flex-wrap">
+          <Icon name="alertTriangle" className="w-5 h-5 text-primary shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-[220px]">
+            <p className="text-sm font-semibold text-primary">Rischio burnout</p>
+            <p className="text-[13px] text-slate-300 mt-0.5 leading-relaxed">
+              Oggi hai già {minutiLabel(derived.todayMinutes)} di Focus, oltre la soglia di sicurezza di 5 ore. Una pausa
+              fisica adesso rende di più di un altro blocco.
             </p>
           </div>
           {gymQuest && (
-            <button
-              type="button"
-              onClick={() => actions.applyQuickQuest(gymQuest.id)}
-              className="relative shrink-0 px-3.5 py-2 rounded-xl bg-primary/15 border border-primary/50 text-primary text-base font-semibold hover:bg-primary hover:text-white transition-all duration-300 whitespace-nowrap"
-            >
+            <button type="button" onClick={() => actions.applyQuickQuest(gymQuest.id)} className="ds-btn ds-btn-danger ds-btn-sm shrink-0">
               {gymQuest.nome}
             </button>
           )}
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className={CARD}>
-          <p className="text-base text-slate-400">Minuti totali registrati</p>
-          <p className="text-3xl font-mono font-bold mt-1.5 text-white">{totalMinutes}</p>
-        </div>
-        <div className={CARD}>
-          <p className="text-base text-slate-400">Sinister Six vinte</p>
-          <p className="text-3xl font-mono font-bold mt-1.5 text-emerald-400">{bossStats.wins}</p>
-        </div>
-        <div className={CARD}>
-          <p className="text-base text-slate-400">Sinister Six perse</p>
-          <p className="text-3xl font-mono font-bold mt-1.5 text-primary">{bossStats.losses}</p>
-        </div>
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+        <Kpi icon="clock" iconTone="text-secondary" label="Focus totale" value={minutiLabel(totalMinutes)} hint={`${formatInt(totalSessions)} sessioni registrate`} />
+        <Kpi
+          icon="bolt"
+          iconTone="text-primary"
+          label="Sessioni in Flow State"
+          value={flowPct == null ? '—' : `${flowPct}%`}
+          hint={focusQualityStats.ratedTotal > 0 ? `su ${formatInt(focusQualityStats.ratedTotal)} valutate` : 'nessuna sessione valutata'}
+        />
+        <Kpi
+          icon="crosshair"
+          iconTone="text-accent"
+          label="Sinister Six"
+          value={
+            <>
+              {formatInt(bossStats.wins)}
+              <span className="text-slate-500 text-lg font-semibold"> vinte</span>
+              <span className="text-slate-600 text-lg font-semibold"> · </span>
+              {formatInt(bossStats.losses)}
+              <span className="text-slate-500 text-lg font-semibold"> perse</span>
+            </>
+          }
+          hint={bossStats.wins + bossStats.losses > 0 ? `${Math.round((bossStats.wins / (bossStats.wins + bossStats.losses)) * 100)}% di vittorie` : 'nessuna simulazione ancora'}
+        />
+        <Kpi
+          icon="sparkles"
+          iconTone="text-secondary"
+          label="Spider-Sense Surge"
+          value={spiderSenseSurgeStats.count > 0 ? `+${formatInt(spiderSenseSurgeStats.totalXp)} XP` : '—'}
+          valueTone={spiderSenseSurgeStats.count > 0 ? 'text-secondary' : 'text-slate-500'}
+          hint={spiderSenseSurgeStats.count > 0 ? `${formatInt(spiderSenseSurgeStats.count)} sessioni pulite senza interruzioni` : 'nessuna sessione pulita ancora'}
+        />
       </div>
 
-      {/* V32.0 — Weekly Bugle: prima pagina degli ultimi 7 giorni, in stile
-          "edizione del Daily Bugle" coerente col tema della pagina. */}
-      <div className={`${CARD} space-y-4`}>
-        {/* V33.0 — bagliore di sfondo dedicato (accento/decay, "carta da
-            giornale dorata"): prima l'unica card "editoriale" della pagina
-            senza il trattamento premium che StatHero/le altre hero-card
-            hanno già altrove nell'app. */}
-        <div className="absolute -top-14 left-1/2 -translate-x-1/2 w-56 h-56 rounded-full bg-accent/10 blur-3xl pointer-events-none" />
-        <div className="relative flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2">
-            <Icon name="chartBar" className="w-5 h-5 text-primary" />
-            <span className={H2}>THE WEEKLY BUGLE</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-mono text-slate-500">
-              Edizione dal {formatDateOnlyHuman(weeklyBugle.cutoffKey)} a oggi
-            </span>
-            {/* V35.5 — Confronto settimana su settimana: badge di trend,
-                mostrato solo quando esiste un termine di paragone onesto
-                (la settimana scorsa aveva già minuti registrati). */}
-            {weeklyBugle.previousWeek.minutesDeltaPct !== null && (
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-stretch">
+        {/* V32.0 — The Weekly Bugle: la prima pagina degli ultimi 7 giorni. */}
+        <section className={`${CARD} xl:col-span-2 space-y-4`} aria-label="The Weekly Bugle">
+          <CardHead icon="chartBar" iconTone="text-primary" title="The Weekly Bugle" subtitle={`Edizione dal ${formatDateOnlyHuman(weeklyBugle.cutoffKey)} a oggi`}>
+            {delta !== null && (
               <span
-                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-mono ${
-                  weeklyBugle.previousWeek.minutesDeltaPct >= 0
-                    ? 'bg-emerald-900/50 text-emerald-300'
-                    : 'bg-primary/15 text-primary'
-                }`}
-                title={`Settimana scorsa: ${weeklyBugle.previousWeek.focusMinutes} min Focus`}
+                className={delta >= 0 ? BADGE.green : BADGE.red}
+                title={`Settimana scorsa: ${minutiLabel(weeklyBugle.previousWeek.focusMinutes)} di Focus`}
               >
-                <Icon
-                  name="trendUp"
-                  className={`w-3.5 h-3.5 ${weeklyBugle.previousWeek.minutesDeltaPct < 0 ? 'rotate-180' : ''}`}
-                />
-                {weeklyBugle.previousWeek.minutesDeltaPct >= 0 ? '+' : ''}
-                {weeklyBugle.previousWeek.minutesDeltaPct}% vs settimana scorsa
+                <Icon name="trendUp" className={`w-3 h-3 ${delta < 0 ? 'rotate-180' : ''}`} />
+                {delta >= 0 ? '+' : ''}
+                {delta}% sulla settimana scorsa
               </span>
             )}
-          </div>
-        </div>
+          </CardHead>
 
-        {!weeklyBugle.hasActivity ? (
-          <EmptyState
-            variant="log"
-            compact
-            title="Karen: nessuna notizia questa settimana"
-            subtitle="Completa una sessione di Focus, una simulazione o vota un esame per far uscire la prossima edizione."
-          />
-        ) : (
-          <>
-            <div className="relative grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-3 text-center">
-                <p className="text-xl font-mono font-bold text-white">{weeklyBugle.focusMinutes}</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">min Focus</p>
-              </div>
-              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-3 text-center">
-                <p className="text-xl font-mono font-bold text-accent">+{weeklyBugle.totalXp}</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">XP totali</p>
-              </div>
-              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-3 text-center">
-                <p className="text-xl font-mono font-bold text-secondary">{weeklyBugle.sessions}</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">sessioni Focus</p>
-              </div>
-              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-3 text-center">
-                <p className="text-xl font-mono font-bold text-white">{weeklyBugle.bossWins}<span className="text-slate-500">/{weeklyBugle.bossLosses}</span></p>
-                <p className="text-[11px] text-slate-500 mt-0.5">Sinister Six V/S</p>
-              </div>
-            </div>
-
-            {weeklyBugle.surgeXp > 0 && (
-              <p className="relative text-sm text-secondary flex items-center gap-1.5">
-                <Icon name="bolt" className="w-4 h-4" />
-                +{weeklyBugle.surgeXp} XP da Spider-Sense Surge questa settimana.
-              </p>
-            )}
-
-            {weeklyBugle.examsGraded.length > 0 && (
-              <p className="relative text-sm text-slate-400 flex items-center gap-1.5">
-                <Icon name="book" className="w-4 h-4 text-slate-500" />
-                {(() => {
-                  const n = weeklyBugle.examsGraded.reduce((sum, e) => sum + (Array.isArray(e.esami) ? e.esami.length : 1), 0);
-                  return n === 1 ? '1 esame votato questa settimana' : `${n} esami votati questa settimana`;
-                })()}
-                {Number.isFinite(weeklyBugle.currentAverage) && ` — Media aggiornata a ${weeklyBugle.currentAverage.toFixed(2)}.`}
-              </p>
-            )}
-
-            {weeklyBugle.trophiesUnlocked.length > 0 && (
-              <div className="relative space-y-1.5 pt-1 border-t border-white/5">
-                <p className="text-xs tracking-widest text-slate-500 font-mono">TROFEI SBLOCCATI</p>
-                {weeklyBugle.trophiesUnlocked.map((t) => (
-                  <p key={t.id} className="text-sm text-white flex items-center gap-1.5">
-                    <Icon name="trophy" className="w-4 h-4 text-amber-400 shrink-0" />
-                    {t.nome}
-                  </p>
+          {!weeklyBugle.hasActivity ? (
+            <EmptyState
+              variant="log"
+              compact
+              title="Nessuna notizia questa settimana"
+              subtitle="Completa una sessione di Focus, una simulazione o registra un esame per far uscire la prossima edizione."
+            />
+          ) : (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                {[
+                  { v: minutiLabel(weeklyBugle.focusMinutes), l: 'di Focus', tone: 'text-white' },
+                  { v: `${weeklyBugle.totalXp >= 0 ? '+' : ''}${formatInt(weeklyBugle.totalXp)}`, l: 'XP guadagnati', tone: 'text-accent' },
+                  { v: formatInt(weeklyBugle.sessions), l: 'sessioni', tone: 'text-secondary' },
+                  { v: `${weeklyBugle.bossWins}/${weeklyBugle.bossLosses}`, l: 'Sinister Six vinte/perse', tone: 'text-white' }
+                ].map((x) => (
+                  <div key={x.l} className="ds-well px-3 py-2.5">
+                    <p className={`text-lg font-bold ds-num ${x.tone}`}>{x.v}</p>
+                    <p className="text-[11px] text-slate-500">{x.l}</p>
+                  </div>
                 ))}
               </div>
-            )}
 
-            {/* V35.5 — Ripartizione per Materia: dove sono effettivamente
-                andati i minuti di Focus di questa settimana, una barra per
-                Materia ordinata dalla più studiata alla meno studiata. */}
-            {weeklyBugle.materiaBreakdown.length > 0 && (
-              <div className="relative space-y-2 pt-1 border-t border-white/5">
-                <p className="text-xs tracking-widest text-slate-500 font-mono">RIPARTIZIONE PER MATERIA</p>
-                {weeklyBugle.materiaBreakdown.map((m) => {
-                  const pct = weeklyBugle.focusMinutes > 0 ? Math.round((m.minutes / weeklyBugle.focusMinutes) * 100) : 0;
-                  return (
-                    <div key={m.materiaId || 'GENERIC'} className="space-y-1">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-slate-300 truncate">{m.materiaNome}</span>
-                        <span className="text-xs font-mono text-slate-500 shrink-0 ml-2">
-                          {m.minutes} min · {m.sessions} sess.
-                        </span>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-surface/80 border border-secondary/15 overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-secondary to-secondary-dark shadow-secondary-glow transition-all duration-500"
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </>
-        )}
-      </div>
+              {(weeklyBugle.surgeXp > 0 || weeklyBugle.examsGraded.length > 0) && (
+                <div className="space-y-1.5">
+                  {weeklyBugle.surgeXp > 0 && (
+                    <p className="text-[13px] text-secondary flex items-center gap-1.5">
+                      <Icon name="bolt" className="w-4 h-4" />
+                      +{formatInt(weeklyBugle.surgeXp)} XP da Spider-Sense Surge questa settimana.
+                    </p>
+                  )}
+                  {weeklyBugle.examsGraded.length > 0 && (
+                    <p className="text-[13px] text-slate-300 flex items-center gap-1.5">
+                      <Icon name="book" className="w-4 h-4 text-slate-500" />
+                      {(() => {
+                        const n = weeklyBugle.examsGraded.reduce((sum, e) => sum + (Array.isArray(e.esami) ? e.esami.length : 1), 0);
+                        return n === 1 ? '1 esame registrato questa settimana' : `${n} esami registrati questa settimana`;
+                      })()}
+                      {Number.isFinite(weeklyBugle.currentAverage) && ` — media aggiornata a ${formatDecimal(weeklyBugle.currentAverage, 2)}.`}
+                    </p>
+                  )}
+                </div>
+              )}
 
-      {/* V31.3 — Spider-Sense Surge Analytics: bonus totale accumulato
-          nel tempo dalle sessioni pulite, prima invisibile a posteriori. */}
-      {spiderSenseSurgeStats.count > 0 && (
-        <div className={`${CARD} flex items-center justify-between gap-3 flex-wrap`}>
-          <div className="relative flex items-center gap-3">
-            <div className="w-11 h-11 rounded-xl bg-secondary/10 border border-secondary/30 flex items-center justify-center text-secondary shrink-0">
-              <Icon name="bolt" className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-base font-semibold text-white">Spider-Sense Surge</p>
-              <p className="text-sm text-slate-500">{spiderSenseSurgeStats.count} sessioni pulite senza interruzioni</p>
-            </div>
-          </div>
-          <p className="relative text-2xl font-mono font-bold text-secondary">+{spiderSenseSurgeStats.totalXp} XP</p>
-        </div>
-      )}
-
-      {/* Tactical Debriefing Analytics — Qualità del Focus raccolta dal
-          Post-Session Debriefing Modal di Stark-Web Terminal. */}
-      <div className={CARD}>
-        <div className="relative flex items-center gap-2 mb-5">
-          <Icon name="target" className="w-5 h-5 text-secondary" />
-          <span className={H2}>TACTICAL DEBRIEFING — QUALITÀ DEL FOCUS</span>
-        </div>
-        {focusQualityStats.ratedTotal === 0 ? (
-          <EmptyState
-            variant="log"
-            compact
-            title="Karen: nessun Debriefing registrato"
-            subtitle="Completa e valuta la tua prima sessione di Focus in Stark-Web Terminal per popolare questa sezione."
-          />
-        ) : (
-          <div className="relative space-y-4">
-            {QUALITY_ORDER.map((quality) => {
-              const meta = FOCUS_QUALITY_META[quality];
-              const count = focusQualityStats.counts[quality];
-              const pct = focusQualityStats.ratedTotal > 0 ? Math.round((count / focusQualityStats.ratedTotal) * 100) : 0;
-              return (
-                <div key={quality} className="space-y-1.5">
-                  <div className="flex items-center justify-between text-base gap-2">
-                    <span className={`flex items-center gap-2 font-semibold ${meta.color}`}>
-                      <Icon name={meta.icon} className="w-5 h-5" />
-                      {meta.shortLabel}
-                    </span>
-                    <span className="font-mono text-slate-400 text-sm">{count} sessioni · {pct}%</span>
-                  </div>
-                  <div className="h-2.5 rounded-full bg-surface/80 border border-secondary/15 overflow-hidden">
-                    <div
-                      className={`h-full transition-all duration-700 ${QUALITY_BAR_CLASS[quality]}`}
-                      style={{ width: `${pct}%` }}
-                    />
+              {weeklyBugle.trophiesUnlocked.length > 0 && (
+                <div className="space-y-1.5 pt-3 border-t border-line">
+                  <p className="ds-eyebrow">Trofei sbloccati</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {weeklyBugle.trophiesUnlocked.map((t) => (
+                      <span key={t.id} className={BADGE.amber}>
+                        <Icon name="trophy" className="w-3 h-3" />
+                        {t.nome}
+                      </span>
+                    ))}
                   </div>
                 </div>
-              );
-            })}
-            <p className="text-sm text-slate-500 pt-1">
-              {focusQualityStats.ratedTotal} sessioni valutate su {focusQualityStats.totalSessions} registrate in totale.
-            </p>
-          </div>
-        )}
-      </div>
+              )}
 
-      {/* Web-Velocity Focus Analytics — ritmo di studio reale vs richiesto. */}
-      <div className={CARD}>
-        <div className="relative flex items-center gap-2 mb-5">
-          <Icon name="bolt" className="w-5 h-5 text-accent" />
-          <span className={H2}>WEB-VELOCITY FOCUS ANALYTICS</span>
-        </div>
-        {focusVelocity.materiaNome ? (
-          <div className="relative flex flex-col sm:flex-row items-center gap-6">
-            <RadarRing pct={focusVelocity.velocityPct} size={140} stroke={13} />
-            <div className="flex-1 min-w-0 space-y-2 text-center sm:text-left">
-              <p className="text-lg font-semibold text-white">
-                Ritmo verso <span className="text-secondary">{focusVelocity.materiaNome}</span>
-              </p>
-              <p className="text-base text-slate-400">
-                Su questa materia, ultimi {WINDOW_DAYS} giorni:{' '}
-                <span className="font-mono text-slate-200">{focusVelocity.avgSubjectMinutes} min/giorno</span>
-                <span className="text-slate-500 text-sm"> · {focusVelocity.avgDailyMinutes} min/giorno in totale</span>
-              </p>
-              <p className="text-base text-slate-400">
-                Ritmo richiesto dal piano: <span className="font-mono text-slate-200">{focusVelocity.targetDailyMinutes} min/giorno</span>
-                {focusVelocity.remainingNodes > 0 || (focusVelocity.hoursRemaining ?? 0) > 0
-                  ? ` · ${focusVelocity.hoursRemaining != null ? `${formatHoursMinutes(focusVelocity.hoursRemaining)} residue` : `${focusVelocity.remainingNodes} nodi`} in ${focusVelocity.daysLeft}gg`
-                  : ' — quadrante già completato'}
-              </p>
-              <p
-                className={`text-base font-semibold ${
-                  focusVelocity.velocityPct >= 100
-                    ? 'text-emerald-400'
-                    : focusVelocity.velocityPct >= 60
-                    ? 'text-accent'
-                    : 'text-primary'
-                }`}
-              >
-                {focusVelocity.velocityPct >= 100
-                  ? 'Sei in anticipo sulla tabella di marcia.'
-                  : focusVelocity.velocityPct >= 60
-                  ? "Ritmo leggermente sotto l'obiettivo — spingi un po' di più."
-                  : 'Ritmo critico: intensifica le sessioni di Focus.'}
+              {/* V35.5 — dove sono andati davvero i minuti di questa settimana. */}
+              {weeklyBugle.materiaBreakdown.length > 0 && (
+                <div className="space-y-2.5 pt-3 border-t border-line">
+                  <p className="ds-eyebrow">Ripartizione per materia</p>
+                  {weeklyBugle.materiaBreakdown.map((m) => {
+                    const pct = weeklyBugle.focusMinutes > 0 ? Math.round((m.minutes / weeklyBugle.focusMinutes) * 100) : 0;
+                    return (
+                      <div key={m.materiaId || 'GENERIC'} className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 items-center">
+                        <span className="text-[13px] text-slate-200 truncate">{m.materiaNome}</span>
+                        <span className="text-xs ds-num text-slate-500 text-right">
+                          {minutiLabel(m.minutes)} · {m.sessions === 1 ? '1 sessione' : `${m.sessions} sessioni`}
+                        </span>
+                        <div className="ds-progress col-span-2">
+                          <span className="bg-secondary" style={{ width: `${pct}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+        </section>
+
+        {/* Tactical Debriefing — la qualità del Focus dichiarata a fine sessione. */}
+        <section className={`${CARD} space-y-4`} aria-label="Qualità del Focus">
+          <CardHead icon="target" iconTone="text-secondary" title="Qualità del Focus" subtitle="Dal Tactical Debriefing a fine sessione" />
+          {focusQualityStats.ratedTotal === 0 ? (
+            <EmptyState
+              variant="log"
+              compact
+              title="Nessun Debriefing ancora"
+              subtitle="Completa e valuta la prima sessione di Focus nello Stark-Web Terminal."
+            />
+          ) : (
+            <div className="space-y-4">
+              {QUALITY_ORDER.map((quality) => {
+                const meta = FOCUS_QUALITY_META[quality];
+                const count = focusQualityStats.counts[quality];
+                const pct = focusQualityStats.ratedTotal > 0 ? Math.round((count / focusQualityStats.ratedTotal) * 100) : 0;
+                return (
+                  <div key={quality} className="space-y-1.5">
+                    <div className="flex items-center justify-between text-sm gap-2">
+                      <span className={`flex items-center gap-2 font-medium ${meta.color}`}>
+                        <Icon name={meta.icon} className="w-4 h-4" />
+                        {meta.shortLabel}
+                      </span>
+                      <span className="ds-num text-slate-400 text-xs">
+                        {formatInt(count)} · <span className="text-slate-200 font-semibold">{pct}%</span>
+                      </span>
+                    </div>
+                    <div className="ds-progress !h-2">
+                      <span className={QUALITY_BAR_CLASS[quality]} style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+              <p className="text-xs text-slate-500 pt-1">
+                {formatInt(focusQualityStats.ratedTotal)} sessioni valutate su {formatInt(focusQualityStats.totalSessions)} registrate.
               </p>
             </div>
-          </div>
-        ) : (
-          <p className="relative text-base text-slate-400">
-            Imposta una data d'esame su un nodo nel Web-Matrix per vedere qui il ritmo di avanzamento richiesto.
-          </p>
-        )}
+          )}
+        </section>
       </div>
 
-      {/* V16.0 (Pillar 4) — Heatmap Calendario a piena larghezza: nessuno
-          scroll orizzontale, i quadratini si ridimensionano in proporzione
-          al contenitore, tooltip preciso "Data: X Focus, Y XP" on-hover. */}
-      <div className={`${CARD} w-full`}>
-        <div className="relative flex items-center justify-between mb-4 flex-wrap gap-2">
-          <span className={H2}>HEATMAP CALENDARIO</span>
-          <div className="flex items-center gap-1.5 text-base text-slate-400">
+      {/* Heatmap: un anno di attività, un quadrato per giorno. */}
+      <section className={`${CARD} space-y-4`} aria-label="Heatmap dell'attività">
+        <CardHead
+          icon="calendar"
+          iconTone="text-primary"
+          title="Heatmap dell'attività"
+          subtitle={
+            hoverDay
+              ? `${formatDateOnlyHuman(hoverDay.key)} · ${hoverDay.minutes > 0 ? `${minutiLabel(hoverDay.minutes)} di Focus · ${formatInt(hoverDay.xp)} XP` : 'nessuna sessione'}`
+              : 'Ultime 53 settimane. Passa sopra un giorno per i dettagli.'
+          }
+        >
+          <div className="flex items-center gap-1.5 text-xs text-slate-500" aria-hidden="true">
             <span>Meno</span>
             {LEVEL_CLASSES.map((cls, i) => (
-              <div key={i} className={`w-3.5 h-3.5 rounded-sm border ${cls}`} />
+              <span key={i} className={`w-3 h-3 rounded-[3px] ${cls}`} />
             ))}
             <span>Più</span>
           </div>
-        </div>
-        <div className="relative w-full flex-1 flex gap-1">
-          {weeks.map((col, wi) => (
-            <div key={wi} className="flex-1 flex flex-col gap-1 min-w-0">
-              {col.map((day) => (
-                <HeatmapDay key={day.key} day={day} />
-              ))}
-            </div>
-          ))}
-        </div>
-      </div>
+        </CardHead>
 
-      {/* Web-Matrix Radar — stabilità sinaptica globale e per materia. */}
-      <div className={`${CARD} space-y-6`}>
-        <div className="relative flex items-center gap-2">
-          <Icon name="grid" className="w-5 h-5 text-secondary" />
-          <span className={H2}>WEB-MATRIX RADAR</span>
-        </div>
-
-        <div className="relative pb-2 border-b border-white/10">
-          <RadarCard title="Stabilità Sinaptica Globale" radar={derived.memoryRadar.global} />
-        </div>
-
-        {derived.memoryRadar.byMateria.length === 0 ? (
-          <p className="relative text-base text-slate-500">Nessuna materia ancora attiva.</p>
-        ) : (
-          <div className="relative grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {derived.memoryRadar.byMateria.map((m) => (
-              <RadarCard key={m.materiaId} title={m.materiaNome} radar={m} compact />
+        <div ref={heatmapScrollRef} className="overflow-x-auto af-scroll pb-1" onMouseLeave={() => setHoverDay(null)}>
+          <div
+            className="grid gap-[3px] min-w-[640px]"
+            style={{ gridTemplateColumns: `1.75rem repeat(${HEATMAP_WEEKS}, minmax(0, 1fr))` }}
+            role="img"
+            aria-label={`Attività degli ultimi 12 mesi: ${heatmap.activeDays} giorni con almeno una sessione`}
+          >
+            <span />
+            {heatmap.monthLabels.map((m, i) => (
+              <span key={`m${i}`} className="text-[10px] text-slate-500 leading-none h-3 overflow-visible whitespace-nowrap">
+                {m}
+              </span>
+            ))}
+            {[0, 1, 2, 3, 4, 5, 6].map((d) => (
+              <React.Fragment key={`r${d}`}>
+                <span className="text-[10px] text-slate-500 leading-none self-center">{d === 0 ? 'Lun' : d === 2 ? 'Mer' : d === 4 ? 'Ven' : ''}</span>
+                {heatmap.cols.map((col, wi) => {
+                  const day = col[d];
+                  return (
+                    <span
+                      key={day.key}
+                      onMouseEnter={() => setHoverDay(day.future ? null : day)}
+                      className={`aspect-square rounded-[3px] ${day.future ? 'bg-transparent' : LEVEL_CLASSES[intensityLevel(day.minutes)]} ${
+                        hoverDay?.key === day.key ? 'ring-1 ring-white/70' : ''
+                      }`}
+                      title={day.future ? undefined : `${formatDateOnlyHuman(day.key)}: ${day.minutes > 0 ? minutiLabel(day.minutes) : 'nessuna sessione'}`}
+                      data-week={wi}
+                    />
+                  );
+                })}
+              </React.Fragment>
             ))}
           </div>
-        )}
-      </div>
-
-      <div className={CARD}>
-        <div className="relative flex items-center justify-between mb-4 flex-wrap gap-3">
-          <span className={`${H2} flex items-center gap-2`}>
-            <Icon name="alertTriangle" className="w-5 h-5 text-accent" />
-            RADAR SPIDER-SENSE
-          </span>
-          <Dropdown value={sortKey} onChange={setSortKey} options={SORT_OPTIONS} className="w-full sm:w-64" />
         </div>
 
+        <dl className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-line">
+          <div>
+            <dt className="text-[11px] text-slate-500">Giorni con almeno una sessione</dt>
+            <dd className="text-sm font-semibold text-slate-100 ds-num mt-0.5">{formatInt(heatmap.activeDays)} su 365</dd>
+          </div>
+          <div>
+            <dt className="text-[11px] text-slate-500">Media nei giorni attivi</dt>
+            <dd className="text-sm font-semibold text-slate-100 ds-num mt-0.5">{heatmap.activeDays > 0 ? minutiLabel(heatmap.avgActive) : '—'}</dd>
+          </div>
+          <div>
+            <dt className="text-[11px] text-slate-500">Giorno migliore</dt>
+            <dd className="text-sm font-semibold text-slate-100 ds-num mt-0.5">
+              {heatmap.best ? `${minutiLabel(heatmap.best.minutes)} · ${formatDateOnlyHuman(heatmap.best.key)}` : '—'}
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-stretch">
+        {/* Web-Velocity — ritmo reale sulla materia del prossimo esame contro quello richiesto dal piano. */}
+        <section className={`${CARD} space-y-4`} aria-label="Ritmo verso il prossimo esame">
+          <CardHead icon="bolt" iconTone="text-accent" title="Ritmo verso il prossimo esame" subtitle={`Media degli ultimi ${WINDOW_DAYS} giorni contro la quota del piano`} />
+          {focusVelocity.materiaNome ? (
+            <div className="flex flex-col sm:flex-row items-center gap-5">
+              <Ring
+                pct={focusVelocity.velocityPct == null ? null : Math.min(100, focusVelocity.velocityPct)}
+                size={112}
+                stroke={9}
+                tone={focusVelocity.velocityPct >= 100 ? 'text-emerald-400' : focusVelocity.velocityPct >= 60 ? 'text-accent' : 'text-primary'}
+                label="del ritmo"
+              />
+              <div className="flex-1 min-w-0 space-y-2 text-center sm:text-left">
+                <p className="text-base font-semibold text-white break-words">{focusVelocity.materiaNome}</p>
+                <p className="text-[13px] text-slate-400">
+                  Su questa materia: <span className="ds-num text-slate-100">{minutiLabel(focusVelocity.avgSubjectMinutes)} al giorno</span>
+                  <span className="text-slate-500"> · {minutiLabel(focusVelocity.avgDailyMinutes)} al giorno in totale</span>
+                </p>
+                <p className="text-[13px] text-slate-400">
+                  Richiesto dal piano: <span className="ds-num text-slate-100">{minutiLabel(focusVelocity.targetDailyMinutes)} al giorno</span>
+                  {focusVelocity.remainingNodes > 0 || (focusVelocity.hoursRemaining ?? 0) > 0
+                    ? ` · ${focusVelocity.hoursRemaining != null ? `${formatHoursMinutes(focusVelocity.hoursRemaining)} residue` : `${focusVelocity.remainingNodes} argomenti`} in ${focusVelocity.daysLeft} giorni`
+                    : ' — programma già chiuso'}
+                </p>
+                <p
+                  className={`text-sm font-semibold ${
+                    focusVelocity.velocityPct >= 100 ? 'text-emerald-300' : focusVelocity.velocityPct >= 60 ? 'text-accent' : 'text-primary'
+                  }`}
+                >
+                  {focusVelocity.velocityPct >= 100
+                    ? 'Sei in linea o in anticipo sulla tabella di marcia.'
+                    : focusVelocity.velocityPct >= 60
+                    ? "Un po' sotto l'obiettivo: aggiungi un blocco al giorno."
+                    : 'Ritmo insufficiente: serve intensificare le sessioni su questa materia.'}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <p className="text-[13px] text-slate-400">Dai una data d'esame a una materia nel Web-Matrix per vedere qui il ritmo richiesto.</p>
+          )}
+        </section>
+
+        {/* Web-Matrix Radar — stabilità della memoria, globale e per materia. */}
+        <section className={`${CARD} space-y-4`} aria-label="Web-Matrix Radar">
+          <CardHead icon="grid" iconTone="text-secondary" title="Web-Matrix Radar" subtitle="Argomenti che reggono in memoria contro quelli da rinforzare" />
+          <div className="flex items-center gap-5">
+            <Ring pct={derived.memoryRadar.global.stabilityPct} size={96} stroke={8} tone="text-secondary" label="stabili" />
+            {derived.memoryRadar.global.total === 0 ? (
+              <p className="text-[13px] text-slate-400">Nessun argomento tracciato: completa il primo per accendere il radar.</p>
+            ) : (
+              <ul className="space-y-1 text-[13px]">
+                <li className="flex items-center gap-2 text-slate-300">
+                  <span className="w-2 h-2 rounded-full bg-secondary" /> <span className="ds-num font-semibold text-white">{derived.memoryRadar.global.stable}</span> stabili
+                </li>
+                <li className="flex items-center gap-2 text-slate-300">
+                  <span className="w-2 h-2 rounded-full bg-primary" /> <span className="ds-num font-semibold text-white">{derived.memoryRadar.global.attention}</span> da rinforzare
+                </li>
+                {derived.memoryRadar.global.observing > 0 && (
+                  <li className="flex items-center gap-2 text-slate-400">
+                    <span className="w-2 h-2 rounded-full bg-slate-500" /> <span className="ds-num font-semibold text-slate-200">{derived.memoryRadar.global.observing}</span> in osservazione
+                  </li>
+                )}
+              </ul>
+            )}
+          </div>
+          {derived.memoryRadar.byMateria.some((m) => m.total > 0) && (
+            <ul className="space-y-2.5 pt-3 border-t border-line">
+              {derived.memoryRadar.byMateria.filter((m) => m.total > 0).map((m) => (
+                <li key={m.materiaId} className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 items-center">
+                  <span className="text-[13px] text-slate-200 truncate">{m.materiaNome}</span>
+                  <span className="text-xs ds-num text-slate-400 text-right">
+                    {m.stabilityPct == null ? 'n/d' : `${m.stabilityPct}%`}
+                    <span className="text-slate-600">
+                      {' '}
+                      · {m.stable} stabili · {m.attention} da rinforzare
+                    </span>
+                  </span>
+                  <div className="ds-progress col-span-2">
+                    <span className="bg-secondary" style={{ width: `${m.stabilityPct || 0}%` }} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          {derived.memoryRadar.byMateria.some((m) => m.total === 0) && (
+            <p className="text-xs text-slate-500">
+              {(() => {
+                const n = derived.memoryRadar.byMateria.filter((m) => m.total === 0).length;
+                return n === 1 ? '1 materia non ha ancora argomenti completati.' : `${n} materie non hanno ancora argomenti completati.`;
+              })()}
+            </p>
+          )}
+        </section>
+      </div>
+
+      {/* Radar Spider-Sense — i ripassi in sospeso, da fare qui in fila. */}
+      <section className={`${CARD} space-y-4`} aria-label="Radar Spider-Sense">
+        <CardHead
+          icon="radar"
+          iconTone="text-accent"
+          title="Radar Spider-Sense"
+          subtitle={sortedReviews.length === 0 ? 'Nessun ripasso in sospeso' : sortedReviews.length === 1 ? '1 ripasso in sospeso' : `${sortedReviews.length} ripassi in sospeso`}
+        >
+          {sortedReviews.length > 1 && (
+            <div className="w-full sm:w-60">
+              <Dropdown value={sortKey} onChange={setSortKey} options={SORT_OPTIONS} compact ariaLabel="Ordine dei ripassi" />
+            </div>
+          )}
+        </CardHead>
+
         {sortedReviews.length === 0 ? (
-          <EmptyState
-            variant="safe"
-            compact
-            title="La città è sicura."
-            subtitle="Nessun ripasso in sospeso — torna dopo aver completato nuovi nodi."
-          />
+          <EmptyState variant="safe" compact title="La città è sicura." subtitle="Nessun ripasso in sospeso: torna dopo aver completato nuovi argomenti." />
         ) : (
-          <>
-          {/* V40.0 — su telefono una scheda per ripasso, con i tre pulsanti
-              a tutta larghezza: la tabella a cinque colonne costringeva a
-              scorrere di lato per arrivare a "Medio" e "Difficile". */}
-          <ul className="relative sm:hidden space-y-2.5">
+          <ul className="divide-y divide-white/[0.06] rounded-xl border border-line overflow-hidden">
             {sortedReviews.map((row) => {
               const diffMeta = DIFFICULTY_META[row.difficulty] || DIFFICULTY_META.MEDIUM;
               return (
-                <li key={row.sfidaId} className="rounded-xl border border-white/10 bg-surface/60 p-3 space-y-2.5">
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-slate-100 break-words">{row.sfidaNome}</p>
-                    <p className="text-xs text-slate-500 break-words">{row.materiaNome}</p>
+                <li key={row.sfidaId} className="flex flex-col md:flex-row md:items-center gap-3 px-3.5 py-3 bg-surface/50 hover:bg-surface transition-colors">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-slate-100 break-words">{row.sfidaNome}</p>
+                    <p className="text-xs text-slate-500 break-words">
+                      {row.materiaNome} · {diffMeta.label} · ripasso dal {row.nextReviewDate ? formatDateOnlyHuman(row.nextReviewDate) : '—'}
+                    </p>
                   </div>
-                  <div className="flex items-center gap-2 flex-wrap text-xs">
-                    <span className={`font-mono px-2 py-0.5 rounded-full border ${diffMeta.border} ${diffMeta.color}`}>{diffMeta.label}</span>
-                    <span className="font-mono text-accent">
-                      ripasso da {row.nextReviewDate ? formatDateOnlyHuman(row.nextReviewDate) : '—'}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className="grid grid-cols-3 gap-1.5 md:w-[300px] shrink-0">
                     {Object.values(REVIEW_RATING).map((rating) => (
                       <button
                         key={rating}
                         type="button"
                         onClick={() => actions.reviewSfida(row.materiaId, row.sfidaId, rating)}
-                        className={`text-sm py-2 rounded-lg border ${REVIEW_RATING_META[rating].border} ${REVIEW_RATING_META[rating].color} bg-white/[0.02] hover:brightness-125 transition-all duration-300`}
+                        className="ds-btn ds-btn-ghost ds-btn-sm"
                       >
-                        {REVIEW_RATING_META[rating].label}
+                        <span className={REVIEW_RATING_META[rating].color}>{REVIEW_RATING_META[rating].label}</span>
                       </button>
                     ))}
                   </div>
@@ -858,71 +908,33 @@ export default function StarLog() {
               );
             })}
           </ul>
-          <div className="relative hidden sm:block overflow-x-auto af-scroll">
-            <table className="w-full text-base">
-              <thead>
-                <tr className="text-left text-base text-slate-500 border-b border-white/10">
-                  <th className="py-2 pr-4 font-medium">Materia</th>
-                  <th className="py-2 pr-4 font-medium">Nodo</th>
-                  <th className="py-2 pr-4 font-medium">Difficoltà</th>
-                  <th className="py-2 pr-4 font-medium">Ripasso da</th>
-                  <th className="py-2 pr-4 font-medium">Azione</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedReviews.map((row) => {
-                  const diffMeta = DIFFICULTY_META[row.difficulty] || DIFFICULTY_META.MEDIUM;
-                  return (
-                    <tr key={row.sfidaId} className="border-b border-white/5 hover:bg-white/5 transition-all duration-300">
-                      <td className="py-2.5 pr-4 text-slate-200">{row.materiaNome}</td>
-                      <td className="py-2.5 pr-4 text-slate-200">{row.sfidaNome}</td>
-                      <td className="py-2.5 pr-4">
-                        <span className={`text-base font-mono px-2 py-0.5 rounded-full border ${diffMeta.border} ${diffMeta.color}`}>
-                          {diffMeta.label}
-                        </span>
-                      </td>
-                      <td className="py-2.5 pr-4 font-mono text-accent whitespace-nowrap">
-                        {row.nextReviewDate ? formatDateOnlyHuman(row.nextReviewDate) : '—'}
-                      </td>
-                      <td className="py-2.5 pr-4">
-                        <div className="flex gap-1.5">
-                          {Object.values(REVIEW_RATING).map((rating) => (
-                            <button
-                              key={rating}
-                              type="button"
-                              onClick={() => actions.reviewSfida(row.materiaId, row.sfidaId, rating)}
-                              className={`text-base px-2.5 py-1 rounded-lg border ${REVIEW_RATING_META[rating].border} ${REVIEW_RATING_META[rating].color} bg-white/[0.02] hover:brightness-125 transition-all duration-300`}
-                            >
-                              {REVIEW_RATING_META[rating].label}
-                            </button>
-                          ))}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          </>
         )}
-      </div>
+      </section>
 
-      {/* V16.0 (Pillar 5) — Cronologia Sessioni: Accordion per Mese/Anno,
-          mese corrente aperto di default, mesi passati collassati. Scala a
-          centinaia di sessioni senza diventare un ammasso illeggibile. */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 px-1">
-          <Icon name="chartBar" className="w-5 h-5 text-secondary" />
-          <span className={H2}>CRONOLOGIA SESSIONI</span>
+      {/* V16.0 (Pillar 5) — Cronologia per mese: il mese corrente aperto, i
+          passati chiusi. Scala a centinaia di sessioni. */}
+      <section className="space-y-3" aria-label="Cronologia sessioni">
+        <div className="flex items-center justify-between gap-3 px-1">
+          <h2 className="ds-h2">Cronologia</h2>
+          {monthGroups.length > 1 && (
+            <button
+              type="button"
+              onClick={() =>
+                setOpenMonths((prev) => (prev.size >= monthGroups.length ? new Set() : new Set(monthGroups.map((g) => g.monthKey))))
+              }
+              className="ds-btn ds-btn-quiet ds-btn-sm"
+            >
+              {openMonths.size >= monthGroups.length ? 'Chiudi tutti' : 'Apri tutti'}
+            </button>
+          )}
         </div>
         {monthGroups.length === 0 ? (
           <div className={CARD}>
             <EmptyState
               variant="log"
               compact
-              title="Karen: nessuna sessione registrata"
-              subtitle="Completa una sessione di Focus o un Sinister Six Simulator per iniziare a popolare la cronologia mensile."
+              title="Nessuna sessione registrata"
+              subtitle="Completa una sessione di Focus o un Sinister Six Simulator per iniziare la cronologia."
             />
           </div>
         ) : (
@@ -933,30 +945,30 @@ export default function StarLog() {
                 <button
                   type="button"
                   onClick={() => toggleMonth(g.monthKey)}
-                  className="w-full flex items-center justify-between gap-3 px-6 py-4 text-left"
+                  className="w-full flex items-center justify-between gap-3 px-4 sm:px-5 py-3.5 text-left hover:bg-white/[0.02] transition-colors"
                   aria-expanded={open}
                 >
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-10 h-10 rounded-xl bg-secondary/10 border border-secondary/25 flex items-center justify-center text-secondary shrink-0">
-                      <Icon name="chartBar" className="w-5 h-5" />
-                    </div>
+                    <span className="ds-icon-tile text-secondary">
+                      <Icon name="calendar" className="w-4 h-4" />
+                    </span>
                     <div className="min-w-0">
-                      <p className="text-base font-semibold text-white truncate">{g.label}</p>
-                      <p className="text-xs text-slate-500 truncate">
-                        {g.entries.length} eventi · {g.totalMinutesMonth} min · {g.totalXpMonth} XP
-                        {(g.wins > 0 || g.losses > 0) && ` · Boss ${g.wins}V/${g.losses}S`}
+                      <p className="text-sm font-semibold text-white truncate first-letter:uppercase">{g.label}</p>
+                      <p className="text-xs text-slate-500 truncate ds-num">
+                        {g.entries.length === 1 ? '1 evento' : `${formatInt(g.entries.length)} eventi`} · {minutiLabel(g.totalMinutesMonth)} di Focus ·{' '}
+                        {formatInt(g.totalXpMonth)} XP
+                        {(g.wins > 0 || g.losses > 0) && ` · Sinister Six ${g.wins} vinte, ${g.losses} perse`}
                       </p>
                     </div>
                   </div>
-                  <Icon
-                    name="chevronDown"
-                    className={`w-5 h-5 text-slate-500 shrink-0 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
-                  />
+                  <Icon name="chevronDown" className={`w-4 h-4 text-slate-500 shrink-0 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
                 </button>
                 {open && (
-                  <div className="px-6 pb-6 pt-1 space-y-2 border-t border-secondary/10">
-                    {g.entries.map((entry) => (
-                      <TimelineEntry key={entry.timestamp || `${entry.type}-${entry.dateKey}-${entry.minutes || entry.hpRemaining || 0}`} entry={entry} />
+                  <div className="px-4 sm:px-5 pb-4 pt-3 space-y-1.5 border-t border-line">
+                    {g.entries.map((entry, i) => (
+                      // V41 — chiave stabile anche con eventi nello stesso istante
+                      // (prima: solo il timestamp, chiavi duplicate).
+                      <TimelineEntry key={`${entry.type}-${entry.timestamp || entry.dateKey}-${i}`} entry={entry} />
                     ))}
                   </div>
                 )}
@@ -964,7 +976,7 @@ export default function StarLog() {
             );
           })
         )}
-      </div>
+      </section>
     </div>
   );
 }

@@ -137,3 +137,16 @@ describe('msUntilNextLocalMidnight', () => {
     assert.ok(msUntilNextLocalMidnight(from) >= 0);
   });
 });
+
+describe('V41 — msUntilDateOnlyMidnight', () => {
+  test('conta fino alla mezzanotte LOCALE del giorno indicato', async () => {
+    const { msUntilDateOnlyMidnight } = await import('./dateUtils.js');
+    const now = new Date(2026, 9, 7, 18, 30, 0).getTime(); // 7 ottobre 2026, 18:30 locali
+    assert.equal(msUntilDateOnlyMidnight('2026-10-08', now), 5.5 * 3600 * 1000);
+  });
+  test('valori non validi', async () => {
+    const { msUntilDateOnlyMidnight } = await import('./dateUtils.js');
+    assert.equal(msUntilDateOnlyMidnight(null), null);
+    assert.equal(msUntilDateOnlyMidnight('non-una-data'), null);
+  });
+});

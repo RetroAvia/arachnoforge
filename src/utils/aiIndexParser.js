@@ -66,6 +66,44 @@ export const AI_INDEX_EXAMPLE = JSON.stringify(
   2
 );
 
+/**
+ * V41 — Prompt pronto da copiare nell'IA esterna insieme alla foto
+ * dell'indice. Chiede esattamente il formato che questo parser legge.
+ */
+export function buildAiIndexPrompt(materiaNome = '') {
+  const oggetto = materiaNome ? `di ${materiaNome}` : 'universitario';
+  return [
+    `Ti allego la foto dell'indice di un libro ${oggetto}. Trascrivilo in JSON, senza testo prima o dopo.`,
+    'Formato: un array di capitoli. Ogni capitolo è {"nome": "...", "sottoargomenti": [...]}; ogni sottoargomento è una stringa, oppure un oggetto {"nome": "...", "sottoargomenti": [...]} se ha a sua volta dei sottoparagrafi.',
+    'Regole:',
+    "- usa i titoli come sono scritti nell'indice, senza i numeri di pagina;",
+    "- non aggiungere argomenti che nell'indice non ci sono;",
+    '- solo se riesci a stimarlo, aggiungi ai sottoargomenti più impegnativi "difficolta": "EASY", "MEDIUM" o "HARD" e "ore" (ore di studio previste).'
+  ].join('\n');
+}
+
+/**
+ * V41 — Le IA rispondono quasi sempre con il JSON dentro un blocco di
+ * codice (```json … ```), spesso con una frase prima o dopo; copiando da
+ * certe app le virgolette diventano “tipografiche”. Prima tutto questo
+ * andava ripulito a mano, altrimenti "JSON non valido". Qui si provano
+ * più letture, dalla più fedele alla più tollerante: il testo così
+ * com'è, il primo blocco di codice, il tratto fra la prima parentesi
+ * aperta e l'ultima chiusa, poi le stesse con virgolette dritte e senza
+ * virgole finali.
+ */
+export function jsonCandidates(text) {
+  const base = String(text || '').trim();
+  const out = [base];
+  const fence = base.match(/```[a-zA-Z]*\s*([\s\S]*?)```/);
+  if (fence && fence[1].trim()) out.push(fence[1].trim());
+  const first = base.search(/[[{]/);
+  const last = Math.max(base.lastIndexOf(']'), base.lastIndexOf('}'));
+  if (first >= 0 && last > first) out.push(base.slice(first, last + 1));
+  const tolerant = out.map((c) => c.replace(/[\u201C\u201D\u201E\u00AB\u00BB]/g, '"').replace(/,\s*([\]}])/g, '$1'));
+  return [...new Set([...out, ...tolerant])];
+}
+
 function pickField(obj, keys) {
   for (const k of keys) {
     if (obj[k] !== undefined && obj[k] !== null) return obj[k];
@@ -143,10 +181,22 @@ export function parseAiIndexTree(rawInput) {
   if (typeof rawInput === 'string') {
     const trimmed = rawInput.trim();
     if (!trimmed) return { valid: false, error: 'Incolla prima una struttura JSON valida (indice generato dall\'IA a partire dalla foto del libro).' };
-    try {
-      data = JSON.parse(trimmed);
-    } catch (err) {
-      return { valid: false, error: `JSON non valido: ${err.message}` };
+    let parsedOk = false;
+    let firstError = null;
+    for (const candidate of jsonCandidates(trimmed)) {
+      try {
+        data = JSON.parse(candidate);
+        parsedOk = true;
+        break;
+      } catch (err) {
+        if (!firstError) firstError = err;
+      }
+    }
+    if (!parsedOk) {
+      return {
+        valid: false,
+        error: `Non riesco a leggere il JSON: controlla di aver incollato tutta la risposta, fino all'ultima parentesi. (${firstError?.message || 'formato non valido'})`
+      };
     }
   }
 
@@ -250,4 +300,4 @@ export function createSfideTreeFromAiIndex(rawInputOrTree) {
   return { valid: true, sfide };
 }
 
-export default { parseAiIndexTree, flattenAiIndexTree, createSfideTreeFromAiIndex, MAX_AI_INDEX_NODES, AI_INDEX_EXAMPLE };
+export default { parseAiIndexTree, flattenAiIndexTree, createSfideTreeFromAiIndex, MAX_AI_INDEX_NODES, AI_INDEX_EXAMPLE, buildAiIndexPrompt, jsonCandidates };

@@ -1,51 +1,56 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
 import { useAuthContext } from '../context/AuthContext.jsx';
 import { Icon } from '../components/Icons.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import PasswordDialog from '../components/PasswordDialog.jsx';
 import CombatLog from '../components/CombatLog.jsx';
+import PageHeader from '../components/PageHeader.jsx';
 import { SCHEMA_VERSION, SUITS } from '../data/defaultSchema.js';
 import { validateAdminPassphrase, isAdminPassphraseConfigured } from '../utils/adminOverride.js';
 import { validateImportedProfile } from '../utils/storage.js';
 import { oldestDetailedMonth } from '../utils/starLogMaintenance.js';
 import { formatMonthYearHuman, formatHoursMinutes } from '../utils/dateUtils.js';
 import { notificationPermission, requestNotificationPermission, notify, NOTIFY_PERMISSION } from '../utils/systemNotify.js';
-import { CARD, CARD_ALERT, H1, H2, BTN_PRIMARY, BTN_SECONDARY, BTN_GHOST, INPUT } from '../utils/designSystem.js';
+import { backupsSupported, SNAPSHOT_REASON_LABEL, SNAPSHOTS_CHANGED_EVENT, AUTO_KEEP, SAFETY_KEEP } from '../utils/localBackups.js';
+import { formatInt, formatDecimal, minutiLabel } from '../utils/format.js';
+import { INTENT, useIntent } from '../utils/uiIntents.js';
+import { CARD_NOPAD, BTN_SECONDARY, BTN_GHOST, BTN_DANGER, INPUT, LABEL, BADGE } from '../utils/designSystem.js';
+
+// =====================================================================
+// Karen OS Settings — V41: una pagina di impostazioni vera, divisa per
+// argomento con un indice a sinistra (su PC) invece di una colonna unica
+// di dodici riquadri in maiuscolo. Nuova la sezione Backup: i punti di
+// ripristino automatici salvati su questo dispositivo, da ripristinare o
+// scaricare con un clic.
+// =====================================================================
 
 const SUIT_OPTIONS = [
-  {
-    id: SUITS.CLASSIC,
-    nome: 'Classic Suit',
-    descrizione: 'Rosso Cremisi & Blu Elettrico',
-    swatch: ['#E23636', '#1D83F0']
-  },
-  {
-    id: SUITS.SYMBIOTE,
-    nome: 'Symbiote Suit',
-    descrizione: 'Nero & Argento, bagliore violaceo',
-    swatch: ['#cbd5e1', '#8b5cf6']
-  },
-  {
-    id: SUITS.Y2099,
-    nome: '2099 Suit',
-    descrizione: 'Ciano & Viola futuristico',
-    swatch: ['#d946ef', '#22d3ee']
-  }
+  { id: SUITS.CLASSIC, nome: 'Classic Suit', descrizione: 'Rosso cremisi e blu elettrico', swatch: ['#E23636', '#1D83F0'] },
+  { id: SUITS.SYMBIOTE, nome: 'Symbiote Suit', descrizione: 'Nero e argento, bagliore viola', swatch: ['#cbd5e1', '#8b5cf6'] },
+  { id: SUITS.Y2099, nome: '2099 Suit', descrizione: 'Ciano e magenta futuristici', swatch: ['#d946ef', '#22d3ee'] }
+];
+
+const SECTIONS = [
+  { id: 'cfg-profilo', label: 'Profilo e accesso', icon: 'user' },
+  { id: 'cfg-aspetto', label: 'Aspetto', icon: 'shield' },
+  { id: 'cfg-timer', label: 'Timer', icon: 'clock' },
+  { id: 'cfg-avvisi', label: 'Suoni e notifiche', icon: 'speaker' },
+  { id: 'cfg-calibrazione', label: 'Calibrazione', icon: 'gauge' },
+  { id: 'cfg-backup', label: 'Backup e dati', icon: 'archive' },
+  { id: 'cfg-avanzate', label: 'Avanzate', icon: 'terminal' }
 ];
 
 /**
  * V37.0 — Riassunto leggibile di un profilo importato, mostrato nella
- * conferma. Sostituire l'intero percorso di studi è la singola azione
- * più distruttiva dell'app: il Cadetto deve poter vedere COSA sta per
- * caricare prima di dire sì, non fidarsi del nome del file.
+ * conferma: sostituire l'intero percorso di studi è l'azione più
+ * distruttiva dell'app, si deve vedere COSA si sta per caricare.
  */
 function summarizeProfile(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const materie = Array.isArray(raw.materie) ? raw.materie : [];
   const nodi = materie.reduce((sum, m) => sum + (Array.isArray(m?.sfide) ? m.sfide.length : 0), 0);
-  const sessioni = Array.isArray(raw.starLog)
-    ? raw.starLog.filter((e) => e?.type === 'FOCUS_SESSION').length
-    : 0;
+  const sessioni = Array.isArray(raw.starLog) ? raw.starLog.filter((e) => e?.type === 'FOCUS_SESSION').length : 0;
   return {
     username: raw.profile?.username || 'Cadetto',
     level: raw.profile?.level ?? '—',
@@ -56,8 +61,37 @@ function summarizeProfile(raw) {
   };
 }
 
-/** Toggle Stark-Tech — pillola in vetro tecnologico con perno luminoso, mai un checkbox nativo. */
-function TechSwitch({ checked, onChange, ariaLabel }) {
+/** Scarica un oggetto come file JSON. */
+function downloadJson(data, fileName) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function stampNow(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+
+function formatSnapshotWhen(ms) {
+  const d = new Date(ms);
+  if (!Number.isFinite(d.getTime())) return '—';
+  const oggi = new Date();
+  const ieri = new Date(oggi.getFullYear(), oggi.getMonth(), oggi.getDate() - 1);
+  const ora = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === oggi.toDateString()) return `Oggi, ${ora}`;
+  if (d.toDateString() === ieri.toDateString()) return `Ieri, ${ora}`;
+  return `${d.toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' })}, ${ora}`;
+}
+
+/** Interruttore (role="switch") nello stile dell'app. */
+function Switch({ checked, onChange, ariaLabel, disabled = false }) {
   return (
     <button
       type="button"
@@ -65,26 +99,206 @@ function TechSwitch({ checked, onChange, ariaLabel }) {
       aria-checked={checked}
       aria-label={ariaLabel}
       onClick={onChange}
-      className={`shrink-0 w-14 h-8 rounded-full border transition-all duration-300 relative ${
-        checked ? 'bg-secondary/25 border-secondary/60 shadow-secondary-glow' : 'bg-surface/80 border-white/10'
-      }`}
+      disabled={disabled}
+      className="shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary/60 disabled:opacity-40"
     >
-      <span
-        className={`absolute top-1 w-6 h-6 rounded-full bg-gradient-to-br transition-all duration-300 ${
-          checked ? 'left-7 from-secondary to-secondary-dark' : 'left-1 from-slate-500 to-slate-600'
-        }`}
-      />
+      <span className="ds-switch" data-on={checked ? 'true' : 'false'} />
     </button>
+  );
+}
+
+/** Riga di impostazione: titolo e spiegazione a sinistra, controllo a destra. */
+function SettingRow({ title, description, children, note }) {
+  return (
+    <div className="flex items-start justify-between gap-6 px-5 py-4">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-slate-100">{title}</p>
+        {description && <p className="text-[13px] text-slate-400 mt-0.5 leading-relaxed">{description}</p>}
+        {note}
+      </div>
+      <div className="shrink-0 pt-0.5">{children}</div>
+    </div>
+  );
+}
+
+/** Sezione della pagina, ancorabile dall'indice. */
+function Section({ id, title, subtitle, children, tone }) {
+  return (
+    <section id={id} className="scroll-mt-6 space-y-3" aria-labelledby={`${id}-title`}>
+      <div>
+        <h2 id={`${id}-title`} className={`ds-h2 ${tone || ''}`}>
+          {title}
+        </h2>
+        {subtitle && <p className="text-[13px] text-slate-500 mt-0.5">{subtitle}</p>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function Panel({ children, className = '' }) {
+  return <div className={`${CARD_NOPAD} divide-y divide-white/[0.06] ${className}`}>{children}</div>;
+}
+
+/** Punti di ripristino locali (IndexedDB), vedi utils/localBackups.js. */
+function RestorePoints({ actions, pushToast }) {
+  const supported = backupsSupported();
+  const [snapshots, setSnapshots] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [restoreTarget, setRestoreTarget] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+
+  const refresh = useCallback(async () => {
+    if (!supported) {
+      setSnapshots([]);
+      return;
+    }
+    try {
+      setSnapshots(await actions.listSnapshots());
+    } catch {
+      setSnapshots([]);
+    }
+  }, [actions, supported]);
+
+  useEffect(() => {
+    refresh();
+    // Una copia salvata altrove (quella automatica del giorno, o prima di
+    // un'operazione rischiosa) compare qui senza ricaricare la pagina.
+    window.addEventListener(SNAPSHOTS_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(SNAPSHOTS_CHANGED_EVENT, refresh);
+  }, [refresh]);
+
+  const create = async () => {
+    setBusy(true);
+    const meta = await actions.createSnapshot();
+    setBusy(false);
+    if (meta) pushToast('Punto di ripristino creato su questo dispositivo.', 'success');
+    else pushToast('Non sono riuscita a salvare il punto di ripristino su questo browser.', 'danger');
+    refresh();
+  };
+
+  const download = async (snap) => {
+    const full = await actions.readSnapshot(snap.id);
+    if (!full?.state) {
+      pushToast('Questa copia non è più leggibile.', 'danger');
+      return;
+    }
+    downloadJson(full.state, `arachnoforge-ripristino-${stampNow(new Date(snap.createdAt))}.json`);
+  };
+
+  const restore = async () => {
+    const snap = restoreTarget;
+    setRestoreTarget(null);
+    if (!snap) return;
+    setBusy(true);
+    const full = await actions.readSnapshot(snap.id);
+    const result = full?.state ? await actions.restoreSnapshot(full.state) : { valid: false, reason: 'Copia non leggibile.' };
+    setBusy(false);
+    if (result.valid) pushToast(`Profilo ripristinato a: ${formatSnapshotWhen(snap.createdAt)}. Lo stato di prima è salvato fra i punti di ripristino.`, 'success');
+    else pushToast(`Ripristino non riuscito: ${result.reason || 'copia non valida'}.`, 'danger');
+    refresh();
+  };
+
+  const remove = async () => {
+    const snap = deleteTarget;
+    setDeleteTarget(null);
+    if (!snap) return;
+    await actions.deleteSnapshot(snap.id);
+    refresh();
+  };
+
+  return (
+    <Panel>
+      <div className="flex items-start justify-between gap-4 px-5 py-4">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-slate-100">Punti di ripristino automatici</p>
+          <p className="text-[13px] text-slate-400 mt-0.5 leading-relaxed">
+            Una copia al giorno (le ultime {AUTO_KEEP}) e una prima di ogni operazione rischiosa: import, reset, conflitto
+            fra dispositivi, eliminazione di una materia (le ultime {SAFETY_KEEP}). Restano su questo dispositivo.
+          </p>
+        </div>
+        <button type="button" onClick={create} disabled={!supported || busy} className={`${BTN_GHOST} ds-btn-sm shrink-0`}>
+          <Icon name="plus" className="w-3.5 h-3.5" />
+          Crea ora
+        </button>
+      </div>
+
+      {!supported ? (
+        <p className="px-5 py-4 text-[13px] text-accent">
+          Questo browser non permette di salvare copie locali (per esempio in navigazione privata). Usa l'esportazione
+          manuale qui sotto.
+        </p>
+      ) : snapshots === null ? (
+        <p className="px-5 py-4 text-[13px] text-slate-500">Carico l'elenco…</p>
+      ) : snapshots.length === 0 ? (
+        <p className="px-5 py-4 text-[13px] text-slate-500">Nessuna copia ancora: la prima arriva da sola al prossimo avvio della giornata.</p>
+      ) : (
+        <ul className="max-h-[420px] overflow-y-auto af-scroll">
+          {snapshots.map((snap) => (
+            <li key={snap.id} className="flex items-center gap-3 px-5 py-3 border-t border-white/[0.06] first:border-t-0">
+              <span className="ds-icon-tile !w-8 !h-8 text-slate-400 shrink-0">
+                <Icon name={snap.reason === 'auto' ? 'history' : snap.reason === 'manual' ? 'archive' : 'shield'} className="w-4 h-4" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13.5px] text-slate-100">
+                  {formatSnapshotWhen(snap.createdAt)}
+                  <span className="text-slate-500"> · {SNAPSHOT_REASON_LABEL[snap.reason] || 'Copia'}</span>
+                  {snap.label && <span className="text-slate-500"> · {snap.label}</span>}
+                </p>
+                <p className="text-xs text-slate-500 ds-num">
+                  Lv {snap.summary?.level ?? '—'} · {snap.summary?.materie ?? 0} materie · {snap.summary?.nodi ?? 0} argomenti ·{' '}
+                  {minutiLabel(snap.summary?.minutiFocus ?? 0)} di Focus · {formatDecimal((snap.bytes || 0) / 1024, 0)} KB
+                </p>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button type="button" onClick={() => setRestoreTarget(snap)} disabled={busy} className="ds-btn ds-btn-ghost ds-btn-sm">
+                  <Icon name="undo" className="w-3.5 h-3.5" />
+                  Ripristina
+                </button>
+                <button type="button" onClick={() => download(snap)} className="ds-icon-btn !w-8 !h-8" aria-label="Scarica questa copia" title="Scarica come file">
+                  <Icon name="download" className="w-4 h-4" />
+                </button>
+                <button type="button" onClick={() => setDeleteTarget(snap)} className="ds-icon-btn !w-8 !h-8 hover:!text-primary" aria-label="Elimina questa copia" title="Elimina">
+                  <Icon name="trash" className="w-4 h-4" />
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <ConfirmDialog
+        open={!!restoreTarget}
+        onClose={() => setRestoreTarget(null)}
+        onConfirm={restore}
+        title="Ripristinare questa copia?"
+        message={
+          restoreTarget
+            ? `Il profilo torna com'era: ${formatSnapshotWhen(restoreTarget.createdAt)} (${restoreTarget.summary?.materie ?? 0} materie, ${restoreTarget.summary?.nodi ?? 0} argomenti). Lo stato di adesso viene salvato prima come punto di ripristino, quindi puoi sempre tornare indietro.`
+            : ''
+        }
+        confirmLabel="Ripristina"
+        danger={false}
+      />
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={remove}
+        title="Eliminare questa copia?"
+        message="Il punto di ripristino viene cancellato da questo dispositivo. Il profilo attuale non cambia."
+        confirmLabel="Elimina"
+      />
+    </Panel>
   );
 }
 
 export default function CoreConfig() {
   const { state, actions, storageMode, pushToast, derived } = useArachnoForge();
+  const { user, isGuest } = useAuthContext();
 
-  // V36.0 — stato del permesso notifiche, letto dal browser (unica fonte
-  // di verità: `settings.systemNotifications` può restare `true` da una
-  // sessione precedente mentre il permesso è stato nel frattempo revocato,
-  // e in quel caso l'interruttore deve mostrarsi spento, non mentire).
+  // V36.0 — il permesso notifiche si legge dal browser (unica fonte di
+  // verità): l'impostazione salvata può essere "sì" con il permesso nel
+  // frattempo revocato, e l'interruttore non deve mentire.
   const [notifyPermission, setNotifyPermission] = useState(notificationPermission);
 
   const handleToggleNotifications = async () => {
@@ -94,9 +308,7 @@ export default function CoreConfig() {
       return;
     }
     let permission = notificationPermission();
-    if (permission === NOTIFY_PERMISSION.DEFAULT) {
-      permission = await requestNotificationPermission();
-    }
+    if (permission === NOTIFY_PERMISSION.DEFAULT) permission = await requestNotificationPermission();
     setNotifyPermission(permission);
     if (permission === NOTIFY_PERMISSION.GRANTED) {
       actions.updateSettings({ systemNotifications: true });
@@ -108,24 +320,21 @@ export default function CoreConfig() {
       pushToast('Questo browser non supporta le notifiche di sistema.', 'info');
     }
   };
-  const { user, isGuest } = useAuthContext();
+
   const [focusTime, setFocusTime] = useState(state.settings.focusTime);
   const [shortBreakTime, setShortBreakTime] = useState(state.settings.shortBreakTime);
   const [longBreakTime, setLongBreakTime] = useState(state.settings.longBreakTime);
   const [username, setUsername] = useState(state.profile.username);
   const [importMessage, setImportMessage] = useState(null);
-  // V37.0 — l'import passa da una conferma esplicita: qui vive il file
-  // già letto e validato, in attesa che il Cadetto dica sì.
+  // V37.0 — l'import passa da una conferma esplicita con il riepilogo del file.
   const [pendingImport, setPendingImport] = useState(null);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const fileInputRef = useRef(null);
+  const [activeSection, setActiveSection] = useState(SECTIONS[0].id);
 
-  // V33.0 — "Aesthetic Level-Up": shake tattile (stesso af-screen-shake
-  // della Boss Fight) sulla card di una Spider-Suit ancora bloccata al
-  // click, invece del solo toast informativo — un "no" fisico, non solo
-  // testuale. Un solo id alla volta: click ripetuti sulla stessa card
-  // ri-innescano lo shake pulendo prima il timeout precedente.
+  // V33.0 — "no" fisico sulla card di una Spider-Suit ancora bloccata.
   const [shakingSuitId, setShakingSuitId] = useState(null);
   const shakeTimeoutRef = useRef(null);
   const triggerSuitShake = (suitId) => {
@@ -133,28 +342,20 @@ export default function CoreConfig() {
     setShakingSuitId(suitId);
     shakeTimeoutRef.current = setTimeout(() => setShakingSuitId(null), 400);
   };
-  useEffect(() => () => {
-    if (shakeTimeoutRef.current) clearTimeout(shakeTimeoutRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (shakeTimeoutRef.current) clearTimeout(shakeTimeoutRef.current);
+    },
+    []
+  );
 
-  // V28.1 — Pillar 2 (Admin Override): campo passphrase locale al form,
-  // MAI persistito nello stato applicativo — validato al click, non ad
-  // ogni keystroke (nessun feedback prematuro "password sbagliata" mentre
-  // l'utente sta ancora digitando).
+  // V28.1 — passphrase dell'override Admin: mai persistita, validata al clic.
   const [adminPassword, setAdminPassword] = useState('');
   const [adminError, setAdminError] = useState(null);
   const isSandboxActive = storageMode === 'sandbox';
   const passphraseConfigured = isAdminPassphraseConfigured();
 
-  // V28.2 — FIX 1 (Hardcoded Admin Override): confronto blindato, pulito
-  // ed esplicito, eseguito qui SOLO come primo controllo di UX (messaggio
-  // d'errore immediato) — la vera fonte di verità resta comunque
-  // `validateAdminPassphrase` in utils/adminOverride.js (mai duplicare la
-  // logica di confronto). CRITICO: il passaggio precedente chiamava
-  // `actions.activateSandbox()` SENZA la password — il Context la
-  // rivalidava internamente su `undefined` e falliva SEMPRE, anche a
-  // passphrase corretta. Ora il valore trimmato viene propagato fino in
-  // fondo alla catena, cosi' l'override scatta senza se e senza ma.
+  // V28.2 — il valore ripulito arriva fino all'azione (prima veniva perso).
   const handleActivateSandbox = () => {
     const cleaned = adminPassword.trim();
     if (validateAdminPassphrase(cleaned)) {
@@ -164,30 +365,22 @@ export default function CoreConfig() {
     } else {
       setAdminError(
         passphraseConfigured
-          ? 'Karen: passphrase di override non riconosciuta. Accesso Admin negato.'
-          : 'Karen: nessuna passphrase configurata. Aggiungi ?sandbox=1 all\'indirizzo per attivare la Sandbox.'
+          ? 'Passphrase di override non riconosciuta.'
+          : "Nessuna passphrase configurata: aggiungi ?sandbox=1 all'indirizzo per attivare la Sandbox."
       );
     }
   };
 
-  // V28.1 — Pillar 1 (UI Reorganization): il Combat Log lascia la Home e
-  // trova posto qui, in una sezione dedicata e collassata di default —
-  // "pulita" significa anche non forzare log tecnici sott'occhio finché
-  // non li si cerca esplicitamente.
   const [logsOpen, setLogsOpen] = useState(false);
 
-  // V39 — le copie locali dei campi si riallineano quando lo stato cambia
-  // da fuori (sincronizzazione Cloud, import di un backup, reset). Prima
-  // restavano ai valori di quando la pagina era stata aperta, e il primo
-  // onBlur riscriveva quei valori vecchi SOPRA quelli appena importati.
+  // V39 — le copie locali dei campi seguono lo stato quando cambia da fuori
+  // (sincronizzazione, import, reset).
   useEffect(() => setFocusTime(state.settings.focusTime), [state.settings.focusTime]);
   useEffect(() => setShortBreakTime(state.settings.shortBreakTime), [state.settings.shortBreakTime]);
   useEffect(() => setLongBreakTime(state.settings.longBreakTime), [state.settings.longBreakTime]);
   useEffect(() => setUsername(state.profile.username), [state.profile.username]);
 
-  // Salva solo i campi davvero cambiati, e con un limite sensato (1–180
-  // minuti): un "0" o un "9999" digitato per sbaglio non deve arrivare
-  // al timer.
+  // Solo i campi cambiati, e fra 1 e 180 minuti.
   const clampMinutes = (v, fallback) => {
     const n = Math.round(Number(v));
     if (!Number.isFinite(n) || n < 1) return Math.max(1, Number(fallback) || 1);
@@ -206,7 +399,10 @@ export default function CoreConfig() {
     setFocusTime(next.focusTime);
     setShortBreakTime(next.shortBreakTime);
     setLongBreakTime(next.longBreakTime);
-    if (Object.keys(patch).length > 0) actions.updateSettings(patch);
+    if (Object.keys(patch).length > 0) {
+      actions.updateSettings(patch);
+      pushToast('Timer aggiornato.', 'success', { duration: 2000 });
+    }
   };
 
   const commitUsername = () => {
@@ -218,30 +414,15 @@ export default function CoreConfig() {
     if (clean !== state.profile.username) actions.updateProfile({ username: clean });
   };
 
-  // V37.0 — `silent` per i backup automatici (pre-import / pre-reset):
-  // scaricano il file ma non toccano `lastExportDateKey`, che deve
-  // continuare a misurare i backup VOLUTI dal Cadetto, non quelli che
-  // l'app fa per conto proprio.
+  // V37.0 — `silent`: le copie automatiche (pre-import/pre-reset) non
+  // aggiornano la data dell'ultimo backup VOLUTO.
   const exportProfile = ({ silent = false, prefix = 'arachnoforge-profile' } = {}) => {
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
     const stamp = new Date().toISOString().slice(0, 10);
-    a.href = url;
-    a.download = `${prefix}-${stamp}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadJson(state, `${prefix}-${stamp}.json`);
     if (silent) return;
-    // V36.0 — traccia la data dell'ultimo backup reale. L'intero percorso
-    // di studi vive in un'unica riga `user_data.app_state`: un export
-    // dimenticato per mesi è l'unico modo in cui questi dati possono
-    // davvero sparire, e finora nulla lo ricordava mai.
     actions.updateSettings({ lastExportDateKey: stamp });
   };
 
-  // Giorni dall'ultimo export — `null` se non ne è mai stato fatto uno.
   const daysSinceExport = (() => {
     const last = state.settings.lastExportDateKey;
     if (typeof last !== 'string') return null;
@@ -250,22 +431,14 @@ export default function CoreConfig() {
   })();
   const backupStale = daysSinceExport == null || daysSinceExport >= 14;
 
-  /**
-   * V32.0 — Export ICS: le date d'esame già presenti sulle Materie del
-   * Web-Matrix (`materia.examDate`, formato YYYY-MM-DD) diventano un file
-   * .ics standard RFC 5545, importabile in Google Calendar/Apple
-   * Calendar/Outlook. Eventi "giornata intera" (VALUE=DATE, nessun
-   * DTEND — per specifica RFC 5545 un evento DATE senza DTEND dura
-   * esattamente un giorno). Nessuna dipendenza esterna: stringa
-   * costruita a mano, stesso pattern già in uso per l'Export Profilo JSON
-   * qui sopra (Blob + link temporaneo, mai un round-trip di rete).
-   */
+  /** V32.0 — date d'esame in un file .ics (RFC 5545), per Google/Apple/Outlook. */
   const escapeIcsText = (text) => String(text).replace(/[\\;,]/g, (m) => `\\${m}`).replace(/\n/g, '\\n');
-
   const exportExamDatesIcs = () => {
-    const materieConData = state.materie.filter((m) => m && typeof m.examDate === 'string' && m.examDate.length === 10);
+    const materieConData = (Array.isArray(state.materie) ? state.materie : []).filter(
+      (m) => m && typeof m.examDate === 'string' && m.examDate.length === 10
+    );
     if (materieConData.length === 0) {
-      pushToast?.('Karen: nessuna data d\'esame impostata sulle Materie del Web-Matrix.', 'info');
+      pushToast("Nessuna data d'esame impostata sulle materie del Web-Matrix.", 'info');
       return;
     }
     const stampUtc = `${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z`;
@@ -285,26 +458,18 @@ export default function CoreConfig() {
     const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    const stamp = new Date().toISOString().slice(0, 10);
     a.href = url;
-    a.download = `arachnoforge-esami-${stamp}.ics`;
+    a.download = `arachnoforge-esami-${new Date().toISOString().slice(0, 10)}.ics`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    pushToast(`${materieConData.length === 1 ? '1 data d’esame esportata' : `${materieConData.length} date d’esame esportate`} nel file .ics.`, 'success');
   };
 
   const handleImportClick = () => fileInputRef.current?.click();
 
-  /**
-   * V37.0 — L'import sovrascriveva l'INTERO profilo all'istante, appena
-   * scelto il file: nessuna conferma, nessuna rete di sicurezza, e
-   * l'autosave propagava il tutto sul Cloud entro 2,5 secondi. Un click
-   * sbagliato nel file picker cancellava anni di dati.
-   * Ora il file viene letto e VALIDATO, ma l'applicazione avviene solo
-   * dopo una conferma esplicita che mostra cosa si sta per caricare — e
-   * il profilo corrente viene scaricato automaticamente prima.
-   */
+  // V37.0 — il file viene letto e VALIDATO, poi serve una conferma esplicita.
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -330,666 +495,607 @@ export default function CoreConfig() {
 
   const confirmImport = () => {
     if (!pendingImport) return;
-    // Rete di sicurezza: una copia dello stato attuale finisce nei
-    // Download PRIMA di essere sostituita. Se l'import si rivela
-    // sbagliato, il ritorno indietro è un secondo import.
+    // Rete di sicurezza: il profilo attuale finisce nei Download (e nei
+    // punti di ripristino, vedi l'azione) PRIMA di essere sostituito.
     exportProfile({ silent: true, prefix: 'arachnoforge-backup-pre-import' });
     const result = actions.importProfile(pendingImport.data);
     setImportMessage(
       result.valid
-        ? { type: 'success', text: 'Profilo importato. Una copia del profilo precedente è nei tuoi Download.' }
+        ? { type: 'success', text: 'Profilo importato. Il profilo precedente è nei tuoi Download e fra i punti di ripristino.' }
         : { type: 'error', text: result.reason }
     );
     setPendingImport(null);
   };
 
   const confirmReset = () => {
-    // Stessa rete di sicurezza del punto sopra: "irreversibile" non deve
-    // voler dire "senza nemmeno una copia".
     exportProfile({ silent: true, prefix: 'arachnoforge-backup-pre-reset' });
     actions.resetProfile();
-    pushToast?.('Reset eseguito. Una copia del profilo precedente è nei tuoi Download.', 'info');
+    pushToast('Reset eseguito. Il profilo precedente è nei tuoi Download e fra i punti di ripristino.', 'info');
   };
 
+  const scrollTo = (id) => {
+    setActiveSection(id);
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  // V41 — "Backup" dalla palette comandi (Ctrl K).
+  useIntent(INTENT.SETTINGS_BACKUP, () => setTimeout(() => scrollTo('cfg-backup'), 60));
+
+  // Indice: evidenzia la sezione che si sta leggendo.
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return undefined;
+    const els = SECTIONS.map((s) => document.getElementById(s.id)).filter(Boolean);
+    const io = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.filter((e) => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible[0]) setActiveSection(visible[0].target.id);
+      },
+      { rootMargin: '-15% 0px -70% 0px', threshold: 0 }
+    );
+    els.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, []);
+
+  const cal = derived.calibration;
+  const detailedFrom = oldestDetailedMonth(state.starLog);
+  const combatLog = Array.isArray(state.combatLog) ? state.combatLog : [];
+
   return (
-    <div className="space-y-8 max-w-2xl">
-      <div>
-        <h1 className={H1}>Karen OS Settings</h1>
-        <p className="text-base text-slate-400 mt-1.5">Karen: pannello di controllo del sistema. Timer, Aspetto e Data Ledger — schema v{SCHEMA_VERSION}.</p>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Impostazioni"
+        icon="chip"
+        title="Karen OS Settings"
+        subtitle="Profilo, aspetto, timer, avvisi e dati. Le modifiche si applicano subito."
+        actions={<span className={BADGE.slate}>Schema v{SCHEMA_VERSION}</span>}
+      />
 
-      <section className={`${CARD} space-y-4`}>
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="target" className="w-5 h-5 text-secondary" />
-          PROFILO
-        </h2>
-        <div className="relative">
-          <label htmlFor="cfg-username" className="text-base text-slate-400 block mb-1.5">Nome Cadetto</label>
-          <input
-            id="cfg-username"
-            type="text"
-            maxLength={40}
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            onBlur={commitUsername}
-            className={INPUT}
-          />
-        </div>
-      </section>
-
-      {/* V26.0 — Pillar 2 (Authentication Logic): sessione Nexus + Logout.
-          V28.1: consapevole anche della Modalità Ospite (dati locali, mai
-          sul Cloud) e della Sandbox Admin attiva. */}
-      <section className={`${CARD} space-y-4`}>
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name={isGuest ? 'user' : 'cloud'} className="w-5 h-5 text-secondary" />
-          SESSIONE NEXUS
-        </h2>
-        <div className="relative flex items-center justify-between flex-wrap gap-3">
-          <div>
-            <p className="text-base text-slate-400">{isGuest ? 'Modalità Ospite (dati locali)' : 'Identità autenticata'}</p>
-            <p className="text-base font-mono text-slate-200 mt-0.5">{isGuest ? 'ospite@arachnoforge.local' : (user?.email || '—')}</p>
-            {isSandboxActive && (
-              <span className="inline-flex items-center gap-1.5 mt-2 rounded-full border border-fuchsia-400/50 bg-fuchsia-500/10 text-fuchsia-300 px-2.5 py-0.5 text-[11px] font-mono">
-                <Icon name="chip" className="w-3.5 h-3.5" />
-                SANDBOX ADMIN ATTIVA
-              </span>
-            )}
-          </div>
-          <button type="button" onClick={() => setLogoutConfirmOpen(true)} className={BTN_SECONDARY}>
-            <Icon name="logout" className="w-5 h-5" />
-            {isGuest ? 'Esci dalla Modalità Ospite' : 'Disconnetti dal Nexus'}
-          </button>
-        </div>
-        <p className="relative text-xs text-slate-500 leading-relaxed">
-          {isGuest
-            ? 'I tuoi dati restano esclusivamente su questo browser — nessuna sincronizzazione Cloud. Esci e crea un account dal Nexus Gate per portarli con te su altri dispositivi.'
-            : isSandboxActive
-            ? 'Sandbox Admin attiva: le modifiche restano isolate in locale e NON toccano il tuo profilo Cloud reale — vedi la sezione Override di Sistema qui sotto per disattivarla.'
-            : 'Il tuo profilo resta salvato sul Cloud (Supabase) — puoi accedere di nuovo da qualsiasi dispositivo con le stesse credenziali.'}
-        </p>
-      </section>
-
-      {/* V28.1 — Pillar 2: Override di Sistema / Modalità Admin (Sandbox).
-          Invisibile in Modalità Ospite (che è già interamente locale — una
-          sandbox dentro una sandbox non avrebbe senso). Passphrase validata
-          SOLO al click (mai ad ogni keystroke), un solo punto di verifica
-          in `utils/adminOverride.js` — nessuna logica di confronto duplicata. */}
-      {!isGuest && (
-        <section className={isSandboxActive ? `${CARD_ALERT} space-y-4` : `${CARD} space-y-4`}>
-          <h2 className={`${H2} flex items-center gap-2`}>
-            <Icon name="chip" className="w-5 h-5 text-primary" />
-            OVERRIDE DI SISTEMA — MODALITÀ ADMIN (SANDBOX)
-          </h2>
-          <p className="relative text-sm text-slate-400 leading-relaxed">
-            Attiva un profilo di test completamente isolato (storage locale dedicato, mai il Cloud): sperimenta liberamente
-            senza alcun rischio per il tuo profilo reale. Disattivabile in qualsiasi momento.
-          </p>
-
-          {/* V37.0 — la passphrase non è più compilata nel sorgente ma
-              letta da VITE_ADMIN_PASSPHRASE. Quando non è configurata lo
-              si dice apertamente, invece di mostrare un campo che non
-              accetterà mai nulla. */}
-          {!passphraseConfigured && (
-            <div className="relative bg-secondary/10 border border-secondary/30 rounded-xl px-4 py-3 flex items-start gap-2.5">
-              <Icon name="chip" className="w-4 h-4 text-secondary shrink-0 mt-0.5" />
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Nessuna passphrase configurata (<span className="font-mono text-slate-300">VITE_ADMIN_PASSPHRASE</span>).
-                La Sandbox resta raggiungibile aggiungendo <span className="font-mono text-slate-300">?sandbox=1</span>{' '}
-                all'indirizzo dell'app e premendo qui sotto.
-              </p>
-            </div>
-          )}
-
-          {!isSandboxActive ? (
-            <div className="relative space-y-3">
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-                <input
-                  type="password"
-                  value={adminPassword}
-                  onChange={(e) => {
-                    setAdminPassword(e.target.value);
-                    if (adminError) setAdminError(null);
-                  }}
-                  onKeyDown={(e) => e.key === 'Enter' && handleActivateSandbox()}
-                  placeholder={passphraseConfigured ? 'Passphrase Override Admin' : 'Nessuna passphrase richiesta'}
-                  disabled={!passphraseConfigured}
-                  autoComplete="off"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck="false"
-                  className={`${INPUT} flex-1 disabled:opacity-40`}
-                />
+      {/* V41 — l'indice laterale compare da 1200 px: sotto, con la barra
+          laterale dell'app già aperta, toglieva troppo spazio alle righe. */}
+      <div className="grid grid-cols-1 min-[1200px]:grid-cols-[210px_minmax(0,1fr)] gap-8 items-start">
+        {/* Indice delle sezioni (PC). */}
+        <nav className="hidden min-[1200px]:block sticky top-4" aria-label="Sezioni delle impostazioni">
+          <ul className="space-y-0.5">
+            {SECTIONS.map((s) => (
+              <li key={s.id}>
                 <button
                   type="button"
-                  onClick={handleActivateSandbox}
-                  disabled={passphraseConfigured && !adminPassword}
-                  className={BTN_PRIMARY}
+                  onClick={() => scrollTo(s.id)}
+                  aria-current={activeSection === s.id ? 'true' : undefined}
+                  className={`w-full flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-left transition-colors ${
+                    activeSection === s.id ? 'bg-panel-2 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]'
+                  }`}
                 >
-                  <Icon name="lock" className="w-5 h-5" />
-                  Attiva Sandbox
+                  <Icon name={s.icon} className="w-4 h-4 shrink-0" />
+                  {s.label}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </nav>
+
+        <div className="min-w-0 max-w-3xl space-y-10">
+          {/* ------------------------------------------------ PROFILO */}
+          <Section id="cfg-profilo" title="Profilo e accesso">
+            <Panel>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-100">Nome</p>
+                  <p className="text-[13px] text-slate-400 mt-0.5">Come ti chiama Karen, nella barra laterale e nei briefing.</p>
+                </div>
+                <input
+                  id="cfg-username"
+                  type="text"
+                  maxLength={40}
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  onBlur={commitUsername}
+                  onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+                  className={`${INPUT} sm:!w-64`}
+                  aria-label="Nome"
+                />
+              </div>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-100 flex items-center gap-2 flex-wrap">
+                    {isGuest ? 'Modalità Ospite' : 'Account'}
+                    {isSandboxActive && <span className={BADGE.violet}>Sandbox Admin attiva</span>}
+                  </p>
+                  <p className="text-[13px] text-slate-400 mt-0.5 break-all">
+                    {isGuest ? 'Dati solo su questo browser, nessuna sincronizzazione.' : user?.email || '—'}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                    {isGuest
+                      ? 'Esci e crea un account dal Nexus Gate per portare i dati su altri dispositivi.'
+                      : isSandboxActive
+                      ? 'Le modifiche restano isolate in locale e non toccano il profilo Cloud reale.'
+                      : 'Il profilo è salvato sul Cloud: accedi da qualsiasi dispositivo con le stesse credenziali.'}
+                  </p>
+                </div>
+                <button type="button" onClick={() => setLogoutConfirmOpen(true)} className={`${BTN_GHOST} shrink-0`}>
+                  <Icon name="logout" className="w-4 h-4" />
+                  {isGuest ? 'Esci dalla Modalità Ospite' : 'Esci'}
                 </button>
               </div>
-              {adminError && (
-                <p className="relative text-xs text-primary flex items-center gap-1.5">
-                  <Icon name="alertTriangle" className="w-4 h-4 shrink-0" />
-                  {adminError}
-                </p>
-              )}
-            </div>
-          ) : (
-            <div className="relative flex items-center justify-between flex-wrap gap-3">
-              <p className="text-sm text-fuchsia-300 flex items-center gap-2">
-                <Icon name="chip" className="w-4 h-4" />
-                Protocollo Admin Attivato — Sandbox in uso.
-              </p>
-              <button type="button" onClick={actions.deactivateSandbox} className={BTN_GHOST}>
-                <Icon name="logout" className="w-5 h-5" />
-                Torna al Profilo Standard
-              </button>
-            </div>
-          )}
-        </section>
-      )}
-
-      <section className={`${CARD} space-y-4`}>
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="shield" className="w-5 h-5 text-primary" />
-          SPIDER-SUIT
-        </h2>
-        <div className="relative grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {SUIT_OPTIONS.map((suit) => {
-            const active = state.settings.suit === suit.id;
-            // V32.0 — Sblocco Tute: la Classic è sempre disponibile; Symbiote si
-            // sblocca attivando almeno una volta Maximum Carnage Mode; 2099 al
-            // raggiungimento del Livello 50. Grandfathering: se la tuta risulta
-            // già attiva nelle impostazioni correnti, non viene mai bloccata
-            // retroattivamente (evita di "rubare" una tuta già in uso a un
-            // profilo esistente in caso di dati storici incompleti).
-            let locked = false;
-            let lockReason = '';
-            if (suit.id === SUITS.SYMBIOTE) {
-              locked = !active && state.profile.symbioteSuitUnlocked !== true;
-              lockReason = 'Sblocca la Symbiote Suit attivando almeno una volta il Maximum Carnage Mode (5 azioni critiche di fila).';
-            } else if (suit.id === SUITS.Y2099) {
-              locked = !active && (state.profile.level || 1) < 50;
-              lockReason = 'Sblocca la 2099 Suit raggiungendo il Livello 50 — Difensore del Multiverso.';
-            }
-            return (
-              <button
-                key={suit.id}
-                type="button"
-                onClick={() => {
-                  if (locked) {
-                    pushToast?.(lockReason, 'info');
-                    triggerSuitShake(suit.id);
-                    return;
-                  }
-                  actions.updateSettings({ suit: suit.id });
-                }}
-                className={`text-left p-4 rounded-2xl border transition-all duration-300 backdrop-blur-md ${
-                  shakingSuitId === suit.id ? 'af-locked-shake' : ''
-                } ${
-                  active
-                    ? 'border-secondary/60 bg-secondary/10 shadow-secondary-glow'
-                    : locked
-                    ? 'border-white/5 bg-white/[0.01] opacity-60 hover:border-white/10'
-                    : 'border-white/10 bg-white/[0.02] hover:border-secondary/30'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex gap-1.5">
-                    {suit.swatch.map((color, i) => (
-                      <span key={i} className="w-6 h-6 rounded-full border border-white/20 shadow-[0_0_8px_rgba(255,255,255,0.15)]" style={{ backgroundColor: color, filter: locked ? 'grayscale(0.6)' : 'none' }} />
-                    ))}
+              {/* V41 — cambio password senza passare dalla dashboard di Supabase. */}
+              {!isGuest && (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-100">Password</p>
+                    <p className="text-[13px] text-slate-400 mt-0.5">
+                      Vale per tutti i dispositivi. Se la dimentichi, «Password dimenticata?» nella schermata di accesso ti manda un link.
+                    </p>
                   </div>
-                  {locked && <Icon name="lock" className="w-4 h-4 text-slate-500" />}
+                  <button type="button" onClick={() => setPasswordOpen(true)} className={`${BTN_GHOST} shrink-0`}>
+                    <Icon name="lock" className="w-4 h-4" />
+                    Cambia password
+                  </button>
                 </div>
-                <p className="text-base font-semibold text-slate-100">{suit.nome}</p>
-                <p className="text-base text-slate-500 mt-0.5">{suit.descrizione}</p>
-                {active && <p className="text-[11px] text-secondary mt-2 font-mono">ATTIVA</p>}
-                {locked && <p className="text-[11px] text-slate-500 mt-2 font-mono">BLOCCATA</p>}
-              </button>
-            );
-          })}
-        </div>
-      </section>
+              )}
+            </Panel>
+          </Section>
 
-      <section className={`${CARD} space-y-3`}>
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="eye" className="w-5 h-5 text-secondary" />
-          SENSORY ZERO — MODALITÀ A BASSO STIMOLO
-        </h2>
-        <div className="relative flex items-center justify-between gap-4">
-          <p className="text-base text-slate-400 leading-relaxed">
-            Disattiva screen-shake, flash e animazioni intense (Sinister Six Simulator, Fatigue UI) per una concentrazione pulita, priva di sovraccarichi sensoriali.
-          </p>
-          <TechSwitch
-            checked={state.settings.calmMode}
-            onChange={() => actions.updateSettings({ calmMode: !state.settings.calmMode })}
-            ariaLabel="Sensory Zero"
-          />
-        </div>
-      </section>
+          {/* ------------------------------------------------ ASPETTO */}
+          <Section id="cfg-aspetto" title="Aspetto" subtitle="Il costume cambia i colori di tutta l'app; gli interruttori, quanto si muove.">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {SUIT_OPTIONS.map((suit) => {
+                const active = state.settings.suit === suit.id;
+                // V32.0 — Classic sempre disponibile; Symbiote dopo il primo
+                // Maximum Carnage; 2099 al Livello 50. Una tuta già in uso non
+                // viene mai bloccata a posteriori.
+                let locked = false;
+                let lockReason = '';
+                if (suit.id === SUITS.SYMBIOTE) {
+                  locked = !active && state.profile.symbioteSuitUnlocked !== true;
+                  lockReason = 'Si sblocca attivando almeno una volta il Maximum Carnage Mode (5 azioni critiche di fila).';
+                } else if (suit.id === SUITS.Y2099) {
+                  locked = !active && (state.profile.level || 1) < 50;
+                  lockReason = 'Si sblocca al Livello 50, Difensore del Multiverso.';
+                }
+                return (
+                  <button
+                    key={suit.id}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => {
+                      if (locked) {
+                        pushToast(lockReason, 'info');
+                        triggerSuitShake(suit.id);
+                        return;
+                      }
+                      actions.updateSettings({ suit: suit.id });
+                    }}
+                    className={`text-left p-4 rounded-[var(--af-radius-card)] border transition-colors ${shakingSuitId === suit.id ? 'af-locked-shake' : ''} ${
+                      active ? 'border-secondary/60 bg-secondary/[0.07]' : locked ? 'border-line bg-panel opacity-60' : 'border-line bg-panel hover:border-line-strong'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex -space-x-1.5">
+                        {suit.swatch.map((color, i) => (
+                          <span
+                            key={i}
+                            className="w-6 h-6 rounded-full border-2 border-panel"
+                            style={{ backgroundColor: color, filter: locked ? 'grayscale(0.7)' : 'none' }}
+                          />
+                        ))}
+                      </div>
+                      {active ? (
+                        <span className={BADGE.blue}>
+                          <Icon name="check" className="w-3 h-3" />
+                          In uso
+                        </span>
+                      ) : locked ? (
+                        <Icon name="lock" className="w-4 h-4 text-slate-500" />
+                      ) : null}
+                    </div>
+                    <p className="text-sm font-semibold text-slate-100">{suit.nome}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">{locked ? lockReason : suit.descrizione}</p>
+                  </button>
+                );
+              })}
+            </div>
+            <Panel>
+              <SettingRow
+                title="Sensory Zero · basso stimolo"
+                description="Niente screen-shake, flash e animazioni intense (Sinister Six, interfaccia di fatica): solo concentrazione."
+              >
+                <Switch checked={!!state.settings.calmMode} onChange={() => actions.updateSettings({ calmMode: !state.settings.calmMode })} ariaLabel="Sensory Zero" />
+              </SettingRow>
+              <SettingRow
+                title="Effetti pesanti"
+                description="Sfocature, particelle e interferenza. Spegnili su computer o telefoni meno recenti: l'informazione resta identica."
+              >
+                <Switch
+                  checked={state.settings.heavyEffects !== false}
+                  onChange={() => actions.updateSettings({ heavyEffects: state.settings.heavyEffects === false })}
+                  ariaLabel="Effetti pesanti"
+                />
+              </SettingRow>
+              <SettingRow
+                title="Una cosa alla volta"
+                description="Lo Stark-Web Terminal si apre sulla decisione del momento: il briefing di Karen e la quota di oggi restano chiusi, a un clic da «Briefing e quota». La Daily Patrol resta sempre in vista."
+              >
+                <Switch
+                  checked={state.settings.focusFirstHome !== false}
+                  onChange={() => actions.updateSettings({ focusFirstHome: state.settings.focusFirstHome === false })}
+                  ariaLabel="Una cosa alla volta"
+                />
+              </SettingRow>
+            </Panel>
+          </Section>
 
-      <section className={`${CARD} space-y-3`}>
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="speaker" className="w-5 h-5 text-secondary" />
-          EFFETTI SONORI
-        </h2>
-        <div className="relative flex items-center justify-between gap-4">
-          <p className="text-base text-slate-400 leading-relaxed">
-            Karen: Sensory Web Audio Engine attivo. Fine blocco e fine pausa, Web-Click, Hover Blip, Penalty Buzzer,
-            Level Up Chime, Success Chime e Goblin Alert — tutto sintetizzato al volo via Web Audio API, nessun file
-            esterno. Disattivato automaticamente quando Sensory Zero è attivo.
-          </p>
-          <TechSwitch
-            checked={state.settings.soundEffects !== false}
-            onChange={() => actions.updateSettings({ soundEffects: state.settings.soundEffects === false })}
-            ariaLabel="Effetti sonori"
-          />
-        </div>
+          {/* ------------------------------------------------ TIMER */}
+          <Section id="cfg-timer" title="Timer" subtitle="Durate predefinite dei blocchi, da 1 a 180 minuti.">
+            <Panel>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 px-5 py-4">
+                {[
+                  { id: 'cfg-focus-time', label: 'Focus', value: focusTime, set: setFocusTime },
+                  { id: 'cfg-short-break', label: 'Pausa breve', value: shortBreakTime, set: setShortBreakTime },
+                  { id: 'cfg-long-break', label: 'Pausa lunga', value: longBreakTime, set: setLongBreakTime }
+                ].map((f) => (
+                  <div key={f.id}>
+                    <label htmlFor={f.id} className={LABEL}>
+                      {f.label}
+                    </label>
+                    <div className="relative">
+                      <input
+                        id={f.id}
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={180}
+                        value={f.value}
+                        onChange={(e) => f.set(e.target.value)}
+                        onBlur={commitSettings}
+                        onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+                        className={`${INPUT} ds-num !pr-12`}
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500 pointer-events-none">min</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* V35.0 — Focus Timer Adattivo: mai un override silenzioso. */}
+              <SettingRow
+                title="Focus Timer Adattivo K.A.R.E.N."
+                description="Karen ricalibra Focus e Pausa breve sulla readiness biometrica del giorno (per esempio 25/5 in banda critica, 50/10 in banda ottimale). Senza telemetria valgono i valori qui sopra."
+              >
+                <Switch
+                  checked={state.settings.karenAdaptiveTimer !== false}
+                  onChange={() => actions.updateSettings({ karenAdaptiveTimer: state.settings.karenAdaptiveTimer === false })}
+                  ariaLabel="Focus Timer Adattivo K.A.R.E.N."
+                />
+              </SettingRow>
+            </Panel>
+          </Section>
 
-        {/* V40.3 — i due suoni che possono dare davvero fastidio durante
-            lo studio hanno un interruttore proprio: spegnerli non deve
-            costare anche il rintocco di fine blocco, che è il solo
-            avviso che conta. */}
-        <div className="relative flex items-center justify-between gap-4 pt-3 border-t border-white/10">
-          <p className="text-base text-slate-400 leading-relaxed">
-            Rintocco ogni 30 minuti di Focus accumulato, dentro una sessione lunga. Il suono di fine blocco resta
-            comunque.
-          </p>
-          <TechSwitch
-            checked={state.settings.focusReminder !== false}
-            onChange={() => actions.updateSettings({ focusReminder: state.settings.focusReminder === false })}
-            ariaLabel="Promemoria ogni 30 minuti"
-          />
-        </div>
+          {/* ------------------------------------------------ AVVISI */}
+          <Section id="cfg-avvisi" title="Suoni e notifiche">
+            <Panel>
+              <SettingRow
+                title="Effetti sonori"
+                description="Fine blocco e fine pausa, clic, penalità, level up e allarmi: tutto sintetizzato al volo, nessun file esterno. Spenti anche con Sensory Zero."
+              >
+                <Switch
+                  checked={state.settings.soundEffects !== false}
+                  onChange={() => actions.updateSettings({ soundEffects: state.settings.soundEffects === false })}
+                  ariaLabel="Effetti sonori"
+                />
+              </SettingRow>
+              <SettingRow title="Rintocco ogni 30 minuti" description="Dentro una sessione lunga, ogni mezz'ora di Focus accumulato. Il suono di fine blocco resta comunque.">
+                <Switch
+                  checked={state.settings.focusReminder !== false}
+                  onChange={() => actions.updateSettings({ focusReminder: state.settings.focusReminder === false })}
+                  ariaLabel="Rintocco ogni 30 minuti"
+                />
+              </SettingRow>
+              <SettingRow title="Drone simbionte" description="Il ronzio grave delle due ore di Maximum Carnage. Si zittisce anche dal banner in cima alla pagina.">
+                <Switch
+                  checked={state.settings.carnageDrone !== false}
+                  onChange={() => actions.updateSettings({ carnageDrone: state.settings.carnageDrone === false })}
+                  ariaLabel="Drone simbionte"
+                />
+              </SettingRow>
+              <SettingRow
+                title="Notifiche di sistema"
+                description="A fine blocco Focus e a fine pausa, anche con lo schermo bloccato o l'app in secondo piano."
+                note={
+                  notifyPermission === 'denied' ? (
+                    <p className="text-xs text-primary mt-1.5">Permesso negato dal browser: va riattivato dalle impostazioni del sito.</p>
+                  ) : notifyPermission === 'unsupported' ? (
+                    <p className="text-xs text-slate-500 mt-1.5">Questo browser non espone le notifiche di sistema.</p>
+                  ) : null
+                }
+              >
+                <Switch
+                  checked={state.settings.systemNotifications === true && notifyPermission === 'granted'}
+                  onChange={handleToggleNotifications}
+                  ariaLabel="Notifiche di sistema"
+                  disabled={notifyPermission === 'unsupported'}
+                />
+              </SettingRow>
+              <SettingRow title="Schermo sempre acceso durante il Focus" description="Mai durante le pause: lì spegnere è il punto.">
+                <Switch
+                  checked={state.settings.keepScreenAwake !== false}
+                  onChange={() => actions.updateSettings({ keepScreenAwake: state.settings.keepScreenAwake === false })}
+                  ariaLabel="Mantieni schermo acceso"
+                />
+              </SettingRow>
+            </Panel>
+          </Section>
 
-        <div className="relative flex items-center justify-between gap-4 pt-3 border-t border-white/10">
-          <p className="text-base text-slate-400 leading-relaxed">
-            Drone simbionte: il ronzio grave continuo delle due ore di Maximum Carnage Mode. Si può zittire anche dal
-            banner rosso in cima alla pagina.
-          </p>
-          <TechSwitch
-            checked={state.settings.carnageDrone !== false}
-            onChange={() => actions.updateSettings({ carnageDrone: state.settings.carnageDrone === false })}
-            ariaLabel="Drone simbionte"
-          />
-        </div>
-      </section>
-
-      {/* V36.0 — Il blocco che mancava del tutto: l'app non aveva alcun
-          modo di raggiungerti fuori dalla scheda aperta. Con lo schermo
-          bloccato la fine di un blocco Focus non ti arrivava in nessun
-          modo — tornavi a guardare e la pausa era finita venti minuti
-          prima. Il permesso viene chiesto SOLO da questo click esplicito:
-          una richiesta automatica al primo caricamento viene rifiutata dai
-          browser (e ricordata male da Safari). */}
-      <section className={`${CARD} space-y-3`}>
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="satellite" className="w-5 h-5 text-secondary" />
-          NOTIFICHE E SCHERMO
-        </h2>
-
-        <div className="relative flex items-center justify-between gap-4">
-          <div>
-            <p className="text-base text-slate-400 leading-relaxed">
-              Notifica di sistema a fine blocco Focus e a fine pausa, anche a schermo bloccato o con l'app in secondo piano.
-            </p>
-            {notifyPermission === 'denied' && (
-              <p className="text-xs text-primary mt-1.5">
-                Permesso negato a livello di browser: va riattivato dalle impostazioni del sito, Karen non può farlo da qui.
+          {/* ------------------------------------------------ CALIBRAZIONE */}
+          {/* V36.0 — "Karen impara da te": i numeri misurati su di te che
+              governano ogni proiezione, con la loro affidabilità. */}
+          <Section id="cfg-calibrazione" title="Calibrazione" subtitle="Cosa Karen ha misurato su di te. Finché un numero non è affidabile, lo dice.">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+              {[
+                {
+                  label: 'Capacità giornaliera',
+                  value: formatHoursMinutes(Number(cal.hoursPerDay) || 0),
+                  confident: cal.capacityConfident,
+                  text: cal.capacityConfident
+                    ? `Media reale delle ultime ${cal.observedDays} giornate, riposi inclusi. È la base di ogni proiezione.`
+                    : 'Valore di partenza: servono almeno 7 giorni di sessioni perché diventi il tuo.'
+                },
+                {
+                  label: 'Precisione delle tue stime',
+                  value: `×${formatDecimal(cal.biasFactor, 2)}`,
+                  confident: cal.biasConfident,
+                  text: cal.biasConfident
+                    ? cal.biasFactor > 1.05
+                      ? `Su ${cal.biasSampleSize} argomenti chiusi ogni ora prevista te ne è costate ${formatDecimal(cal.biasFactor, 2)}: le previsioni vengono corrette.`
+                      : cal.biasFactor < 0.95
+                      ? `Su ${cal.biasSampleSize} argomenti chiusi sei più veloce delle tue stime: le proiezioni si accorciano.`
+                      : `Su ${cal.biasSampleSize} argomenti chiusi le tue stime sono accurate: nessuna correzione.`
+                    : `Servono almeno 5 argomenti completati con Focus tracciato (ne hai ${cal.biasSampleSize}).`
+                },
+                {
+                  label: 'Ritmo di lettura',
+                  value: cal.pagesConfident ? `${formatDecimal(cal.pagesPerHour, 1)} pag/h` : '—',
+                  confident: cal.pagesConfident,
+                  text: cal.pagesConfident
+                    ? `Misurato su ${cal.pagesSampleSize} argomenti chiusi: dove dichiari le pagine, le ore si calcolano da qui.`
+                    : `Servono almeno 4 argomenti completati con pagine e Focus tracciato (ne hai ${cal.pagesSampleSize}).`
+                },
+                {
+                  label: 'Ritmo di sintesi',
+                  value: cal.sintesiConfident ? `${formatDecimal(cal.sintesiPagesPerHour, 1)} pag/h` : '—',
+                  confident: cal.sintesiConfident,
+                  text: cal.sintesiConfident
+                    ? `Pagine di fonte snellite in un'ora, su ${cal.sintesiSampleSize} sessioni di Sintesi.`
+                    : `Servono 3 sessioni di Sintesi con le pagine indicate (ne hai ${cal.sintesiSampleSize}); intanto vale ${formatDecimal(cal.sintesiPagesPerHourRaw, 1)} pag/h.`
+                },
+                {
+                  label: 'Resa di sintesi',
+                  value: `${Math.round((cal.resaSintesi || cal.resaSintesiRaw) * 100)} su 100`,
+                  confident: cal.resaConfident,
+                  text: cal.resaConfident
+                    ? `Da 100 pagine di fonte ne ricavi ${Math.round(cal.resaSintesi * 100)} di appunti tuoi (${cal.resaSampleSize} argomenti con sintesi chiusa).`
+                    : `Quanto si restringe il materiale nelle tue mani: servono 3 argomenti con sintesi chiusa (ne hai ${cal.resaSampleSize}).`
+                }
+              ].map((c) => (
+                <div key={c.label} className={`${CARD_NOPAD} p-4`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs text-slate-400">{c.label}</p>
+                    <span className={c.confident ? BADGE.green : BADGE.slate}>{c.confident ? 'Misurato' : 'Stima'}</span>
+                  </div>
+                  <p className="text-xl font-bold text-white mt-1.5 ds-num">{c.value}</p>
+                  <p className="text-xs text-slate-500 mt-1 leading-relaxed">{c.text}</p>
+                </div>
+              ))}
+            </div>
+            {detailedFrom && (
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Cronologia dettagliata delle sessioni disponibile da <span className="text-slate-300">{formatMonthYearHuman(detailedFrom)}</span>. I
+                totali giornalieri (heatmap, minuti, calibrazione) restano completi per sempre.
               </p>
             )}
-            {notifyPermission === 'unsupported' && (
-              <p className="text-xs text-slate-500 mt-1.5">Questo browser non espone le notifiche di sistema.</p>
+          </Section>
+
+          {/* ------------------------------------------------ BACKUP */}
+          <Section id="cfg-backup" title="Backup e dati" subtitle="Il tuo percorso di studi è prezioso: qui lo metti al sicuro.">
+            <div
+              className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${
+                backupStale ? 'border-accent/35 bg-accent/[0.06]' : 'border-emerald-400/30 bg-emerald-500/[0.06]'
+              }`}
+            >
+              <Icon name={backupStale ? 'alertTriangle' : 'check'} className={`w-4 h-4 shrink-0 mt-0.5 ${backupStale ? 'text-accent' : 'text-emerald-300'}`} />
+              <p className={`text-[13px] leading-relaxed ${backupStale ? 'text-accent' : 'text-emerald-200'}`}>
+                {daysSinceExport == null
+                  ? 'Non hai mai scaricato un file di backup. I punti di ripristino qui sotto proteggono da errori su questo dispositivo; un file esportato protegge da tutto il resto.'
+                  : backupStale
+                  ? `Ultimo file di backup ${daysSinceExport} giorni fa: conviene scaricarne uno fresco.`
+                  : `Ultimo file di backup ${daysSinceExport === 0 ? 'oggi' : daysSinceExport === 1 ? 'ieri' : `${daysSinceExport} giorni fa`}.`}
+              </p>
+            </div>
+
+            <RestorePoints actions={actions} pushToast={pushToast} />
+
+            <Panel>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-100">File di backup</p>
+                  <p className="text-[13px] text-slate-400 mt-0.5 leading-relaxed">
+                    Scarica tutto il profilo in un file .json, o sostituiscilo con uno salvato. L'import mostra cosa contiene il file
+                    prima di procedere e salva comunque una copia di quello attuale.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button type="button" onClick={() => exportProfile()} className={`${BTN_SECONDARY} ds-btn-sm`}>
+                    <Icon name="download" className="w-3.5 h-3.5" />
+                    Esporta
+                  </button>
+                  <button type="button" onClick={handleImportClick} className={`${BTN_GHOST} ds-btn-sm`}>
+                    <Icon name="upload" className="w-3.5 h-3.5" />
+                    Importa
+                  </button>
+                  <input ref={fileInputRef} type="file" accept="application/json,.json" className="hidden" onChange={handleFileChange} />
+                </div>
+              </div>
+              {importMessage && (
+                <p className={`px-5 py-3 text-[13px] ${importMessage.type === 'success' ? 'text-emerald-300' : 'text-primary'}`}>{importMessage.text}</p>
+              )}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-100">Date d'esame nel calendario</p>
+                  <p className="text-[13px] text-slate-400 mt-0.5">
+                    Un file .ics con tutti gli appelli delle materie, da importare in Google Calendar, Apple Calendar o Outlook.
+                  </p>
+                </div>
+                <button type="button" onClick={exportExamDatesIcs} className={`${BTN_GHOST} ds-btn-sm shrink-0`}>
+                  <Icon name="calendar" className="w-3.5 h-3.5" />
+                  Esporta .ics
+                </button>
+              </div>
+            </Panel>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Dopo un import il nuovo stato si salva da solo
+              {storageMode === 'cloud' ? ' sul Cloud' : storageMode === 'sandbox' ? ' nella Sandbox locale (mai sul Cloud reale)' : ' su questo browser'}. Con
+              un file danneggiato il profilo attuale resta com'è.
+            </p>
+          </Section>
+
+          {/* ------------------------------------------------ AVANZATE */}
+          <Section id="cfg-avanzate" title="Avanzate">
+            {/* V28.1 — Sandbox Admin: invisibile in Modalità Ospite (già tutta locale). */}
+            {!isGuest && (
+              <Panel className={isSandboxActive ? '!border-violet-400/40' : ''}>
+                <div className="px-5 py-4 space-y-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-100">Override di sistema · Sandbox Admin</p>
+                    <p className="text-[13px] text-slate-400 mt-0.5 leading-relaxed">
+                      Un profilo di prova completamente isolato (solo locale, mai il Cloud) per sperimentare senza rischi.
+                    </p>
+                  </div>
+                  {!passphraseConfigured && !isSandboxActive && (
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      Nessuna passphrase configurata (<span className="font-mono text-slate-300">VITE_ADMIN_PASSPHRASE</span>): la Sandbox resta
+                      raggiungibile aggiungendo <span className="font-mono text-slate-300">?sandbox=1</span> all'indirizzo e premendo qui sotto.
+                    </p>
+                  )}
+                  {!isSandboxActive ? (
+                    <div className="space-y-2">
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                        <input
+                          type="password"
+                          value={adminPassword}
+                          onChange={(e) => {
+                            setAdminPassword(e.target.value);
+                            if (adminError) setAdminError(null);
+                          }}
+                          onKeyDown={(e) => e.key === 'Enter' && handleActivateSandbox()}
+                          placeholder={passphraseConfigured ? 'Passphrase di override' : 'Nessuna passphrase richiesta'}
+                          disabled={!passphraseConfigured}
+                          autoComplete="off"
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck="false"
+                          className={`${INPUT} flex-1`}
+                          aria-label="Passphrase di override"
+                        />
+                        <button type="button" onClick={handleActivateSandbox} disabled={passphraseConfigured && !adminPassword} className={`${BTN_GHOST} shrink-0`}>
+                          <Icon name="lock" className="w-4 h-4" />
+                          Attiva Sandbox
+                        </button>
+                      </div>
+                      {adminError && (
+                        <p className="text-xs text-primary flex items-center gap-1.5">
+                          <Icon name="alertTriangle" className="w-3.5 h-3.5 shrink-0" />
+                          {adminError}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between flex-wrap gap-3">
+                      <p className="text-[13px] text-violet-300 flex items-center gap-2">
+                        <Icon name="chip" className="w-4 h-4" />
+                        Protocollo Admin attivo: stai usando la Sandbox.
+                      </p>
+                      <button type="button" onClick={actions.deactivateSandbox} className={`${BTN_GHOST} ds-btn-sm`}>
+                        <Icon name="logout" className="w-3.5 h-3.5" />
+                        Torna al profilo reale
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </Panel>
             )}
-          </div>
-          <TechSwitch
-            checked={state.settings.systemNotifications === true && notifyPermission === 'granted'}
-            onChange={handleToggleNotifications}
-            ariaLabel="Notifiche di sistema"
-          />
+
+            {/* V28.1 — il Combat Log: a disposizione, chiuso di default. */}
+            <Panel>
+              <button
+                type="button"
+                onClick={() => setLogsOpen((v) => !v)}
+                aria-expanded={logsOpen}
+                className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left hover:bg-white/[0.02] transition-colors"
+              >
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium text-slate-100">Registro di sistema</span>
+                  <span className="block text-[13px] text-slate-400 mt-0.5">Gli ultimi {formatInt(combatLog.length)} eventi registrati da Karen.</span>
+                </span>
+                <Icon name="chevronDown" className={`w-4 h-4 text-slate-500 shrink-0 transition-transform duration-200 ${logsOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {logsOpen && (
+                <div className="px-5 py-4 h-80">
+                  <CombatLog entries={combatLog} />
+                </div>
+              )}
+            </Panel>
+
+            <Panel className="!border-primary/30">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-primary">Reset totale</p>
+                  <p className="text-[13px] text-slate-400 mt-0.5 leading-relaxed">
+                    Riporta tutto ai valori iniziali: livello 1, nessuna materia, nessun log. Prima scarica una copia e la salva fra i
+                    punti di ripristino.
+                  </p>
+                </div>
+                <button type="button" onClick={() => setResetConfirmOpen(true)} className={`${BTN_DANGER} shrink-0`}>
+                  <Icon name="trash" className="w-4 h-4" />
+                  Reset totale
+                </button>
+              </div>
+            </Panel>
+          </Section>
         </div>
-
-        <div className="relative flex items-center justify-between gap-4 pt-3 border-t border-white/10">
-          <p className="text-base text-slate-400 leading-relaxed">
-            Tieni lo schermo acceso durante un blocco di Focus (mai durante le pause: lì spegnere è il punto).
-            Senza, Sensory Zero si spegneva da solo dopo trenta secondi.
-          </p>
-          <TechSwitch
-            checked={state.settings.keepScreenAwake !== false}
-            onChange={() => actions.updateSettings({ keepScreenAwake: state.settings.keepScreenAwake === false })}
-            ariaLabel="Mantieni schermo acceso"
-          />
-        </div>
-      </section>
-
-      {/* V36.0 — Interfaccia: due leve che cambiano davvero la fatica
-          quotidiana d'uso, non l'estetica. */}
-      <section className={`${CARD} space-y-3`}>
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="grid" className="w-5 h-5 text-secondary" />
-          INTERFACCIA
-        </h2>
-
-        <div className="relative flex items-center justify-between gap-4">
-          <p className="text-base text-slate-400 leading-relaxed">
-            <span className="text-slate-200 font-semibold">Una cosa alla volta.</span> Lo Stark-Web Terminal si apre sulla
-            sola decisione del momento (argomento, minuti, Avvia); briefing, Quota Odierna e Daily Patrol restano a un
-            click. Il numero di pannelli che chiedono attenzione insieme è esso stesso una fonte di stress.
-          </p>
-          <TechSwitch
-            checked={state.settings.focusFirstHome !== false}
-            onChange={() => actions.updateSettings({ focusFirstHome: state.settings.focusFirstHome === false })}
-            ariaLabel="Una cosa alla volta"
-          />
-        </div>
-
-        <div className="relative flex items-center justify-between gap-4 pt-3 border-t border-white/10">
-          <p className="text-base text-slate-400 leading-relaxed">
-            <span className="text-slate-200 font-semibold">Effetti pesanti.</span> Sfocature profonde, grana, particelle e
-            interferenza. Spegnili su telefoni meno recenti: sono il primo punto in cui si perdono fluidità e batteria
-            durante un pomodoro. Nessuna informazione va persa — cambia solo l'atmosfera.
-          </p>
-          <TechSwitch
-            checked={state.settings.heavyEffects !== false}
-            onChange={() => actions.updateSettings({ heavyEffects: state.settings.heavyEffects === false })}
-            ariaLabel="Effetti pesanti"
-          />
-        </div>
-      </section>
-
-      {/* V36.0 — "Karen impara da te": i due numeri che l'app misura su di
-          te e che ora governano ogni proiezione. Mostrati apertamente,
-          compresa la loro affidabilità: un valore ancora non calibrato
-          viene dichiarato tale invece di essere spacciato per misurato. */}
-      <section className={`${CARD} space-y-3`}>
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="gauge" className="w-5 h-5 text-secondary" />
-          CALIBRAZIONE — COSA KAREN HA IMPARATO SU DI TE
-        </h2>
-        <div className="relative grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-3.5">
-            <p className="text-[11px] font-mono tracking-widest text-slate-500">CAPACITÀ GIORNALIERA</p>
-            <p className="text-2xl font-mono font-bold text-white mt-1">{formatHoursMinutes(Number(derived.calibration.hoursPerDay) || 0)}</p>
-            <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-              {derived.calibration.capacityConfident
-                ? `Media reale sulle tue ultime ${derived.calibration.observedDays} giornate, giorni di riposo inclusi. Sostituisce il vecchio 4.5h/giorno teorico in ogni proiezione.`
-                : 'Valore di default: servono almeno 7 giorni di sessioni registrate perché diventi il tuo.'}
-            </p>
-          </div>
-          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-3.5">
-            <p className="text-[11px] font-mono tracking-widest text-slate-500">PRECISIONE DELLE TUE STIME</p>
-            <p className="text-2xl font-mono font-bold text-white mt-1">×{derived.calibration.biasFactor}</p>
-            <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-              {derived.calibration.biasConfident
-                ? derived.calibration.biasFactor > 1.05
-                  ? `Su ${derived.calibration.biasSampleSize} nodi chiusi, ogni ora dichiarata te ne è costate ${derived.calibration.biasFactor}. Le "Ore previste" future vengono corrette di conseguenza.`
-                  : derived.calibration.biasFactor < 0.95
-                  ? `Su ${derived.calibration.biasSampleSize} nodi chiusi sei più veloce delle tue stime: le proiezioni vengono accorciate.`
-                  : `Su ${derived.calibration.biasSampleSize} nodi chiusi le tue stime sono accurate. Nessuna correzione applicata.`
-                : `Servono almeno 5 nodi completati con tempo di Focus tracciato (ne hai ${derived.calibration.biasSampleSize}).`}
-            </p>
-          </div>
-          {/* V37.0 — il terzo numero: quante pagine copri davvero in
-              un'ora. Quando è affidabile, i nodi che dichiarano le
-              pagine smettono di dipendere da una stima a occhio e le
-              loro ore vengono CALCOLATE. */}
-          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-3.5">
-            <p className="text-[11px] font-mono tracking-widest text-slate-500">RITMO DI LETTURA</p>
-            <p className="text-2xl font-mono font-bold text-white mt-1">
-              {derived.calibration.pagesConfident ? `${derived.calibration.pagesPerHour}` : '—'}
-              <span className="text-sm text-slate-500 ml-1">pag/h</span>
-            </p>
-            <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-              {derived.calibration.pagesConfident
-                ? `Misurato su ${derived.calibration.pagesSampleSize} nodi chiusi con pagine e tempo tracciato. I nodi con le pagine dichiarate usano questo ritmo al posto delle ore stimate.`
-                : `Servono almeno 4 nodi completati con le pagine indicate e tempo di Focus tracciato (ne hai ${derived.calibration.pagesSampleSize}). Fino ad allora il piano usa le ore previste.`}
-            </p>
-          </div>
-          {/* V38.0 — i due numeri della Forgia degli Appunti. Stanno
-              qui accanto agli altri perché sono la stessa promessa:
-              niente costanti inventate, solo cose misurate su di te —
-              e quando non c'è ancora abbastanza storico lo si dice,
-              invece di spacciare un default per una misura. */}
-          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-3.5">
-            <p className="text-[11px] font-mono tracking-widest text-slate-500">RITMO DI SINTESI</p>
-            <p className="text-2xl font-mono font-bold text-white mt-1">
-              {derived.calibration.sintesiConfident ? `${derived.calibration.sintesiPagesPerHour}` : '—'}
-              <span className="text-sm text-slate-500 ml-1">pag/h</span>
-            </p>
-            <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-              {derived.calibration.sintesiConfident
-                ? `Quante pagine di libro, slide o dispense riesci davvero a snellire in un'ora, misurato su ${derived.calibration.sintesiSampleSize} sessioni di Sintesi.`
-                : `Quante pagine di fonte snellisci in un'ora. Servono almeno 3 sessioni chiuse in modo Sintesi con le pagine indicate (ne hai ${derived.calibration.sintesiSampleSize}); fino ad allora si usa ${derived.calibration.sintesiPagesPerHourRaw} pag/h come punto di partenza dichiarato.`}
-            </p>
-          </div>
-          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-3.5">
-            <p className="text-[11px] font-mono tracking-widest text-slate-500">RESA DI SINTESI</p>
-            <p className="text-2xl font-mono font-bold text-white mt-1">
-              {Math.round((derived.calibration.resaSintesi || derived.calibration.resaSintesiRaw) * 100)}
-              <span className="text-sm text-slate-500 ml-1">pag. tue / 100</span>
-            </p>
-            <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-              {derived.calibration.resaConfident
-                ? `Da 100 pagine di fonte ne ricavi ${Math.round(derived.calibration.resaSintesi * 100)} di appunti tuoi, misurato su ${derived.calibration.resaSampleSize} argomenti con la sintesi chiusa. È il numero che proietta quante pagine avrai da studiare alla fine.`
-                : `Quanto si restringe il materiale nelle tue mani. Servono almeno 3 argomenti con la sintesi chiusa (ne hai ${derived.calibration.resaSampleSize}): fino ad allora la proiezione delle pagine finali è un punto di partenza, non una misura.`}
-            </p>
-          </div>
-        </div>
-        {/* Onestà sullo storico: le sessioni molto vecchie vengono
-            compattate per non far crescere all'infinito il salvataggio.
-            Meglio dirlo che farlo scoprire per caso. */}
-        {oldestDetailedMonth(state.starLog) && (
-          <p className="relative text-xs text-slate-500 leading-relaxed">
-            Cronologia dettagliata delle sessioni disponibile da{' '}
-            <span className="text-slate-300">{formatMonthYearHuman(oldestDetailedMonth(state.starLog))}</span>. I totali
-            giornalieri (Heatmap, minuti, calibrazione) restano completi per sempre.
-          </p>
-        )}
-      </section>
-
-      <section className={`${CARD} space-y-4`}>
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="gear" className="w-5 h-5 text-secondary" />
-          SETTINGS TIMER
-        </h2>
-        <div className="relative grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div>
-            <label htmlFor="cfg-focus-time" className="text-base text-slate-400 block mb-1.5">Focus (min)</label>
-            <input
-              id="cfg-focus-time"
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={180}
-              value={focusTime}
-              onChange={(e) => setFocusTime(e.target.value)}
-              onBlur={commitSettings}
-              className={INPUT}
-            />
-          </div>
-          <div>
-            <label htmlFor="cfg-short-break" className="text-base text-slate-400 block mb-1.5">Pausa Breve (min)</label>
-            <input
-              id="cfg-short-break"
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={180}
-              value={shortBreakTime}
-              onChange={(e) => setShortBreakTime(e.target.value)}
-              onBlur={commitSettings}
-              className={INPUT}
-            />
-          </div>
-          <div>
-            <label htmlFor="cfg-long-break" className="text-base text-slate-400 block mb-1.5">Pausa Lunga (min)</label>
-            <input
-              id="cfg-long-break"
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={180}
-              value={longBreakTime}
-              onChange={(e) => setLongBreakTime(e.target.value)}
-              onBlur={commitSettings}
-              className={INPUT}
-            />
-          </div>
-        </div>
-
-        {/* V35.0 — Focus Timer Adattivo: quando attivo, K.A.R.E.N. può
-            sovrascrivere Focus/Pausa Breve qui sopra (mai la Pausa Lunga,
-            volutamente esclusa dall'automazione) in base alla banda di
-            readiness biometrica del giorno — mai un override silenzioso e
-            non disattivabile, l'utente resta sempre padrone del proprio
-            timer. */}
-        <div className="relative flex items-center justify-between gap-4 pt-4 border-t border-white/5">
-          <div>
-            <p className="text-base text-slate-200 font-semibold flex items-center gap-2">
-              <Icon name="chip" className="w-4 h-4 text-secondary" />
-              Focus Timer Adattivo K.A.R.E.N.
-            </p>
-            <p className="text-sm text-slate-500 leading-relaxed mt-1">
-              Karen ricalibra Focus e Pausa Breve in base alla tua readiness biometrica del giorno (es. 25/5 in banda CRITICO, 50/10 in banda OTTIMALE). I valori sopra restano il default quando disattivo o senza telemetria disponibile.
-            </p>
-          </div>
-          <TechSwitch
-            checked={state.settings.karenAdaptiveTimer !== false}
-            onChange={() => actions.updateSettings({ karenAdaptiveTimer: state.settings.karenAdaptiveTimer === false })}
-            ariaLabel="Focus Timer Adattivo K.A.R.E.N."
-          />
-        </div>
-      </section>
-
-      <section className={`${CARD} space-y-4`}>
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="archive" className="w-5 h-5 text-secondary" />
-          DATA LEDGER
-        </h2>
-        <div className="relative grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <button type="button" onClick={() => exportProfile()} className={BTN_SECONDARY}>
-            <Icon name="download" className="w-6 h-6" />
-            Esporta Profilo
-          </button>
-          <button type="button" onClick={handleImportClick} className={BTN_GHOST}>
-            <Icon name="upload" className="w-6 h-6" />
-            Importa Profilo
-          </button>
-          <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={handleFileChange} />
-        </div>
-        {importMessage && (
-          <p className={`relative text-base ${importMessage.type === 'success' ? 'text-emerald-400' : 'text-primary'}`}>
-            {importMessage.text}
-          </p>
-        )}
-        {/* V36.0 — promemoria di backup: nessun download automatico (sarebbe
-            invadente e comunque bloccato dai browser), solo lo stato reale
-            detto chiaramente. */}
-        <div
-          className={`relative flex items-start gap-2.5 rounded-xl border px-3.5 py-2.5 ${
-            backupStale ? 'border-accent/40 bg-accent/10' : 'border-emerald-400/30 bg-emerald-900/20'
-          }`}
-        >
-          <Icon
-            name={backupStale ? 'alertTriangle' : 'check'}
-            className={`w-4 h-4 shrink-0 mt-0.5 ${backupStale ? 'text-accent' : 'text-emerald-400'}`}
-          />
-          <p className={`text-sm leading-relaxed ${backupStale ? 'text-accent' : 'text-emerald-300'}`}>
-            {daysSinceExport == null
-              ? "Nessun backup locale mai esportato. Tutto il tuo percorso di studi vive in un'unica riga sul Cloud: scaricane una copia ogni tanto."
-              : backupStale
-              ? `Ultimo backup ${daysSinceExport} giorni fa. Karen consiglia una copia locale fresca.`
-              : `Ultimo backup ${daysSinceExport === 0 ? 'oggi' : `${daysSinceExport} giorni fa`}.`}
-          </p>
-        </div>
-
-        <p className="relative text-base text-slate-500 leading-relaxed">
-          L'import valida i campi chiave dello schema prima di sovrascrivere il profilo — una volta importato, il nuovo stato viene salvato automaticamente
-          {storageMode === 'cloud' ? ' sul Cloud' : storageMode === 'sandbox' ? ' nella Sandbox locale (mai sul Cloud reale)' : ' in locale su questo browser'}.
-          In caso di file corrotto, il profilo attuale resta invariato.
-        </p>
-
-        <div className="relative pt-3 border-t border-white/5">
-          <button type="button" onClick={exportExamDatesIcs} className={`w-full ${BTN_GHOST}`}>
-            <Icon name="calendar" className="w-6 h-6" />
-            Esporta Date Esami (.ics)
-          </button>
-          <p className="relative text-sm text-slate-500 leading-relaxed mt-2">
-            Scarica un file .ics con tutte le date d'esame impostate sulle Materie del Web-Matrix — importabile in Google Calendar, Apple Calendar o Outlook.
-          </p>
-        </div>
-      </section>
-
-      {/* V28.1 — Pillar 1 (UI Reorganization): il Combat Log lascia la Home
-          (Mission Control) e trova qui una sezione dedicata, pulita e
-          collassata di default — i log tecnici restano a disposizione ma
-          non affollano più la schermata principale. */}
-      <section className={`${CARD} space-y-0`}>
-        <button
-          type="button"
-          onClick={() => setLogsOpen((v) => !v)}
-          className="relative w-full flex items-center justify-between gap-3"
-        >
-          <h2 className={`${H2} flex items-center gap-2`}>
-            <Icon name="terminal" className="w-5 h-5 text-secondary" />
-            LOG DI SISTEMA
-          </h2>
-          <span className="flex items-center gap-2 shrink-0">
-            <span className="text-[11px] font-mono text-slate-500">{state.combatLog.length}/50</span>
-            <Icon name="chevronDown" className={`w-4 h-4 text-slate-500 transition-transform duration-300 ${logsOpen ? 'rotate-180' : ''}`} />
-          </span>
-        </button>
-        {logsOpen && (
-          <div className="relative mt-4 h-72 af-holo-alert-in">
-            <CombatLog entries={state.combatLog} />
-          </div>
-        )}
-      </section>
-
-      <section className={`${CARD_ALERT} space-y-3`}>
-        <h2 className="relative text-base tracking-widest text-primary flex items-center gap-2 font-bold">
-          <Icon name="alertTriangle" className="w-5 h-5" />
-          ZONA PERICOLOSA
-        </h2>
-        <p className="relative text-base text-slate-400">Riporta l'intero profilo ai valori di default: Livello 1, 0 XP, Stamina 100. Azione irreversibile.</p>
-        <button type="button" onClick={() => setResetConfirmOpen(true)} className={`relative ${BTN_PRIMARY}`}>
-          Reset Totale
-        </button>
-      </section>
+      </div>
 
       <ConfirmDialog
         open={resetConfirmOpen}
         onClose={() => setResetConfirmOpen(false)}
         onConfirm={confirmReset}
-        title="Reset Totale"
-        message="Questa azione cancella XP, materie, skill tree, log e ricompense. Prima di procedere, K.A.R.E.N. scaricherà automaticamente una copia del profilo attuale nei tuoi Download — è l'unico modo per tornare indietro. Procedere?"
-        confirmLabel="Cancella Tutto"
+        title="Cancellare tutto?"
+        message="XP, materie, Skill Tree, log e ricompense tornano a zero. Prima di procedere scarico una copia del profilo nei tuoi Download e la salvo fra i punti di ripristino, così puoi tornare indietro."
+        confirmLabel="Cancella tutto"
       />
 
-      {/* V37.0 — conferma dell'import, con davanti il contenuto reale del
-          file scelto. Prima bastava selezionare un file per sostituire
-          l'intero profilo, senza appello. */}
+      {/* V37.0 — conferma dell'import con davanti il contenuto reale del file. */}
       <ConfirmDialog
         open={!!pendingImport}
         onClose={() => setPendingImport(null)}
         onConfirm={confirmImport}
-        title="Importa Profilo"
+        title="Sostituire il profilo?"
         message={
           pendingImport
-            ? `Stai per sostituire l'INTERO profilo attuale con il contenuto di "${pendingImport.fileName}": ` +
-              `${pendingImport.summary?.username} · Livello ${pendingImport.summary?.level} · ` +
-              `${pendingImport.summary?.materie} materie, ${pendingImport.summary?.nodi} nodi, ` +
-              `${pendingImport.summary?.sessioni} sessioni (schema v${pendingImport.summary?.versione}). ` +
-              'Una copia del profilo attuale verrà scaricata automaticamente prima di procedere. Confermi?'
+            ? `"${pendingImport.fileName}" contiene: ${pendingImport.summary?.username}, livello ${pendingImport.summary?.level}, ` +
+              `${pendingImport.summary?.materie} materie, ${pendingImport.summary?.nodi} argomenti, ${pendingImport.summary?.sessioni} sessioni ` +
+              `(schema v${pendingImport.summary?.versione}). Sostituirà l'intero profilo attuale, di cui salvo prima una copia. Procedo?`
             : ''
         }
-        confirmLabel="Sostituisci Profilo"
+        confirmLabel="Sostituisci profilo"
       />
 
+      <PasswordDialog
+        open={passwordOpen}
+        mode="change"
+        onClose={() => setPasswordOpen(false)}
+        onSuccess={() => {
+          setPasswordOpen(false);
+          pushToast('Password aggiornata.', 'success');
+        }}
+      />
       <ConfirmDialog
         open={logoutConfirmOpen}
         onClose={() => setLogoutConfirmOpen(false)}
@@ -997,13 +1103,13 @@ export default function CoreConfig() {
           setLogoutConfirmOpen(false);
           actions.signOut();
         }}
-        title={isGuest ? 'Esci dalla Modalità Ospite' : 'Disconnetti dal Nexus'}
+        title={isGuest ? 'Uscire dalla Modalità Ospite?' : 'Uscire dall’account?'}
         message={
           isGuest
-            ? 'I dati locali di questa sessione Ospite restano su questo browser, ma non saranno più accessibili da qui una volta uscito. Confermi?'
-            : 'Il profilo è già salvato sul Cloud: potrai accedere di nuovo in qualsiasi momento con le stesse credenziali. Confermi il logout?'
+            ? 'I dati di questa sessione Ospite restano su questo browser, ma da qui non saranno più accessibili finché non rientri come Ospite.'
+            : 'Il profilo è già salvato sul Cloud: potrai rientrare quando vuoi con le stesse credenziali.'
         }
-        confirmLabel={isGuest ? 'Esci' : 'Disconnetti'}
+        confirmLabel="Esci"
         danger={false}
       />
     </div>

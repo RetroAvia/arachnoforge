@@ -9,124 +9,110 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import Modal from '../components/Modal.jsx';
 import Dropdown from '../components/Dropdown.jsx';
 import DebriefModal from '../components/DebriefModal.jsx';
+import PageHeader, { HeaderStat } from '../components/PageHeader.jsx';
 import { WORK_MODE_META, nodeSources, suggestedWorkMode } from '../utils/sintesiEngine.js';
 import { nodoInSintesi, GIORNI } from '../utils/campusEngine.js';
 import { goTo, ROUTES } from '../hooks/useArachnoForgeRouter.js';
 import EmptyState from '../components/EmptyState.jsx';
 import WebSlingChest from '../components/WebSlingChest.jsx';
-import { formatClock, formatHoursMinutes } from '../utils/dateUtils.js';
+import { formatClock, formatHoursMinutes, getDateKey } from '../utils/dateUtils.js';
 import { getBriefingForToday } from '../data/briefings.js';
 import { deriveNodeStatus, NODE_STATUS } from '../utils/skillTree.js';
 import { resolveLiveStudyFocus } from '../utils/studyFocusLive.js';
 import { computeFocusStaminaCost, DIFFICULTY, DIFFICULTY_META } from '../utils/xpEngine.js';
 import { QUEST_DIFFICULTY_META } from '../utils/dailyPatrol.js';
 import { QUOTA_STATUS_META } from '../hooks/useKarenAutoRouter.js';
-import { CARD, CARD_BARE, CARD_ALERT, BTN_PRIMARY, BTN_SECONDARY, BTN_AMBER, BTN_GHOST, INPUT, H1, BADGE } from '../utils/designSystem.js';
+import { formatInt, formatNumber, minutiLabel } from '../utils/format.js';
+import { INTENT, useIntent } from '../utils/uiIntents.js';
+import { CARD, BTN_PRIMARY, BTN_SECONDARY, BTN_AMBER, BTN_GHOST, BTN_DANGER, BTN_LG, INPUT, LABEL, BADGE } from '../utils/designSystem.js';
 
-/** V29.0 — Pillar 1/2: riga singola della Quota Odierna, riusata per le tre sezioni (In Focus Oggi / In Coda / Congelata) — mai tre markup duplicati.
- *
- * V35.4 — "Ritmo vs Oggi": prima di questa modifica, ogni riga (anche
- * quelle IN CODA, esplicitamente NON spinte dal planner) mostrava lo
- * stesso badge blu "Oggi: Xh" — un numero calcolato in totale isolamento
- * per QUELLA sola materia (ore residue / giorni all'esame), mai un vero
- * budget condiviso fra materie. Il risultato era fuorviante: una materia
- * a 6 giorni dall'esame (davvero da spingere oggi) e una a 90+ giorni
- * (in coda, non prioritaria) potevano mostrare "Oggi: 1h40m" e
- * "Oggi: 1h23m" — numeri quasi identici che facevano sembrare le due
- * materie ugualmente urgenti OGGI, quando non lo sono affatto. La
- * matematica di computeMateriaQuota resta invariata (è un ritmo
- * sostenibile legittimo, utile come informazione), ma ora SOLO le
- * materie realmente "in focus" (spinte dal planner) mostrano quel numero
- * come "Oggi: Xh" in evidenza; le materie "in coda" mostrano lo stesso
- * valore ma etichettato onestamente come "Ritmo: Xh/giorno" in stile
- * neutro — un dato informativo ("se dovessi iniziare oggi questa
- * materia, servirebbe questo ritmo"), mai un'istruzione per la giornata
- * odierna, che resta dominata dalla materia in focus. */
 /** V40.0 — una materia senza data non è "in attenzione": non ha una
  * scadenza da rischiare. Stile neutro, nessuna pulsazione. */
 const SENZA_DATA_META = {
   label: 'Senza data',
-  badgeClass: 'bg-slate-800/60 text-slate-300 border-slate-500/30',
+  badgeClass: 'ds-badge-slate',
   dotClass: 'bg-slate-500',
-  cardClass: 'bg-surface/60 border-white/10',
+  cardClass: '',
   glowStyle: undefined
 };
 
+/** Tinte V41 dei quattro stati di quota (le classi "vive" restano in quotaEngine). */
+const QUOTA_BADGE = {
+  OTTIMALE: 'ds-badge-green',
+  ATTENZIONE: 'ds-badge-amber',
+  CRITICO: 'ds-badge-red',
+  CONGELATA: 'ds-badge-slate'
+};
+
+/**
+ * Riga della Quota Odierna (In focus oggi / In coda / Congelate).
+ * V35.4 — "Ritmo vs Oggi": solo le materie davvero in focus mostrano
+ * "Oggi: Xh" (le ore ripartite dal budget); quelle in coda mostrano il
+ * ritmo sostenibile, dichiarato come tale.
+ */
 function QuotaRow({ q, today = true }) {
   const senzaData = q.daysRemaining == null && !q.dataScaduta && !q.frozen && q.status === 'ATTENZIONE';
   const statusMeta = senzaData ? SENZA_DATA_META : QUOTA_STATUS_META[q.status];
-  // V39.0 — nelle materie in focus si mostrano le ore REALMENTE ripartite
-  // dal budget del giorno (`assignedHours`), non la quota grezza: con due
-  // materie in focus le righe dicevano 4h + 3h mentre il budget ne
-  // assegnava 2.6 + 1.9, e la nota sotto giurava che fossero già
-  // ripartite. Nelle materie in coda resta il ritmo, dichiarato come tale.
+  const badgeTone = senzaData ? 'ds-badge-slate' : QUOTA_BADGE[q.status] || 'ds-badge-slate';
   const oreOggi = today && Number.isFinite(q.assignedHours) ? q.assignedHours : q.dailyQuotaHours;
+  const critico = q.status === 'CRITICO';
   return (
-    <div className={`p-2.5 sm:p-3.5 rounded-xl border transition-all duration-300 ${statusMeta.cardClass || 'bg-surface/60 border-secondary/15'}`}>
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <span className="text-sm font-semibold text-slate-100 flex items-center gap-1.5 min-w-0 max-w-full">
-          <span className={`w-2 h-2 rounded-full shrink-0 ${statusMeta.dotClass}`} style={statusMeta.glowStyle} />
-          <span className="min-w-0 line-clamp-2 break-words">{q.nome}</span>
-        </span>
-        <span className="flex items-center gap-1.5 shrink-0 flex-wrap">
-          <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-mono border ${statusMeta.badgeClass}`}>
-            {statusMeta.label}
+    <div className={`rounded-xl border px-3.5 py-3 ${critico ? 'border-primary/35 bg-primary/[0.05]' : 'border-line bg-surface'}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex items-start gap-2">
+          <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${statusMeta.dotClass}`} />
+          <span className="min-w-0">
+            <span className="block text-sm font-semibold text-slate-100 line-clamp-2 break-words">{q.nome}</span>
+            <span className="block text-xs text-slate-500 mt-0.5">
+              {q.dataScaduta
+                ? 'Appello passato: aggiorna la data o segna l’esame come superato'
+                : q.daysRemaining == null
+                ? 'Nessuna data d’esame'
+                : q.daysRemaining === 0
+                ? 'Esame oggi'
+                : q.daysRemaining === 1
+                ? 'Esame domani'
+                : `Esame fra ${q.daysRemaining} giorni`}
+              {' · '}
+              {q.stimaDaCfu && q.daysRemaining == null ? (
+                <>fuori dal piano finché non mappi il programma (stima {formatHoursMinutes(q.hoursRemaining)})</>
+              ) : (
+                <>
+                  {formatHoursMinutes(q.hoursRemaining)} residue{q.hasNodes ? '' : ' (stima dai CFU)'}
+                </>
+              )}
+            </span>
           </span>
+        </div>
+        <span className="flex flex-col items-end gap-1 shrink-0">
+          <span className={`ds-badge ${badgeTone}`}>{statusMeta.label}</span>
           {!q.frozen && today && Number.isFinite(oreOggi) && oreOggi > 0 && (
-            <span className={BADGE.blue}>Oggi: {formatHoursMinutes(oreOggi)}</span>
+            <span className="text-xs font-semibold text-secondary ds-num">Oggi {formatHoursMinutes(oreOggi)}</span>
           )}
           {!q.frozen && !today && Number.isFinite(q.dailyQuotaHours) && q.dailyQuotaHours > 0 && (
-            <span className={BADGE.slate}>Ritmo: {formatHoursMinutes(q.dailyQuotaHours)}/giorno</span>
+            <span className="text-xs text-slate-500 ds-num">{formatHoursMinutes(q.dailyQuotaHours)}/giorno</span>
           )}
         </span>
       </div>
       {q.frozen ? (
-        <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-          Karen: propedeuticità mancante — {q.missingPrereqNames.join(', ')}. Scheda visualizzabile e nodi preparabili a mano, ma esclusa dal planner automatico finché non sblocchi.
+        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+          Propedeuticità mancante: {q.missingPrereqNames.join(', ')}. Preparabile a mano, esclusa dal planner automatico finché non la sblocchi.
         </p>
       ) : (
         <>
-          {q.status === 'CRITICO' && (
-            <p className="text-xs text-primary mt-1.5 leading-relaxed font-semibold">
-              Karen: traiettoria insostenibile. Rischio esaurimento. Consigliato rinvio appello.
+          {critico && (
+            <p className="text-xs text-primary mt-2 leading-relaxed font-medium">
+              Traiettoria insostenibile al tuo ritmo reale: valuta di rinviare l’appello o di tagliare il programma.
             </p>
           )}
           {q.status === 'ATTENZIONE' && !senzaData && q.hasNodes && !q.cumulativeOverload && (
-            <p className="text-xs text-accent mt-1.5 leading-relaxed">
-              Karen: il ritmo attuale è leggermente indietro rispetto alla Fine Prevista — nessun panico, ma non rallentare.
+            <p className="text-xs text-accent/90 mt-2 leading-relaxed">Il ritmo è appena dietro la Fine Prevista: niente panico, ma non rallentare.</p>
+          )}
+          {q.cumulativeOverload && !critico && (
+            <p className="text-xs text-accent/90 mt-2 leading-relaxed">
+              Da sola ci starebbe, ma con gli esami che vengono prima il carico arriva al {Math.round(q.cumulativeRatio * 100)}% delle ore che hai fino a quella data.
             </p>
           )}
-          {q.cumulativeOverload && q.status !== 'CRITICO' && (
-            <p className="text-xs text-accent mt-1.5 leading-relaxed">
-              Karen: da sola ci starebbe, ma insieme agli esami che vengono prima il carico supera le ore che hai (
-              {Math.round(q.cumulativeRatio * 100)}% della capacità fino a questa data).
-            </p>
-          )}
-          <p className="text-xs text-slate-500 mt-1">
-            {q.dataScaduta
-              ? 'Appello passato: aggiorna la data o segna l\u2019esame come superato'
-              : q.daysRemaining == null
-              ? 'Nessuna data esame impostata'
-              : q.daysRemaining === 0
-              ? 'Esame oggi'
-              : `${q.daysRemaining}gg all'esame`}
-            {' · '}
-            {q.stimaDaCfu && q.daysRemaining == null ? (
-              <span>
-                nessun nodo: fuori dal piano finché non mappi il programma o fissi l’esame
-                <span className="text-slate-600"> (stima dai CFU: {formatHoursMinutes(q.hoursRemaining)})</span>
-              </span>
-            ) : (
-              <>
-                {formatHoursMinutes(q.hoursRemaining)} residue
-                {q.hasNodes ? (
-                  <span className="text-slate-600"> · basata sui Nodi dello Skill Tree</span>
-                ) : (
-                  <span className="text-slate-600"> · stima dai CFU</span>
-                )}
-              </>
-            )}
-          </p>
         </>
       )}
     </div>
@@ -147,99 +133,93 @@ function CampusStrip({ campus }) {
     <button
       type="button"
       onClick={() => goTo(ROUTES.CAMPUS)}
-      className="w-full text-left rounded-2xl border border-cyan-400/25 bg-cyan-500/[0.05] hover:border-cyan-400/50 transition-colors px-4 py-3 flex items-center gap-3"
+      className="group w-full text-left rounded-xl border border-line bg-panel/70 hover:bg-panel-2 hover:border-line-strong transition-colors px-4 py-3 flex items-center gap-3.5"
     >
-      <Icon name="calendar" className="w-5 h-5 text-cyan-300 shrink-0" />
+      <span className="ds-icon-tile text-cyan-300">
+        <Icon name="calendar" className="w-[18px] h-[18px]" />
+      </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-[11px] font-mono tracking-widest text-cyan-300">
-          LEZIONI{campus.settimana ? ` · SETTIMANA ${campus.settimana}` : ''}
+        <span className="flex items-center gap-2 flex-wrap">
+          <span className="ds-eyebrow !text-cyan-300/90">Lezioni{campus.settimana ? ` · settimana ${campus.settimana}` : ''}</span>
           {campus.lezioniInCoda > 0 && (
-            <span className="text-accent">
-              {' '}
-              · {campus.lezioniInCoda === 1 ? '1 LEZIONE' : `${campus.lezioniInCoda} LEZIONI`} DA SISTEMARE
+            <span className="ds-badge ds-badge-amber">
+              {campus.lezioniInCoda === 1 ? '1 lezione da sistemare' : `${campus.lezioniInCoda} lezioni da sistemare`}
             </span>
           )}
         </span>
-        <span className="flex flex-wrap gap-x-3 gap-y-1 mt-1 text-sm">
+        <span className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-sm">
           {oggi.length === 0 ? (
             <span className="text-slate-400">
               Oggi niente lezioni.
               {prossima
-                ? ` Prossima: ${prossima.materia.nome}, ${
-                    prossima.giorniDistanza === 1 ? 'domani' : GIORNI[prossima.giorno].toLowerCase()
-                  } alle ${prossima.inizio}.`
+                ? ` Prossima: ${prossima.materia.nome}, ${prossima.giorniDistanza === 1 ? 'domani' : GIORNI[prossima.giorno].toLowerCase()} alle ${prossima.inizio}.`
                 : ''}
             </span>
           ) : (
             oggi.map((l) => (
               <span
                 key={l.id}
-                className={l.stato === 'IN_CORSO' ? 'text-cyan-200 font-semibold' : l.stato === 'FINITA' ? 'text-slate-500' : 'text-slate-300'}
+                className={`flex items-center gap-1.5 ${l.stato === 'IN_CORSO' ? 'text-cyan-200 font-semibold' : l.stato === 'FINITA' ? 'text-slate-500' : 'text-slate-300'}`}
               >
-                <span className="font-mono af-mono-nums">{l.inizio}</span> {l.materia.nome}
-                {l.stato === 'IN_CORSO' && ' ●'}
+                {l.stato === 'IN_CORSO' && <span className="w-1.5 h-1.5 rounded-full bg-cyan-300 animate-pulse" />}
+                <span className="ds-num text-slate-500">{l.inizio}</span>
+                {l.materia.nome}
               </span>
             ))
           )}
         </span>
       </span>
-      <Icon name="chevronDown" className="w-4 h-4 text-slate-500 -rotate-90 shrink-0" />
+      <Icon name="chevronRight" className="w-4 h-4 text-slate-500 group-hover:text-slate-300 shrink-0" />
     </button>
   );
 }
 
 /**
- * V36.0 — "ADESSO": la prima cosa che si vede aprendo l'app.
- *
- * Prima di questa card la Home era una colonna lunga (briefing -> piano
- * argomenti -> quota -> daily patrol -> protocolli -> timer): sei
- * pannelli che reclamavano attenzione insieme per rispondere a UNA sola
- * domanda, che in una giornata normale è sempre la stessa — *cosa studio
- * adesso e per quanto*. Il numero di elementi che chiedono attenzione
- * contemporaneamente è esso stesso una fonte di stress, ed è esattamente
- * ciò che l'app esiste per togliere: qui la risposta è una riga, un
- * numero e un pulsante. Tutto il resto resta a un click di distanza.
+ * V36.0 — "ADESSO": la prima cosa che si vede aprendo l'app — una riga,
+ * un numero e un pulsante per rispondere a "cosa studio adesso e per
+ * quanto". Tutto il resto resta a un click di distanza.
  */
-function NowCard({ target, minutes, budget, canStart, onStart, onOpenDetails, detailsOpen }) {
+function NowCard({ target, minutes, budget, canStart, onStart, onOpenDetails, detailsOpen, staminaCost }) {
   return (
-    <div className={`${CARD_BARE} border-primary/25`}>
-      <div className="absolute -top-16 -right-10 w-56 h-56 rounded-full bg-primary/10 blur-3xl pointer-events-none" />
-      <div className="relative flex flex-col gap-4">
-        <div className="flex items-start justify-between gap-3 flex-wrap">
+    <div className="ds-card !p-0 flex flex-col">
+      <div className="p-5 sm:p-6 flex flex-col gap-4 flex-1">
+        <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <p className="text-[11px] font-mono tracking-[0.25em] text-primary">ADESSO</p>
+            <p className="ds-eyebrow !text-primary flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+              Adesso
+            </p>
             {target ? (
               <>
-                <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight leading-tight mt-1 break-words">
+                <h2 className="text-[22px] sm:text-[26px] font-bold text-white tracking-tight leading-tight mt-2 break-words">
                   {target.argomento}
                 </h2>
                 <p className="text-sm text-slate-400 mt-1">{target.materia}</p>
               </>
             ) : (
               <>
-                <h2 className="text-2xl font-extrabold text-white tracking-tight leading-tight mt-1">Nessun bersaglio attivo</h2>
+                <h2 className="text-[22px] font-bold text-white tracking-tight leading-tight mt-2">Nessun bersaglio attivo</h2>
                 <p className="text-sm text-slate-400 mt-1">
-                  Apri una materia nel Web-Matrix e dalle una data d'esame: Karen sceglierà da sola cosa viene prima.
+                  Apri una materia nel Web-Matrix e dalle una data d’esame: Karen sceglierà da sola cosa viene prima.
                 </p>
               </>
             )}
           </div>
-          <div className="text-right shrink-0">
-            <p className="text-3xl font-mono font-bold af-mono-nums text-white leading-none">{minutes}′</p>
-            <p className="text-[11px] text-slate-500 tracking-widest mt-1">BLOCCO</p>
+          <div className="text-right shrink-0 ds-well px-3.5 py-2.5">
+            <p className="text-2xl font-bold ds-num text-white leading-none">{minutes}′</p>
+            <p className="text-[11px] text-slate-500 mt-1">blocco</p>
           </div>
         </div>
 
-        {target?.rationale && <p className="text-sm text-slate-400 leading-relaxed">{target.rationale}</p>}
+        {target?.rationale && <p className="text-sm text-slate-300 leading-relaxed">{target.rationale}</p>}
         {target?.metodo && (
-          <p className="text-sm text-secondary leading-relaxed border-l-2 border-secondary/40 pl-3">{target.metodo}</p>
+          <p className="text-sm text-secondary leading-relaxed border-l-2 border-secondary/50 pl-3">{target.metodo}</p>
         )}
 
-        {/* V40.0 — il secondo candidato, dichiarato: "POI". */}
         {target?.dopo && (
-          <p className="text-sm text-slate-400 flex items-start gap-2">
-            <span className="text-[11px] font-mono tracking-[0.2em] text-slate-500 mt-0.5 shrink-0">POI</span>
-            <span className="min-w-0">
+          <p className="text-sm text-slate-400 flex items-start gap-2.5">
+            <span className="ds-badge ds-badge-slate !text-[11px] shrink-0">Poi</span>
+            <span className="min-w-0 pt-0.5">
               <span className="text-slate-200">{target.dopo.testo}</span>
               {target.dopo.minuti ? (
                 <span className="text-slate-500">
@@ -252,37 +232,105 @@ function NowCard({ target, minutes, budget, canStart, onStart, onOpenDetails, de
             </span>
           </p>
         )}
+      </div>
 
-        {/* Budget del giorno: una riga, non due numeri da sommare a mente. */}
-        {budget && ((budget.assegnateHours ?? budget.totalNeedHours) > 0 || budget.sintesiHours > 0) && (
-          <div className="flex items-center gap-2 flex-wrap text-xs">
-            <span className={budget.overCapacity ? BADGE.red : BADGE.blue}>
-              <Icon name="clock" className="w-3 h-3" />
-              Oggi: {formatHoursMinutes(budget.assegnateHours ?? budget.totalNeedHours)} di studio
-              {budget.sintesiHours > 0 ? ` + ${formatHoursMinutes(budget.sintesiHours)} di sintesi` : ''} su{' '}
-              {formatHoursMinutes(budget.budgetHours)} disponibili
-            </span>
-            {budget.overCapacity && (
-              <span className="text-primary">
-                Deficit di {formatHoursMinutes(budget.deficitHours)}: al tuo ritmo reale il piano di oggi non ci sta.
-              </span>
-            )}
-            {budget.loadAdjustmentPct < 0 && (
-              <span className="text-accent font-mono">carico ridotto del {Math.abs(budget.loadAdjustmentPct)}% da K.A.R.E.N.</span>
-            )}
-          </div>
-        )}
-
-        <div className="flex items-center gap-3 flex-wrap">
-          <button type="button" onClick={onStart} disabled={!canStart} className={BTN_PRIMARY}>
-            <Icon name="play" className="w-5 h-5" />
+      <div className="px-5 sm:px-6 py-4 border-t border-line bg-surface/50 flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <button type="button" onClick={onStart} disabled={!canStart} className={`${BTN_PRIMARY} ${BTN_LG}`}>
+            <Icon name="play" className="w-4 h-4" />
             {target ? 'Avvia su questo' : 'Avvia Focus'}
           </button>
           <button type="button" onClick={onOpenDetails} className={BTN_GHOST}>
             <Icon name={detailsOpen ? 'chevronUp' : 'chevronDown'} className="w-4 h-4" />
-            {detailsOpen ? 'Nascondi il resto' : 'Briefing, quota e missioni'}
+            {detailsOpen ? 'Nascondi briefing e quota' : 'Briefing e quota'}
+            <span className="ds-kbd ml-0.5">D</span>
           </button>
         </div>
+        <div className="flex items-center gap-3 text-xs text-slate-500">
+          {Number.isFinite(staminaCost) && <span className="ds-num">−{staminaCost} Stamina</span>}
+          <span className="hidden sm:flex items-center gap-1">
+            <span className="ds-kbd">Spazio</span> per partire
+          </span>
+        </div>
+      </div>
+
+      {budget && ((budget.assegnateHours ?? budget.totalNeedHours) > 0 || budget.sintesiHours > 0) && (
+        <div className={`px-5 sm:px-6 py-3 border-t text-xs flex items-center gap-2 flex-wrap ${budget.overCapacity ? 'border-primary/25 bg-primary/[0.05] text-primary' : 'border-line text-slate-400'}`}>
+          <Icon name="clock" className="w-3.5 h-3.5 shrink-0" />
+          <span>
+            Oggi <span className="font-semibold text-slate-100 ds-num">{formatHoursMinutes(budget.assegnateHours ?? budget.totalNeedHours)}</span> di studio
+            {budget.sintesiHours > 0 && (
+              <>
+                {' '}+ <span className="font-semibold text-cyan-200 ds-num">{formatHoursMinutes(budget.sintesiHours)}</span> di sintesi
+              </>
+            )}{' '}
+            su {formatHoursMinutes(budget.budgetHours)} disponibili
+          </span>
+          {budget.overCapacity && <span className="font-medium">· deficit di {formatHoursMinutes(budget.deficitHours)} al tuo ritmo reale</span>}
+          {budget.loadAdjustmentPct < 0 && <span className="text-accent">· carico ridotto del {Math.abs(budget.loadAdjustmentPct)}% da K.A.R.E.N.</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** V41 — La sessione in corso, al posto di "ADESSO" mentre il timer gira. */
+function SessionCard({ timer, TIMER_STATUS, activeMateria, activeSfida, modoConsigliato, minutiSalvabili, onOpenDetails, detailsOpen }) {
+  const running = timer.status === TIMER_STATUS.FOCUS;
+  const breakPaused = timer.status === TIMER_STATUS.PAUSED && timer.blockMode === 'BREAK';
+  const paused = timer.status === TIMER_STATUS.PAUSED && !breakPaused;
+  const onBreak = timer.status === TIMER_STATUS.BREAK || breakPaused;
+  const label = breakPaused
+    ? 'Pausa sospesa'
+    : onBreak
+    ? 'Pausa'
+    : paused
+    ? 'In pausa'
+    : timer.awaitingDebrief && timer.status === TIMER_STATUS.IDLE
+    ? 'Blocco completato'
+    : timer.isOverdriveActive
+    ? 'Overdrive'
+    : 'Focus in corso';
+  const tone = onBreak ? 'text-secondary' : paused ? 'text-accent' : 'text-primary';
+  return (
+    <div className="ds-card flex flex-col gap-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className={`ds-eyebrow flex items-center gap-1.5 !text-current ${tone}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${onBreak ? 'bg-secondary' : paused ? 'bg-accent' : 'bg-primary'} ${running ? 'animate-pulse' : ''}`} />
+            {label}
+          </p>
+          <h2 className="text-[22px] sm:text-[26px] font-bold text-white tracking-tight leading-tight mt-2 break-words">
+            {activeSfida ? activeSfida.nome : activeMateria ? activeMateria.nome : 'Focus generico'}
+          </h2>
+          <p className="text-sm text-slate-400 mt-1">
+            {activeSfida && activeMateria ? activeMateria.nome : activeMateria ? 'Tutta la materia' : 'Nessuna materia collegata'}
+          </p>
+        </div>
+        {(timer.pendingFocusMinutes > 0 || minutiSalvabili > 0) && (
+          <div className="text-right shrink-0 ds-well px-3.5 py-2.5">
+            <p className="text-2xl font-bold ds-num text-white leading-none">{minutiSalvabili}′</p>
+            <p className="text-[11px] text-slate-500 mt-1">già fatti</p>
+          </div>
+        )}
+      </div>
+      {activeSfida && modoConsigliato && (
+        <p className="text-sm text-slate-300 flex items-start gap-2">
+          <Icon name={WORK_MODE_META[modoConsigliato].icon} className={`w-4 h-4 mt-0.5 shrink-0 ${WORK_MODE_META[modoConsigliato].color}`} />
+          <span>
+            <span className={`font-semibold ${WORK_MODE_META[modoConsigliato].color}`}>{WORK_MODE_META[modoConsigliato].label}</span>
+            {WORK_MODE_META[modoConsigliato].hint ? ` — ${WORK_MODE_META[modoConsigliato].hint}` : ''}
+          </span>
+        </p>
+      )}
+      <div className="flex items-center gap-2.5 flex-wrap">
+        <button type="button" onClick={onOpenDetails} className={BTN_GHOST}>
+          <Icon name={detailsOpen ? 'chevronUp' : 'chevronDown'} className="w-4 h-4" />
+          {detailsOpen ? 'Nascondi briefing e quota' : 'Briefing e quota'}
+        </button>
+        <span className="text-xs text-slate-500 flex items-center gap-1">
+          <span className="ds-kbd">Spazio</span> pausa · <span className="ds-kbd">Esc</span> Sensory Zero
+        </span>
       </div>
     </div>
   );
@@ -353,12 +401,17 @@ export default function MissionControl() {
   // Daily Patrol Engine (V23.0, Modulo 2): le quest vivono direttamente in
   // `state.dailyPatrols.quests` — nessuna derivazione, il Context le tiene
   // già aggiornate in tempo reale (auto-tracking event-driven nel reducer).
-  const dailyQuests = Array.isArray(state.dailyPatrols?.quests) ? state.dailyPatrols.quests : [];
+  const dailyQuests = useMemo(
+    () => (Array.isArray(state.dailyPatrols?.quests) ? state.dailyPatrols.quests : []),
+    [state.dailyPatrols]
+  );
 
   // "Burst" di completamento: rileva localmente le transizioni
   // isCompleted false -> true per applicare l'animazione `af-quest-pop`
   // SOLO per un breve istante (mai un'animazione permanente sulla card).
-  const prevQuestsRef = useRef([]);
+  // V41 — parte dalle missioni già a schermo: aprire la pagina con una
+  // missione completata stamattina non deve rifarle l'animazione.
+  const prevQuestsRef = useRef(dailyQuests);
   const [celebratingIds, setCelebratingIds] = useState(() => new Set());
   useEffect(() => {
     const prev = prevQuestsRef.current;
@@ -419,7 +472,7 @@ export default function MissionControl() {
       ? ['rgb(var(--af-refuel-rgb))', 'rgb(var(--af-refuel-dark-rgb))']
       : ['rgb(100 116 139)', 'rgb(51 65 85)'];
 
-  const materie = Array.isArray(state.materie) ? state.materie : [];
+  const materie = useMemo(() => (Array.isArray(state.materie) ? state.materie : []), [state.materie]);
 
   // V35.4 — Riconciliazione live del "Piano Argomenti di Oggi": lo
   // study_focus ricevuto oggi da K.A.R.E.N. resta invariato in cache, ma
@@ -478,10 +531,10 @@ export default function MissionControl() {
     : state.settings.shortBreakTime;
   // V40.3 — minuti che verrebbero salvati chiudendo adesso: quelli già in
   // sospeso più i minuti interi del blocco in corso.
+  // V41 — solo un blocco di FOCUS: una pausa sospesa è PAUSED anche lei.
+  const focusInPausa = timer.status === TIMER_STATUS.PAUSED && timer.blockMode !== 'BREAK';
   const minutiBloccoInCorso =
-    timer.status === TIMER_STATUS.FOCUS || timer.status === TIMER_STATUS.PAUSED
-      ? Math.max(0, Math.floor((timer.totalSeconds - timer.remainingSeconds) / 60))
-      : 0;
+    timer.status === TIMER_STATUS.FOCUS || focusInPausa ? Math.max(0, Math.floor((timer.totalSeconds - timer.remainingSeconds) / 60)) : 0;
   const minutiSalvabili = timer.pendingFocusMinutes + minutiBloccoInCorso;
   // V37.0 — l'anteprima ignorava Maximum Carnage: annunciava un costo di
   // Stamina mentre il costo reale applicato dal reducer è zero per tutta
@@ -623,7 +676,7 @@ export default function MissionControl() {
     } else if (derived.primaryTarget) {
       studio = {
         argomento: derived.primaryTarget.materia.nome,
-        materia: `Primary Target · Spider-Score ${derived.primaryTarget.spiderScore}`,
+        materia: `Primary Target · Spider-Score ${formatNumber(derived.primaryTarget.spiderScore, 1)}`,
         rationale: derived.primaryTarget.reason,
         metodo: null,
         materiaId: derived.primaryTarget.materia.id,
@@ -731,6 +784,29 @@ export default function MissionControl() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [timer, handleStartNow, debriefOpen, questModalOpen, confirmInterruptOpen, confirmRestartOpen, setSensoryZero, TIMER_STATUS]);
+
+  // V41 — "Avvia Focus" dalla palette comandi (Ctrl K).
+  useIntent(INTENT.TIMER_START_NOW, () => {
+    if (timer.status === TIMER_STATUS.IDLE && !timer.awaitingDebrief) handleStartNow();
+  });
+
+  // V41 — "Avvia Focus" dal dettaglio di un argomento nel Web-Matrix: si
+  // arriva qui con materia e argomento già scelti e il blocco parte. Con
+  // una sessione ancora da valutare passa dalla stessa conferma di sempre.
+  useIntent(INTENT.TIMER_FOCUS_ON, (payload) => {
+    if (!payload || typeof payload !== 'object') return;
+    if (timer.status !== TIMER_STATUS.IDLE) return;
+    const materiaId = payload.materiaId || null;
+    const sfidaId = payload.sfidaId || null;
+    setSelectedMateriaId(materiaId || '');
+    setSelectedSfidaId(sfidaId || '');
+    intentoInAttesaRef.current = null;
+    if (timer.awaitingDebrief) {
+      setConfirmRestartOpen(true);
+      return;
+    }
+    timer.startFocus(materiaId, sfidaId, false, null);
+  });
 
   const handleInterrupt = useCallback(() => setConfirmInterruptOpen(true), []);
 
@@ -869,32 +945,65 @@ export default function MissionControl() {
 
   if (sensoryZero) {
     // V39 — portal su document.body e z-[60] come le modali: la conferma
-    // "Blood Pact" (anch'essa in un portal, montata dopo) ora compare
-    // SOPRA l'isolamento invece di restare nascosta dietro. Nessun
-    // role="dialog" qui: la scorciatoia Esc/Spazio della pagina deve
+    // "Blood Pact" (anch'essa in un portal, montata dopo) compare SOPRA
+    // l'isolamento. Nessun role="dialog": Esc/Spazio della pagina devono
     // continuare a funzionare dentro Sensory Zero.
     if (typeof document === 'undefined') return null;
     return createPortal(
-      <div className="fixed inset-0 z-[60] px-4 bg-[radial-gradient(ellipse_at_center,rgb(var(--af-surface-rgb))_0%,#000000_100%)] flex flex-col items-center justify-center">
+      <div className="fixed inset-0 z-[60] px-4 bg-app flex flex-col items-center justify-center">
+        <div className="absolute inset-0 bg-[radial-gradient(600px_360px_at_50%_45%,rgb(var(--af-attack-rgb)/0.06),transparent_70%)] pointer-events-none" />
         <button
           type="button"
           onClick={() => setSensoryZero(false)}
-          className="absolute top-4 right-4 sm:top-6 sm:right-6 w-12 h-12 flex items-center justify-center rounded-xl text-slate-500 hover:text-primary hover:bg-white/[0.04] transition-all duration-300"
+          className="absolute top-4 right-4 sm:top-6 sm:right-6 ds-icon-btn !w-11 !h-11"
           aria-label="Esci da Sensory Zero"
         >
-          <Icon name="close" className="w-8 h-8" />
+          <Icon name="close" className="w-6 h-6" />
         </button>
-        <p className="text-base tracking-[0.3em] text-slate-500 mb-6">
-          {timer.status === TIMER_STATUS.FOCUS ? 'FOCUS ATTIVO' : timer.status === TIMER_STATUS.BREAK ? 'PAUSA' : 'ISOLAMENTO SENSORIALE'}
+        <p className="relative ds-eyebrow !text-sm mb-6">
+          {timer.status === TIMER_STATUS.FOCUS
+            ? 'Focus attivo'
+            : timer.status === TIMER_STATUS.BREAK
+            ? 'Pausa'
+            : timer.status === TIMER_STATUS.PAUSED
+            ? timer.blockMode === 'BREAK'
+              ? 'Pausa sospesa'
+              : 'In pausa'
+            : 'Isolamento sensoriale'}
         </p>
-        <p className={`text-[3.75rem] sm:text-[5.5rem] md:text-[7rem] leading-none font-mono font-bold af-mono-nums ${ringColor}`}>
-          {formatClock(timer.remainingSeconds)}
+        <p className={`relative text-[4rem] sm:text-[6rem] md:text-[8rem] leading-none font-mono font-semibold ds-num ${ringColor}`}>
+          {timer.status === TIMER_STATUS.IDLE && !timer.awaitingDebrief
+            ? formatClock(Math.round((Number(effectiveFocusMinutes) || 25) * 60))
+            : formatClock(timer.remainingSeconds)}
         </p>
-        {timer.status === TIMER_STATUS.FOCUS && (
-          <button type="button" onClick={handleInterrupt} className={`mt-10 ${BTN_GHOST}`}>
-            Interrompi (Blood Pact)
-          </button>
+        {activeMateria && timer.status !== TIMER_STATUS.IDLE && (
+          <p className="relative text-sm text-slate-500 mt-5">
+            {activeMateria.nome}
+            {activeSfida ? ` · ${activeSfida.nome}` : ''}
+          </p>
         )}
+        <div className="relative mt-10 flex items-center gap-3">
+          {timer.status === TIMER_STATUS.FOCUS && (
+            <button type="button" onClick={timer.pause} className={BTN_GHOST}>
+              <Icon name="pause" className="w-4 h-4" />
+              Pausa
+            </button>
+          )}
+          {timer.status === TIMER_STATUS.PAUSED && (
+            <button type="button" onClick={timer.resume} className={BTN_SECONDARY}>
+              <Icon name="play" className="w-4 h-4" />
+              Riprendi
+            </button>
+          )}
+          {timer.status === TIMER_STATUS.FOCUS && (
+            <button type="button" onClick={handleInterrupt} className={BTN_DANGER}>
+              Interrompi (Blood Pact)
+            </button>
+          )}
+        </div>
+        <p className="relative mt-8 text-xs text-slate-600 flex items-center gap-1.5">
+          <span className="ds-kbd">Spazio</span> pausa / riprendi · <span className="ds-kbd">Esc</span> esci
+        </p>
         <ConfirmDialog
           open={confirmInterruptOpen}
           onClose={() => setConfirmInterruptOpen(false)}
@@ -910,645 +1019,592 @@ export default function MissionControl() {
     );
   }
 
+  const idle = timer.status === TIMER_STATUS.IDLE && !timer.awaitingDebrief;
+  const todayXp = (Array.isArray(state.starLog) ? state.starLog : [])
+    .filter((e) => e && e.type === 'FOCUS_MINUTES' && e.dateKey === getDateKey())
+    .reduce((sum, e) => sum + (Number(e.xp) || 0), 0);
+  const questsDone = dailyQuests.filter((q) => q.isCompleted).length;
+  const oggiLabel = new Date().toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
+
+  const timerCard = (
+    <div
+      className={`ds-card flex flex-col items-center ${spiderSenseTensionActive ? 'af-spidersense-pulse' : ''} ${
+        spiderSenseUnlockActive ? 'af-spidersense-unlock' : ''
+      }`}
+    >
+      <div className="flex items-center justify-between w-full mb-2">
+        <span className="flex items-center gap-2">
+          <span className="ds-eyebrow">Tactical Timer</span>
+          {spiderSenseTensionActive && (
+            <span className={BADGE.blue}>
+              <Icon name="radar" className="w-3 h-3" />
+              Spider-Sense
+            </span>
+          )}
+        </span>
+        <button
+          type="button"
+          onClick={() => setSensoryZero(true)}
+          className="ds-btn ds-btn-quiet ds-btn-sm !px-2"
+          title="Sensory Zero: solo il countdown, a tutto schermo (Esc)"
+        >
+          <Icon name="eye" className="w-4 h-4" />
+          Sensory Zero
+        </button>
+      </div>
+
+      {activeSkillChips.length > 0 && (
+        <div className="flex flex-wrap items-center justify-center gap-1.5 mb-2">
+          {activeSkillChips.map((label) => (
+            <span key={label} className={BADGE.violet}>
+              <Icon name="chip" className="w-3 h-3" />
+              {label}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="relative w-56 h-56 sm:w-60 sm:h-60 flex items-center justify-center my-2">
+        <svg className="w-full h-full -rotate-90" viewBox="0 0 260 260">
+          <defs>
+            <linearGradient id="timerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor={timerGradientStops[0]} />
+              <stop offset="100%" stopColor={timerGradientStops[1]} />
+            </linearGradient>
+          </defs>
+          <circle cx="130" cy="130" r="120" fill="none" stroke="rgb(255 255 255 / 0.06)" strokeWidth="8" />
+          <circle
+            cx="130"
+            cy="130"
+            r="120"
+            fill="none"
+            stroke="url(#timerGrad)"
+            strokeWidth="8"
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={dashOffset}
+            className={ringColor}
+          />
+        </svg>
+        <div className="absolute flex flex-col items-center">
+          <p className="text-[44px] sm:text-5xl font-mono font-semibold ds-num text-white leading-none">
+            {idle ? formatClock(Math.round((Number(effectiveFocusMinutes) || 25) * 60)) : formatClock(timer.remainingSeconds)}
+          </p>
+          <p className="text-xs font-semibold text-slate-400 mt-3 uppercase tracking-[0.12em]">
+            {timer.status === TIMER_STATUS.FOCUS && (timer.isOverdriveActive ? 'Overdrive' : 'Focus')}
+            {timer.status === TIMER_STATUS.BREAK && 'Pausa'}
+            {timer.status === TIMER_STATUS.PAUSED && (timer.blockMode === 'BREAK' ? 'Pausa sospesa' : 'In pausa')}
+            {timer.status === TIMER_STATUS.IDLE && (timer.awaitingDebrief ? 'Blocco finito' : 'Pronto')}
+          </p>
+        </div>
+      </div>
+
+      {derived.karenAdaptiveTimerActive && timer.status === TIMER_STATUS.IDLE && (
+        <span className={`${BADGE.blue} mb-1`}>
+          <Icon name="chip" className="w-3 h-3" />
+          Preset K.A.R.E.N.: {derived.karenFocusDirective.preset_label || `${effectiveFocusMinutes}/${effectiveShortBreakMinutes}`}
+        </span>
+      )}
+
+      {idle && (
+        <div className="w-full mt-3 space-y-2.5">
+          {/* V41 — la sessione vive in un'altra finestra (PWA e browser
+              insieme, o due schede): meglio saperlo prima di avviarne una
+              seconda. Chiudendo l'altra, il blocco riprende qui da solo. */}
+          {timer.sessionElsewhere && (
+            <p role="status" className="flex items-start gap-2 rounded-lg border border-secondary/30 bg-secondary/[0.07] px-3 py-2.5 text-[13px] text-slate-300 leading-relaxed">
+              <Icon name="layers" className="w-4 h-4 shrink-0 mt-0.5 text-secondary" />
+              <span>
+                Hai una sessione di Focus aperta in un’altra finestra di ArachnoForge. Continua lì, oppure chiudila: qui riprendo il blocco da
+                solo.
+              </span>
+            </p>
+          )}
+          <Dropdown value={selectedMateriaId} onChange={handleMateriaChange} options={materiaOptions} placeholder="Focus generico (nessuna materia)" ariaLabel="Materia" />
+          {selectedMateria && (
+            <Dropdown
+              value={selectedSfidaId}
+              onChange={setSelectedSfidaId}
+              options={sfidaOptions}
+              placeholder="Tutta la materia (nessun nodo specifico)"
+              ariaLabel="Argomento"
+            />
+          )}
+          <button type="button" onClick={handleStartFocus} className={`w-full ${BTN_PRIMARY}`}>
+            <Icon name="play" className="w-4 h-4" />
+            Avvia Focus · {effectiveFocusMinutes} min
+            <span className="opacity-75 font-medium">· −{previewStaminaCost} Stamina</span>
+          </button>
+          {selectedSfida && (
+            <p className={`text-xs text-center ${DIFFICULTY_META[selectedSfida.difficulty].color}`}>
+              Nodo {DIFFICULTY_META[selectedSfida.difficulty].label}
+              {selectedSfida.difficulty === DIFFICULTY.HARD ? ' — più Stamina, +30% XP' : ''}
+            </p>
+          )}
+        </div>
+      )}
+
+      {timer.awaitingDebrief && (
+        <div className="w-full mt-3 space-y-2.5">
+          <p className="text-xs text-center text-slate-400">
+            Sessione in sospeso: <span className="font-semibold text-white ds-num">{timer.pendingFocusMinutes} min</span>
+            {timer.pendingFocusOverdrive ? ' · Overdrive' : ''} — non ancora salvata
+          </p>
+          {timer.status !== TIMER_STATUS.IDLE && (
+            <p className="text-xs text-center text-slate-500">Un blocco è ancora in corso: “Termina e salva” lo ferma e aggiunge i suoi minuti interi.</p>
+          )}
+          <button type="button" onClick={handleEndAndSave} className={`w-full ${BTN_PRIMARY}`}>
+            <Icon name="check" className="w-4 h-4" />
+            Termina sessione e salva
+          </button>
+          <div className="grid grid-cols-2 gap-2.5">
+            <button type="button" onClick={handleOverdrive} className={BTN_AMBER}>
+              <Icon name="bolt" className="w-4 h-4" />
+              Overdrive ×1,5
+            </button>
+            <button type="button" onClick={() => handleTakeBreak(false)} className={BTN_SECONDARY}>
+              <Icon name="pause" className="w-4 h-4" />
+              Pausa {effectiveShortBreakMinutes}′
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(timer.status === TIMER_STATUS.FOCUS || focusInPausa) && (
+        <div className="w-full mt-3 grid grid-cols-2 gap-2.5">
+          {timer.status === TIMER_STATUS.FOCUS ? (
+            <button type="button" onClick={timer.pause} className={BTN_GHOST}>
+              <Icon name="pause" className="w-4 h-4" />
+              Pausa
+            </button>
+          ) : (
+            <button type="button" onClick={timer.resume} className={BTN_SECONDARY}>
+              <Icon name="play" className="w-4 h-4" />
+              Riprendi
+            </button>
+          )}
+          <button type="button" onClick={handleInterrupt} className={BTN_DANGER}>
+            <Icon name="stop" className="w-4 h-4" />
+            Interrompi
+          </button>
+          {!timer.awaitingDebrief && minutiSalvabili > 0 && (
+            <button type="button" onClick={handleEndAndSave} className={`${BTN_GHOST} col-span-2`}>
+              <Icon name="check" className="w-4 h-4 text-emerald-400" />
+              Termina e salva ({minutiSalvabili} min)
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* V41 — la pausa si può sospendere e anche saltare: tornare a
+          studiare prima non costa niente (nessun Blood Pact su una pausa). */}
+      {(timer.status === TIMER_STATUS.BREAK || (timer.status === TIMER_STATUS.PAUSED && timer.blockMode === 'BREAK')) && (
+        <div className="w-full mt-3 space-y-2.5">
+          <div className="grid grid-cols-2 gap-2.5">
+            {timer.status === TIMER_STATUS.BREAK ? (
+              <button type="button" onClick={timer.pause} className={BTN_GHOST}>
+                <Icon name="pause" className="w-4 h-4" />
+                Sospendi
+              </button>
+            ) : (
+              <button type="button" onClick={timer.resume} className={BTN_SECONDARY}>
+                <Icon name="play" className="w-4 h-4" />
+                Riprendi
+              </button>
+            )}
+            <button type="button" onClick={timer.interruptFocus} className={BTN_GHOST}>
+              <Icon name="arrowRight" className="w-4 h-4" />
+              Salta la pausa
+            </button>
+          </div>
+          {timer.status === TIMER_STATUS.BREAK && <p className="text-xs text-slate-500 text-center">La pausa termina da sola, con un rintocco.</p>}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className={H1}>Stark-Web Terminal</h1>
-        <p className="text-base text-slate-400 mt-1.5">Karen: sistemi operativi. Centro di comando del ciclo di studio.</p>
-      </div>
+      <PageHeader
+        eyebrow={oggiLabel.charAt(0).toUpperCase() + oggiLabel.slice(1)}
+        icon="calendar"
+        title="Stark-Web Terminal"
+        subtitle="Il centro di comando della giornata: cosa studiare adesso, per quanto, e come sta andando."
+        actions={
+          <>
+            <HeaderStat icon="clock" label="studio oggi" value={minutiLabel(derived.todayMinutes)} tone="text-secondary" />
+            <HeaderStat icon="star" label="XP oggi" value={`+${formatInt(todayXp)}`} tone="text-accent" />
+            <HeaderStat icon="flag" label="missioni" value={`${questsDone}/${dailyQuests.length || 3}`} tone={questsDone === dailyQuests.length && questsDone > 0 ? 'text-emerald-300' : 'text-slate-100'} />
+          </>
+        }
+      />
 
-      {/* V39.0 — Empire State University: le lezioni di oggi in una riga,
-          solo in modalità Lezioni. Un tocco porta all'orario completo. */}
       <CampusStrip campus={derived.campus} />
 
-      {/* V36.0 — "ADESSO": la decisione operativa del momento, prima di
-          qualunque cruscotto. Visibile solo a timer fermo — durante una
-          sessione la domanda "cosa studio adesso" ha già risposta. */}
-      {timer.status === TIMER_STATUS.IDLE && !timer.awaitingDebrief ? (
-        <NowCard
-          target={nowTarget}
-          minutes={effectiveFocusMinutes}
-          budget={derived.karenBudget}
-          canStart
-          onStart={handleStartNow}
-          onOpenDetails={() => setDetailsOpen((v) => !v)}
-          detailsOpen={detailsOpen}
-        />
-      ) : (
-        // A sessione avviata la card "ADESSO" non serve (la domanda ha già
-        // risposta), ma il comando per aprire i pannelli deve restare
-        // raggiungibile: mai un toggle che scompare col suo contenuto.
-        <button type="button" onClick={() => setDetailsOpen((v) => !v)} className={BTN_GHOST}>
-          <Icon name={detailsOpen ? 'chevronUp' : 'chevronDown'} className="w-4 h-4" />
-          {detailsOpen ? 'Nascondi briefing e quota' : 'Mostra briefing e quota'}
-        </button>
-      )}
-
-      {detailsOpen && (
-        <>
-      {/* V35.0 — Daily Brain: il box briefing mostra ora il vero
-          briefing_text/tactical_advice generato dall'unica chiamata
-          K.A.R.E.N. giornaliera, quando disponibile per oggi — se
-          la telemetria non c'è ancora, degrado con grazia alla citazione
-          statica a rotazione (mai rimossa, solo declassata a fallback). */}
-      <div className={`${CARD} flex items-start gap-3`}>
-        <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-secondary/10 blur-3xl pointer-events-none" />
-        <div className="relative w-9 h-9 rounded-xl bg-secondary/10 flex items-center justify-center text-secondary shrink-0">
-          <Icon name="radar" className="w-5 h-5" />
-        </div>
-        <div className="relative flex-1 min-w-0">
-          <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
-            <p className="text-xs tracking-widest text-slate-500">
-              {karenBriefingToday ? 'K.A.R.E.N. — DAILY BRIEFING' : 'DAILY BRIEFING'}
-            </p>
-            {karenDirectivesToday?.study_window?.label && (
-              <span className={BADGE.blue}>
-                <Icon name="calendar" className="w-3 h-3" />
-                Picco cognitivo: {karenDirectivesToday.study_window.label}
-              </span>
-            )}
-          </div>
-          {karenBriefingToday ? (
-            <>
-              <p className="text-base italic text-slate-300 leading-relaxed">"{karenBriefingToday.briefing_text}"</p>
-              {karenBriefingToday.tactical_advice && (
-                <p className="text-sm text-secondary mt-2 leading-relaxed">{karenBriefingToday.tactical_advice}</p>
-              )}
-            </>
-          ) : (
-            <p className="text-base italic text-slate-300 leading-relaxed">"{staticBriefing}"</p>
-          )}
-        </div>
-      </div>
-
-      {karenDirectivesToday?.mission_control?.load_adjustment_pct < 0 && (
-        <div className={`${CARD} flex items-start gap-3 !py-3.5`}>
-          <div className="relative w-9 h-9 rounded-xl bg-accent/15 border border-accent/40 flex items-center justify-center text-accent shrink-0">
-            <Icon name="bolt" className="w-5 h-5" />
-          </div>
-          <div className="relative">
-            <p className="text-sm font-semibold text-accent">
-              Karen consiglia {karenDirectivesToday.mission_control.load_adjustment_pct}% di carico oggi
-            </p>
-            {karenDirectivesToday.mission_control.rationale && (
-              <p className="text-xs text-slate-400 mt-1 leading-relaxed">{karenDirectivesToday.mission_control.rationale}</p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* V35.3/V35.4 — Study Focus Engine ("Piano Argomenti del Giorno"):
-          unica superficie in cui K.A.R.E.N. nomina un argomento SPECIFICO
-          (non solo una materia) letto dal Web-Matrix reale, con la tecnica
-          di studio motivata sul suo contenuto — vedi directives.study_focus
-          (supabase/functions/karen-oracle/_logic.ts). Card indipendente
-          da mission_control/study_window: può comparire anche quando il
-          carico non viene ridotto (banda OTTIMALE), perché il piano
-          sull'argomento è utile ogni giorno, non solo nei giorni critici.
-          V35.4: il payload del giorno non cambia, ma `liveStudyFocus`
-          (src/utils/studyFocusLive.js) lo riconcilia in tempo reale con lo
-          stato vivo dell'albero — completare il nodo suggerito promuove
-          istantaneamente la prossima opzione, mai una card "congelata". */}
-      {karenDirectivesToday?.study_focus && (liveStudyFocus.primary || liveStudyFocus.exhausted) && (
-        <div className={`${CARD} flex items-start gap-3`}>
-          <div className="relative w-9 h-9 rounded-xl bg-secondary/15 border border-secondary/40 flex items-center justify-center text-secondary shrink-0">
-            <Icon name="target" className="w-5 h-5" />
-          </div>
-          <div className="relative flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
-              <p className="text-xs tracking-widest text-slate-500">PIANO ARGOMENTI DI OGGI</p>
-              <button
-                type="button"
-                onClick={handleRefreshStudyPlan}
-                disabled={karen.scanning}
-                className={`inline-flex items-center gap-1 text-[11px] font-mono text-slate-500 hover:text-secondary transition-colors ${karen.scanning ? 'opacity-60' : ''}`}
-                title="Chiede a K.A.R.E.N. una nuova valutazione completa del piano di oggi"
-              >
-                <Icon name="radar" className={`w-3.5 h-3.5 ${karen.scanning ? 'animate-spin' : ''}`} />
-                {karen.scanning ? 'Aggiornamento...' : 'Aggiorna piano'}
-              </button>
-            </div>
-            {planRefreshFeedback === 'success' && (
-              <p className="text-[11px] text-green-400 mb-1.5">Piano rivalutato da K.A.R.E.N.</p>
-            )}
-            {planRefreshFeedback === 'error' && (
-              <p className="text-[11px] text-primary mb-1.5">{karen.error || 'Rigenerazione non riuscita — riprova.'}</p>
-            )}
-
-            {liveStudyFocus.primary ? (
-              <>
-                {liveStudyFocus.promoted && (
-                  <p className="text-[11px] font-mono text-accent mb-1 flex items-center gap-1">
-                    <Icon name="bolt" className="w-3 h-3" />
-                    Argomento precedente completato — promossa la prossima opzione
-                  </p>
-                )}
-                <p className="text-sm font-semibold text-white">
-                  {liveStudyFocus.primary.argomento}
-                  <span className="text-slate-500 font-normal"> — {liveStudyFocus.primary.materia}</span>
-                </p>
-                {liveStudyFocus.primary.rationale && (
-                  <p className="text-xs text-slate-500 mt-1 leading-relaxed">{liveStudyFocus.primary.rationale}</p>
-                )}
-                {liveStudyFocus.primary.metodo && (
-                  <p className="text-sm text-secondary mt-2 leading-relaxed">{liveStudyFocus.primary.metodo}</p>
-                )}
-              </>
-            ) : (
-              <p className="text-sm text-slate-300 leading-relaxed">
-                Piano di oggi completato — nessun altro argomento o ripasso in sospeso fra quelli proposti. Usa "Aggiorna piano" per una nuova valutazione.
-              </p>
-            )}
-
-            {liveStudyFocus.otherOpenOptions.length > 0 && (
-              <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
-                <p className="text-[11px] font-mono tracking-widest text-slate-500 flex items-center gap-1.5">
-                  <Icon name="grid" className="w-3.5 h-3.5" />
-                  ALTRE OPZIONI DISPONIBILI
-                </p>
-                {liveStudyFocus.otherOpenOptions.map((o, i) => (
-                  <p key={o.sfidaId || `${o.materiaId || 'opt'}-${i}`} className="text-xs text-slate-400 leading-relaxed">
-                    <span className="text-slate-300 font-medium">{o.argomento}</span> ({o.materia})
-                  </p>
-                ))}
-              </div>
-            )}
-
-            {liveStudyFocus.ripassiDaNonSaltare.length > 0 && (
-              <div className="mt-3 pt-3 border-t border-white/10 space-y-2">
-                <p className="text-[11px] font-mono tracking-widest text-slate-500 flex items-center gap-1.5">
-                  <Icon name="book" className="w-3.5 h-3.5" />
-                  RIPASSI DA NON SALTARE
-                </p>
-                {liveStudyFocus.ripassiDaNonSaltare.map((r, idx) => (
-                  <p key={`${r.sfidaId || r.materia}-${r.argomento}-${idx}`} className="text-xs text-slate-400 leading-relaxed">
-                    <span className="text-slate-300 font-medium">{r.argomento}</span> ({r.materia}): {r.nota}
-                  </p>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* K.A.R.E.N. QUANTUM ROUTER — Daily Quota HUD (V23.0, Modulo 1) e
-          Daily Patrol Engine (V23.0, Modulo 2): entrambi sempre visibili
-          in cima allo Stark-Web Terminal, prima del Tactical Timer. */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className={CARD}>
-          <div className="relative flex items-center gap-3 mb-4">
-            <div className="w-9 h-9 rounded-xl bg-primary/15 border border-primary/40 flex items-center justify-center text-primary shrink-0">
-              <Icon name="satellite" className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-xs tracking-widest text-primary font-mono">K.A.R.E.N. QUANTUM ROUTER</p>
-              <h2 className="text-lg font-bold text-white tracking-tight">Quota Odierna</h2>
-            </div>
-          </div>
-          {derived.karenQuotas.length === 0 ? (
-            <EmptyState
-              variant="radar"
-              compact
-              title="Karen: nessuna rotta attiva"
-              subtitle="Apri un nodo nel Web-Matrix con una data d'esame per calcolare la Quota Odierna."
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+        <div className="xl:col-span-7 space-y-6 min-w-0">
+          {idle ? (
+            <NowCard
+              target={nowTarget}
+              minutes={effectiveFocusMinutes}
+              budget={derived.karenBudget}
+              canStart
+              onStart={handleStartNow}
+              onOpenDetails={() => setDetailsOpen((v) => !v)}
+              detailsOpen={detailsOpen}
+              staminaCost={previewStaminaCost}
             />
           ) : (
-            <div className="relative space-y-4 max-h-80 overflow-y-auto af-scroll pr-1">
-              {/* V29.0 — Pillar 1 (Planner Restriction): mai più "tutto
-                  insieme" — al massimo 2 materie spinte oggi (1 in
-                  monotask se una è a distanza critica), il resto resta
-                  visibile ma in coda o congelato. */}
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <span className="text-[11px] font-mono tracking-widest text-secondary">IN FOCUS OGGI</span>
-                  {derived.karenMonotaskActive && (
-                    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-mono border border-primary/50 bg-primary/10 text-primary">
-                      <Icon name="crosshair" className="w-3 h-3" />
-                      MONOTASK — distanza critica
-                    </span>
-                  )}
-                </div>
-                {derived.karenDailyFocusQuotas.length === 0 ? (
-                  <p className="text-xs text-slate-500 italic">Nessuna materia da spingere oggi.</p>
-                ) : (
-                  derived.karenDailyFocusQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} today />)
-                )}
-              </div>
-
-              {derived.karenQueuedQuotas.length > 0 && (
-                <div className="space-y-2.5 pt-3 border-t border-white/10">
-                  <span className="text-[11px] font-mono tracking-widest text-slate-500">IN CODA — non spinta oggi</span>
-                  {derived.karenMonotaskActive && (
-                    <p className="text-xs text-slate-500 italic -mt-1">
-                      Monotask attivo: il tempo di oggi va sulla materia in focus qui sopra. Il "Ritmo" qui sotto è il passo sostenibile SE iniziassi questa materia da oggi, non un'indicazione per la giornata odierna.
-                    </p>
-                  )}
-                  {derived.karenQueuedQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} today={false} />)}
-                </div>
-              )}
-
-              {derived.karenFrozenQuotas.length > 0 && (
-                <div className="space-y-2.5 pt-3 border-t border-white/10">
-                  <span className="text-[11px] font-mono tracking-widest text-slate-500">CONGELATE — propedeuticità mancante</span>
-                  {derived.karenFrozenQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} />)}
-                </div>
-              )}
-
-              {/* V36.0 — Budget Giornaliero Globale: il totale che prima
-                  non esisteva. Con due materie in focus l'app mostrava due
-                  "Oggi: Xh" indipendenti che sommati potevano superare
-                  qualunque giornata reale, e lo si scopriva solo a sera. */}
-              {derived.karenBudget?.totalNeedHours > 0 && (
-                <div className="pt-3 border-t border-white/10">
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <span className="text-[11px] font-mono tracking-widest text-slate-500">BUDGET DI OGGI</span>
-                    <span className={derived.karenBudget.overCapacity ? BADGE.red : BADGE.green}>
-                      {formatHoursMinutes(derived.karenBudget.totalNeedHours)} richieste /{' '}
-                      {formatHoursMinutes(derived.karenBudget.studioHours ?? derived.karenBudget.budgetHours)} per lo studio
-                    </span>
-                  </div>
-                  {derived.karenBudget.sintesiHours > 0 && (
-                    <p className="text-xs text-cyan-300/90 mt-1.5">
-                      + {formatHoursMinutes(derived.karenBudget.sintesiHours)} riservate alla sintesi delle lezioni (su{' '}
-                      {formatHoursMinutes(derived.karenBudget.budgetHours)} della giornata), prese solo dal tempo che gli
-                      esami lasciano libero.
-                    </p>
-                  )}
-                  <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-                    {derived.karenBudget.overCapacity ? (
-                      <>
-                        Karen: il piano di oggi eccede di {formatHoursMinutes(derived.karenBudget.deficitHours)} la tua
-                        capacità reale misurata. Le ore qui sopra sono già state ripartite in proporzione all'urgenza —
-                        ma un deficit che si ripete significa che va spostata una data d'esame o tagliato del programma,
-                        non recuperato a forza di volontà.
-                      </>
-                    ) : (
-                      <>
-                        Margine libero: {formatHoursMinutes(derived.karenBudget.slackHours)}.
-                        {derived.calibration?.capacityConfident
-                          ? ` Capacità calcolata sulle tue ultime ${derived.calibration.observedDays} giornate reali.`
-                          : ' Capacità ancora sul valore di default: servono almeno 7 giorni di sessioni registrate per calibrarla su di te.'}
-                      </>
-                    )}
-                  </p>
-                </div>
-              )}
-            </div>
+            <SessionCard
+              timer={timer}
+              TIMER_STATUS={TIMER_STATUS}
+              activeMateria={activeMateria}
+              activeSfida={activeSfida}
+              modoConsigliato={modoConsigliato}
+              minutiSalvabili={minutiSalvabili}
+              onOpenDetails={() => setDetailsOpen((v) => !v)}
+              detailsOpen={detailsOpen}
+            />
           )}
-        </div>
 
-        <div className={CARD}>
-          <div className="relative flex items-center justify-between gap-3 mb-4">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-secondary/15 border border-secondary/40 flex items-center justify-center text-secondary shrink-0">
-                <Icon name="flag" className="w-5 h-5" />
-              </div>
-              <div>
-                <p className="text-xs tracking-widest text-secondary font-mono">DAILY PATROL</p>
-                <h2 className="text-lg font-bold text-white tracking-tight">Missioni Giornaliere</h2>
-              </div>
-            </div>
-            {state.profile.dailyPatrolsCompleted > 0 && (
-              <span className={BADGE.slate}>{state.profile.dailyPatrolsCompleted} completate a vita</span>
-            )}
-          </div>
-          <div className="relative space-y-3">
-            {dailyQuests.map((q) => {
-              const diffMeta = QUEST_DIFFICULTY_META[q.difficulty] || QUEST_DIFFICULTY_META.EASY;
-              const pct = Math.min(100, Math.round((q.currentProgress / Math.max(1, q.targetAmount)) * 100));
-              const celebrating = celebratingIds.has(q.id);
-              return (
-                <div
-                  key={q.id}
-                  className={`p-3.5 rounded-xl border transition-all duration-300 ${
-                    q.isCompleted ? 'bg-emerald-900/20 border-emerald-400/40' : `${diffMeta.bg} ${diffMeta.border}`
-                  } ${celebrating ? 'af-quest-pop' : ''}`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`w-9 h-9 rounded-lg border flex items-center justify-center shrink-0 ${
-                        q.isCompleted ? 'border-emerald-400/50 text-emerald-400' : `${diffMeta.border} ${diffMeta.color}`
-                      }`}
-                    >
-                      <Icon name={q.isCompleted ? 'check' : q.icon} className="w-4 h-4" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <p className="text-sm font-semibold text-slate-100">{q.title}</p>
-                        <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full border ${diffMeta.border} ${diffMeta.color}`}>
-                          {diffMeta.label}
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-500 truncate">{q.description}</p>
-                    </div>
-                    <span className={q.isCompleted ? BADGE.green : BADGE.amber}>+{q.xpReward}xp</span>
-                  </div>
-                  {/* Vera Progress Bar (Tailwind w-[x%]), mai un placeholder statico. */}
-                  <div className="mt-3 h-2 af-web-bar bg-surface/80 rounded-full overflow-hidden border border-white/10 relative">
-                    <div
-                      className={`h-full bg-gradient-to-r ${diffMeta.bar} transition-[width] duration-500 ease-out relative ${
-                        q.isCompleted ? 'af-quest-bar-complete' : ''
-                      }`}
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                  <p className="text-[11px] text-slate-500 mt-1.5 font-mono">
-                    {Math.min(q.currentProgress, q.targetAmount)}/{q.targetAmount} — {pct}%
-                  </p>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
+          {/* La timer card: a destra su schermi larghi, qui sotto altrimenti. */}
+          <div className="xl:hidden">{timerCard}</div>
 
-        </>
-      )}
-
-      {/* V28.1 — Pillar 1: griglia principale ristrutturata — split 60/40
-          (invece del precedente 66/33 a xl:) che scatta già da `lg:`, cosi'
-          la Home resta ariosa e simmetrica su più fascie di schermo, con
-          Tactical Timer e Quantum Router come veri fuochi visivi della
-          pagina (il Combat Log, ora in Karen OS Settings, non affolla più
-          la colonna secondaria). */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 lg:gap-8">
-        <div className="lg:col-span-3 space-y-6">
-          {/* Tactical Timer — V28.1 (Pillar 3): pulsazione olografica di
-              tensione HUD durante una sessione su una Materia, anello di
-              sblocco al completamento pulito (Spider-Sense Focus Surge). */}
-          <div
-            className={`${CARD} flex flex-col items-center ${spiderSenseTensionActive ? 'af-spidersense-pulse' : ''} ${
-              spiderSenseUnlockActive ? 'af-spidersense-unlock' : ''
-            }`}
-          >
-            <div className="absolute -top-24 left-1/2 -translate-x-1/2 w-72 h-72 rounded-full bg-primary/10 blur-3xl pointer-events-none" />
-            <div className="relative flex items-center justify-between w-full mb-4">
-              <span className="text-base tracking-widest text-slate-400 flex items-center gap-2">
-                TACTICAL TIMER
-                {spiderSenseTensionActive && (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-secondary/50 bg-secondary/10 text-secondary px-2 py-0.5 text-[10px] font-mono tracking-wide">
-                    <Icon name="radar" className="w-3 h-3" />
-                    SPIDER-SENSE
-                  </span>
-                )}
-              </span>
-              <button
-                type="button"
-                onClick={() => setSensoryZero(true)}
-                className="flex items-center gap-1.5 text-base text-slate-400 hover:text-secondary transition-all duration-300"
-              >
-                <Icon name="eye" className="w-5 h-5" />
-                Sensory Zero
-              </button>
-            </div>
-
-            {/* V31.3 — Skill Tree Feedback Loop: bonus passivi realmente
-                attivi sulla sessione in corso, mai un doppione dell'elenco
-                skill statico già presente in Armory. */}
-            {activeSkillChips.length > 0 && (
-              <div className="relative flex flex-wrap items-center justify-center gap-1.5 -mt-1 mb-3">
-                {activeSkillChips.map((label) => (
-                  <span key={label} className={BADGE.blue}>
-                    <Icon name="chip" className="w-3 h-3" />
-                    {label}
-                  </span>
-                ))}
-              </div>
-            )}
-
-            <div className="relative w-52 h-52 sm:w-64 sm:h-64 flex items-center justify-center">
-              <svg className="w-52 h-52 sm:w-64 sm:h-64 -rotate-90" viewBox="0 0 260 260">
-                <defs>
-                  <linearGradient id="timerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stopColor={timerGradientStops[0]} />
-                    <stop offset="100%" stopColor={timerGradientStops[1]} />
-                  </linearGradient>
-                </defs>
-                <circle cx="130" cy="130" r="120" fill="none" stroke="currentColor" strokeOpacity="0.12" strokeWidth="10" className="text-secondary" />
-                <circle
-                  cx="130"
-                  cy="130"
-                  r="120"
-                  fill="none"
-                  stroke="url(#timerGrad)"
-                  strokeWidth="10"
-                  strokeLinecap="round"
-                  strokeDasharray={circumference}
-                  strokeDashoffset={dashOffset}
-                  // V40.0 — niente transizione CSS sull'anello: con un tick
-                  // ogni 250 ms la transizione di 250 ms lo teneva in
-                  // animazione continua, ridisegnando l'ombra luminosa a
-                  // ogni frame per tutta la sessione. Il passo per tick è
-                  // di una frazione di pixel: a occhio è identico.
-                  className={ringColor}
-                  style={{ filter: `drop-shadow(0 0 10px currentColor)` }}
-                />
-              </svg>
-              <div className="absolute flex flex-col items-center">
-                {/* V40.0 — a timer fermo mostra la durata del prossimo blocco
-                    (25:00), non un "00:00" che sembra un conto già finito. */}
-                <p className="text-4xl sm:text-5xl font-mono font-bold af-mono-nums tabular-nums text-white">
-                  {timer.status === TIMER_STATUS.IDLE && !timer.awaitingDebrief
-                    ? formatClock(Math.round((Number(effectiveFocusMinutes) || 25) * 60))
-                    : formatClock(timer.remainingSeconds)}
-                </p>
-                <p className="text-base text-slate-400 mt-2 tracking-widest">
-                  {timer.status === TIMER_STATUS.FOCUS && (timer.isOverdriveActive ? 'OVERDRIVE' : 'FOCUS')}
-                  {timer.status === TIMER_STATUS.BREAK && 'PAUSA'}
-                  {timer.status === TIMER_STATUS.PAUSED && 'IN PAUSA'}
-                  {timer.status === TIMER_STATUS.IDLE && 'PRONTO AL LANCIO'}
-                </p>
-                {activeMateria && timer.status !== TIMER_STATUS.IDLE && (
-                  <div className="text-center mt-1 flex flex-col items-center gap-1.5">
-                    <p className="text-xs text-secondary">{activeMateria.nome}</p>
-                    {activeSfida && <p className="text-xs text-slate-500">{activeSfida.nome}</p>}
-                    {/* V38.0 — il modo consigliato per QUESTO argomento,
-                        sotto il countdown: è la differenza fra aprire il
-                        libro e aprire il quaderno, e si decide prima di
-                        mettersi a sedere, non a sessione finita. */}
-                    {activeSfida && modoConsigliato && (
-                      <span
-                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-mono ${WORK_MODE_META[modoConsigliato].border} ${WORK_MODE_META[modoConsigliato].bg} ${WORK_MODE_META[modoConsigliato].color}`}
-                        title={WORK_MODE_META[modoConsigliato].hint}
-                      >
-                        <Icon name={WORK_MODE_META[modoConsigliato].icon} className="w-3 h-3" />
-                        {WORK_MODE_META[modoConsigliato].label}
+          {detailsOpen && (
+            <>
+              {/* V35.0 — Daily Brain: briefing generato da K.A.R.E.N. quando
+                  c'è, altrimenti la citazione a rotazione. */}
+              <div className={`${CARD} flex items-start gap-3.5`}>
+                <span className="ds-icon-tile text-secondary">
+                  <Icon name="radar" className="w-[18px] h-[18px]" />
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2 flex-wrap mb-1.5">
+                    <p className="ds-eyebrow">{karenBriefingToday ? 'K.A.R.E.N. · Daily Briefing' : 'Daily Briefing'}</p>
+                    {karenDirectivesToday?.study_window?.label && (
+                      <span className={BADGE.blue}>
+                        <Icon name="clock" className="w-3 h-3" />
+                        Picco cognitivo: {karenDirectivesToday.study_window.label}
                       </span>
                     )}
                   </div>
-                )}
-              </div>
-            </div>
-
-            {/* V35.0 — Focus Timer Adattivo: badge visibile SOLO quando
-                `settings.karenAdaptiveTimer` è attivo E K.A.R.E.N. ha
-                davvero sovrascritto i minuti odierni (mai un override
-                silenzioso — l'utente vede sempre perché il timer non è più
-                sui minuti di Core Config). */}
-            {derived.karenAdaptiveTimerActive && timer.status === TIMER_STATUS.IDLE && (
-              <div className="relative -mt-1 mb-1">
-                <span className={BADGE.blue}>
-                  <Icon name="chip" className="w-3 h-3" />
-                  Preset Adattivo K.A.R.E.N.: {derived.karenFocusDirective.preset_label || `${effectiveFocusMinutes}/${effectiveShortBreakMinutes}`}
-                </span>
-              </div>
-            )}
-
-            {timer.status === TIMER_STATUS.IDLE && !timer.awaitingDebrief && (
-              <div className="relative w-full mt-6 space-y-3">
-                <Dropdown
-                  value={selectedMateriaId}
-                  onChange={handleMateriaChange}
-                  options={materiaOptions}
-                  placeholder="Focus generico (nessuna materia)"
-                />
-
-                {selectedMateria && (
-                  <Dropdown
-                    value={selectedSfidaId}
-                    onChange={setSelectedSfidaId}
-                    options={sfidaOptions}
-                    placeholder="Focus sul Quadrante (nessun nodo specifico)"
-                  />
-                )}
-
-                <button type="button" onClick={handleStartFocus} className={`w-full ${BTN_PRIMARY}`}>
-                  <Icon name="play" className="w-6 h-6" />
-                  Avvia Focus ({effectiveFocusMinutes} min · -{previewStaminaCost} Stamina)
-                </button>
-                {selectedSfida && (
-                  <p className={`text-[11px] text-center ${DIFFICULTY_META[selectedSfida.difficulty].color}`}>
-                    Nodo {DIFFICULTY_META[selectedSfida.difficulty].label}
-                    {selectedSfida.difficulty === DIFFICULTY.HARD ? ' — costo Stamina maggiorato, +30% XP' : ''}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {timer.awaitingDebrief && (
-              <div className="relative w-full mt-6 space-y-3">
-                <p className="text-[11px] text-center text-slate-500 font-mono">
-                  Sessione in sospeso: {timer.pendingFocusMinutes} min{timer.pendingFocusOverdrive ? ' · overdrive attivo' : ''} — non ancora salvata
-                </p>
-                {timer.status !== TIMER_STATUS.IDLE && (
-                  <p className="text-[11px] text-center text-slate-500">
-                    Un blocco è ancora in corso: "Termina sessione e salva" lo ferma e aggiunge i suoi minuti interi.
-                  </p>
-                )}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <button type="button" onClick={handleOverdrive} className={BTN_AMBER}>
-                    <Icon name="bolt" className="w-6 h-6" />
-                    OVERDRIVE (x1.5 XP)
-                  </button>
-                  <button type="button" onClick={() => handleTakeBreak(false)} className={BTN_SECONDARY}>
-                    <Icon name="pause" className="w-6 h-6" />
-                    PAUSA ({effectiveShortBreakMinutes} min)
-                  </button>
-                  <button type="button" onClick={handleEndAndSave} className={BTN_PRIMARY}>
-                    <Icon name="check" className="w-6 h-6" />
-                    TERMINA SESSIONE E SALVA
-                  </button>
+                  {karenBriefingToday ? (
+                    <>
+                      <p className="text-[15px] text-slate-200 leading-relaxed">“{karenBriefingToday.briefing_text}”</p>
+                      {karenBriefingToday.tactical_advice && (
+                        <p className="text-sm text-secondary mt-2 leading-relaxed">{karenBriefingToday.tactical_advice}</p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-[15px] text-slate-300 leading-relaxed italic">“{staticBriefing}”</p>
+                  )}
                 </div>
               </div>
-            )}
 
-            {(timer.status === TIMER_STATUS.FOCUS || timer.status === TIMER_STATUS.PAUSED) && (
-              <div className="relative w-full mt-6 grid grid-cols-2 gap-3">
-                {timer.status === TIMER_STATUS.FOCUS ? (
-                  <button type="button" onClick={timer.pause} className={BTN_GHOST}>
-                    <Icon name="pause" className="w-5 h-5" />
-                    Pausa
-                  </button>
+              {karenDirectivesToday?.mission_control?.load_adjustment_pct < 0 && (
+                <div className="rounded-xl border border-accent/30 bg-accent/[0.06] px-4 py-3 flex items-start gap-3">
+                  <Icon name="bolt" className="w-4 h-4 text-accent mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-sm font-semibold text-accent">
+                      Karen consiglia {karenDirectivesToday.mission_control.load_adjustment_pct}% di carico oggi
+                    </p>
+                    {karenDirectivesToday.mission_control.rationale && (
+                      <p className="text-xs text-slate-400 mt-1 leading-relaxed">{karenDirectivesToday.mission_control.rationale}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* V35.3/V35.4 — Piano Argomenti del Giorno, riconciliato live
+                  con l'albero (src/utils/studyFocusLive.js). */}
+              {karenDirectivesToday?.study_focus && (liveStudyFocus.primary || liveStudyFocus.exhausted) && (
+                <div className={`${CARD} flex items-start gap-3.5`}>
+                  <span className="ds-icon-tile text-secondary">
+                    <Icon name="target" className="w-[18px] h-[18px]" />
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2 flex-wrap mb-1.5">
+                      <p className="ds-eyebrow">Piano argomenti di oggi</p>
+                      <button
+                        type="button"
+                        onClick={handleRefreshStudyPlan}
+                        disabled={karen.scanning}
+                        className="ds-btn ds-btn-quiet ds-btn-sm !px-2"
+                        title="Chiede a K.A.R.E.N. una nuova valutazione completa del piano di oggi"
+                      >
+                        <Icon name="refresh" className={`w-3.5 h-3.5 ${karen.scanning ? 'animate-spin' : ''}`} />
+                        {karen.scanning ? 'Aggiornamento…' : 'Aggiorna piano'}
+                      </button>
+                    </div>
+                    {planRefreshFeedback === 'success' && <p className="text-xs text-emerald-300 mb-1.5">Piano rivalutato da K.A.R.E.N.</p>}
+                    {planRefreshFeedback === 'error' && (
+                      <p className="text-xs text-primary mb-1.5">{karen.error || 'Rigenerazione non riuscita — riprova.'}</p>
+                    )}
+                    {liveStudyFocus.primary ? (
+                      <>
+                        {liveStudyFocus.promoted && (
+                          <p className="text-xs text-accent mb-1 flex items-center gap-1">
+                            <Icon name="bolt" className="w-3 h-3" />
+                            Argomento precedente completato: promossa la prossima opzione
+                          </p>
+                        )}
+                        <p className="text-sm font-semibold text-white">
+                          {liveStudyFocus.primary.argomento}
+                          <span className="text-slate-500 font-normal"> — {liveStudyFocus.primary.materia}</span>
+                        </p>
+                        {liveStudyFocus.primary.rationale && (
+                          <p className="text-xs text-slate-400 mt-1 leading-relaxed">{liveStudyFocus.primary.rationale}</p>
+                        )}
+                        {liveStudyFocus.primary.metodo && (
+                          <p className="text-sm text-secondary mt-2 leading-relaxed">{liveStudyFocus.primary.metodo}</p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-sm text-slate-300 leading-relaxed">
+                        Piano di oggi completato: nessun altro argomento o ripasso in sospeso fra quelli proposti. “Aggiorna piano” per una nuova valutazione.
+                      </p>
+                    )}
+                    {liveStudyFocus.otherOpenOptions.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-line space-y-1.5">
+                        <p className="ds-eyebrow">Altre opzioni</p>
+                        {liveStudyFocus.otherOpenOptions.map((o, i) => (
+                          <p key={o.sfidaId || `${o.materiaId || 'opt'}-${i}`} className="text-xs text-slate-400 leading-relaxed">
+                            <span className="text-slate-200 font-medium">{o.argomento}</span> · {o.materia}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                    {liveStudyFocus.ripassiDaNonSaltare.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-line space-y-1.5">
+                        <p className="ds-eyebrow">Ripassi da non saltare</p>
+                        {liveStudyFocus.ripassiDaNonSaltare.map((r, idx) => (
+                          <p key={`${r.sfidaId || r.materia}-${r.argomento}-${idx}`} className="text-xs text-slate-400 leading-relaxed">
+                            <span className="text-slate-200 font-medium">{r.argomento}</span> ({r.materia}): {r.nota}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* K.A.R.E.N. Quantum Router — Quota Odierna */}
+              <div className={CARD}>
+                <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+                  <div className="flex items-center gap-3">
+                    <span className="ds-icon-tile text-primary">
+                      <Icon name="satellite" className="w-[18px] h-[18px]" />
+                    </span>
+                    <div>
+                      <p className="ds-eyebrow">K.A.R.E.N. Quantum Router</p>
+                      <h2 className="ds-h2">Quota Odierna</h2>
+                    </div>
+                  </div>
+                  {derived.karenMonotaskActive && (
+                    <span className={BADGE.red}>
+                      <Icon name="crosshair" className="w-3 h-3" />
+                      Monotask · esame vicino
+                    </span>
+                  )}
+                </div>
+                {derived.karenQuotas.length === 0 ? (
+                  <EmptyState
+                    variant="radar"
+                    compact
+                    title="Nessuna rotta attiva"
+                    subtitle="Apri una materia nel Web-Matrix con una data d’esame per calcolare la Quota Odierna."
+                  />
                 ) : (
-                  <button type="button" onClick={timer.resume} className={BTN_SECONDARY}>
-                    <Icon name="play" className="w-5 h-5" />
-                    Riprendi
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={handleInterrupt}
-                  className="inline-flex items-center justify-center gap-2 bg-white/[0.03] backdrop-blur-md border border-primary/30 text-primary font-semibold tracking-wide text-sm px-5 py-2.5 rounded-xl hover:bg-primary/10 hover:border-primary/60 transition-all duration-300"
-                >
-                  <Icon name="stop" className="w-5 h-5" />
-                  Interrompi
-                </button>
-                {/* V40.3 — chiudere una sessione senza aspettare la fine
-                    del blocco e senza il Blood Pact: i minuti interi già
-                    fatti si salvano, nessuna penalità. */}
-                {!timer.awaitingDebrief && minutiSalvabili > 0 && (
-                  <button type="button" onClick={handleEndAndSave} className={`${BTN_GHOST} col-span-2`}>
-                    <Icon name="check" className="w-5 h-5 text-emerald-400" />
-                    Termina e salva ({minutiSalvabili} min)
-                  </button>
+                  <div className="space-y-5">
+                    <div className="space-y-2">
+                      <p className="ds-eyebrow !text-secondary">In focus oggi</p>
+                      {derived.karenDailyFocusQuotas.length === 0 ? (
+                        <p className="text-sm text-slate-500">Nessuna materia da spingere oggi.</p>
+                      ) : (
+                        derived.karenDailyFocusQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} today />)
+                      )}
+                    </div>
+
+                    {derived.karenQueuedQuotas.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="ds-eyebrow">In coda · non spinte oggi</p>
+                        {derived.karenMonotaskActive && (
+                          <p className="text-xs text-slate-500">
+                            Monotask attivo: il tempo di oggi va sulla materia in focus. Il ritmo qui sotto è il passo che servirebbe iniziando da oggi.
+                          </p>
+                        )}
+                        {derived.karenQueuedQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} today={false} />)}
+                      </div>
+                    )}
+
+                    {derived.karenFrozenQuotas.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="ds-eyebrow">Congelate · propedeuticità mancante</p>
+                        {derived.karenFrozenQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} />)}
+                      </div>
+                    )}
+
+                    {derived.karenBudget?.totalNeedHours > 0 && (
+                      <div className="ds-well px-4 py-3">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <p className="ds-eyebrow">Budget di oggi</p>
+                          <span className={derived.karenBudget.overCapacity ? BADGE.red : BADGE.green}>
+                            {formatHoursMinutes(derived.karenBudget.totalNeedHours)} richieste / {formatHoursMinutes(derived.karenBudget.studioHours ?? derived.karenBudget.budgetHours)} per lo studio
+                          </span>
+                        </div>
+                        {derived.karenBudget.sintesiHours > 0 && (
+                          <p className="text-xs text-cyan-300/90 mt-2">
+                            + {formatHoursMinutes(derived.karenBudget.sintesiHours)} riservate alla sintesi delle lezioni (su {formatHoursMinutes(derived.karenBudget.budgetHours)} della giornata), prese solo dal tempo che gli esami lasciano libero.
+                          </p>
+                        )}
+                        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                          {derived.karenBudget.overCapacity ? (
+                            <>
+                              Il piano di oggi supera di {formatHoursMinutes(derived.karenBudget.deficitHours)} la tua capacità reale misurata. Le ore sono già ripartite in proporzione all’urgenza: un deficit che si ripete significa spostare una data o tagliare programma, non recuperare a forza di volontà.
+                            </>
+                          ) : (
+                            <>
+                              Margine libero: {formatHoursMinutes(derived.karenBudget.slackHours)}.
+                              {derived.calibration?.capacityConfident
+                                ? ` Capacità calcolata sulle tue ultime ${derived.calibration.observedDays} giornate.`
+                                : ' Capacità ancora sul valore di default: servono almeno 7 giorni di sessioni per calibrarla su di te.'}
+                            </>
+                          )}
+                        </p>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
-            )}
+            </>
+          )}
 
-            {timer.status === TIMER_STATUS.BREAK && (
-              <p className="relative text-base text-slate-400 mt-4">La pausa termina automaticamente.</p>
-            )}
+          {/* Daily Patrol — sempre in vista: la gamification resta in primo piano. */}
+          <div className={CARD}>
+            <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+              <div className="flex items-center gap-3">
+                <span className="ds-icon-tile text-secondary">
+                  <Icon name="flag" className="w-[18px] h-[18px]" />
+                </span>
+                <div>
+                  <p className="ds-eyebrow">Daily Patrol</p>
+                  <h2 className="ds-h2">Missioni di oggi</h2>
+                </div>
+              </div>
+              <span className="flex items-center gap-2">
+                <span className={questsDone === dailyQuests.length && questsDone > 0 ? BADGE.green : BADGE.slate}>
+                  {questsDone}/{dailyQuests.length} completate
+                </span>
+                {state.profile.dailyPatrolsCompleted > 0 && (
+                  <span className="hidden sm:inline text-xs text-slate-500 ds-num">{formatInt(state.profile.dailyPatrolsCompleted)} a vita</span>
+                )}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {dailyQuests.map((q) => {
+                const diffMeta = QUEST_DIFFICULTY_META[q.difficulty] || QUEST_DIFFICULTY_META.EASY;
+                const pct = Math.min(100, Math.round((q.currentProgress / Math.max(1, q.targetAmount)) * 100));
+                const celebrating = celebratingIds.has(q.id);
+                return (
+                  <div
+                    key={q.id}
+                    className={`relative rounded-xl border p-3.5 flex flex-col gap-3 ${
+                      q.isCompleted ? 'border-emerald-400/30 bg-emerald-400/[0.05]' : 'border-line bg-surface'
+                    } ${celebrating ? 'af-quest-pop' : ''}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className={`w-8 h-8 rounded-lg border flex items-center justify-center shrink-0 ${q.isCompleted ? 'border-emerald-400/40 text-emerald-300' : `${diffMeta.border} ${diffMeta.color}`}`}>
+                        <Icon name={q.isCompleted ? 'check' : q.icon} className="w-4 h-4" />
+                      </span>
+                      <span className={q.isCompleted ? BADGE.green : BADGE.amber}>+{q.xpReward} XP</span>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-100 leading-snug">{q.title}</p>
+                      <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{q.description}</p>
+                    </div>
+                    <div className="mt-auto">
+                      <div className="ds-progress relative">
+                        <span
+                          className={`${q.isCompleted ? 'bg-emerald-400 af-quest-bar-complete relative' : diffMeta.solid || 'bg-secondary'}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      <p className="flex items-center justify-between text-[11px] text-slate-500 mt-1.5 ds-num">
+                        <span className={diffMeta.color}>{diffMeta.label}</span>
+                        <span>
+                          {Math.min(q.currentProgress, q.targetAmount)}/{q.targetAmount}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           <DoomsdayClock nextExam={derived.nextExam} trajectory={derived.trajectory} />
         </div>
 
-        <div className="lg:col-span-2 space-y-6">
-          <div className={derived.fatigued ? CARD_ALERT : CARD}>
-            {derived.fatigued && !state.settings.calmMode && <div className="af-interference rounded-2xl" />}
-            {/* V37.0 — la Stamina REALE (quella che dimezza gli XP) è
-                tornata la barra principale; il Readiness biometrico
-                resta, accanto, con il proprio nome. */}
+        <div className="xl:col-span-5 space-y-6 min-w-0">
+          <div className="hidden xl:block">{timerCard}</div>
+
+          <div className={derived.fatigued ? 'ds-card ds-card-alert' : CARD}>
             <StaminaBar
               stamina={state.profile.stamina}
-              readinessScore={karen.hasSession ? readinessScore : null}
+              readinessScore={karen.hasSession && karen.briefing ? readinessScore : null}
               readinessBand={karen.readinessBand}
             />
           </div>
 
-          {/* V27.0 — Pillar 4: Daily Web-Sling, widget compatto e non
-              invadente nella colonna secondaria della Home. */}
           <WebSlingChest />
 
           <div className={CARD}>
-            <div className="relative flex items-center justify-between mb-3">
-              <span className="text-base tracking-widest text-slate-400">DAILY PROTOCOLS</span>
-              <button
-                type="button"
-                onClick={() => setQuestModalOpen(true)}
-                className="-mr-2 w-10 h-10 flex items-center justify-center rounded-xl text-slate-400 hover:text-secondary hover:bg-white/[0.04] transition-all duration-300 active:scale-95"
-                aria-label="Aggiungi Quick Quest"
-              >
+            <div className="flex items-center justify-between mb-3.5">
+              <div className="flex items-center gap-3">
+                <span className="ds-icon-tile text-secondary">
+                  <Icon name="bolt" className="w-[18px] h-[18px]" />
+                </span>
+                <div>
+                  <p className="ds-eyebrow">Ricarica Stamina</p>
+                  <h2 className="ds-h2">Daily Protocols</h2>
+                </div>
+              </div>
+              <button type="button" onClick={() => setQuestModalOpen(true)} className="ds-icon-btn" aria-label="Aggiungi Daily Protocol" title="Aggiungi un protocollo">
                 <Icon name="plus" className="w-5 h-5" />
               </button>
             </div>
-            <div className="relative space-y-2">
+            <div className="space-y-2">
               {(Array.isArray(state.quickQuests) ? state.quickQuests : []).map((q) => {
                 const usedToday = (Array.isArray(state.profile.dailyProtocolsCompletedToday) ? state.profile.dailyProtocolsCompletedToday : []).includes(q.id);
                 return (
-                <div key={q.id} className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleQuickQuest(q.id, usedToday)}
-                    disabled={usedToday}
-                    aria-disabled={usedToday}
-                    className="flex-1 min-w-0 flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-surface/70 border border-secondary/15 hover:border-secondary/50 transition-all duration-300 hover:scale-[1.01] active:scale-95 text-base disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-secondary/15 disabled:hover:scale-100"
-                  >
-                    <span className="text-slate-200 text-left min-w-0 break-words">{q.nome}{usedToday ? ' — fatto oggi' : ''}</span>
-                    <span className="flex items-center gap-2 shrink-0">
-                      <span className="text-secondary font-mono text-base">+{q.staminaReward}</span>
-                      {q.xpReward > 0 && <span className="text-accent font-mono text-base">+{q.xpReward}xp</span>}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDeleteQuestTarget(q)}
-                    className="w-10 h-10 shrink-0 flex items-center justify-center rounded-xl text-slate-500 hover:text-primary hover:bg-white/[0.04] transition-all duration-300 active:scale-95"
-                    aria-label={`Elimina protocollo ${q.nome}`}
-                  >
-                    <Icon name="trash" className="w-5 h-5" />
-                  </button>
-                </div>
+                  <div key={q.id} className="group flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleQuickQuest(q.id, usedToday)}
+                      disabled={usedToday}
+                      aria-disabled={usedToday}
+                      className="flex-1 min-w-0 flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-3.5 py-2.5 text-sm hover:border-secondary/40 hover:bg-panel-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-line disabled:hover:bg-surface"
+                    >
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <span className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${usedToday ? 'border-emerald-400 bg-emerald-400/20 text-emerald-300' : 'border-slate-600'}`}>
+                          {usedToday && <Icon name="check" className="w-3 h-3" strokeWidth={2.4} />}
+                        </span>
+                        <span className={`text-left min-w-0 break-words ${usedToday ? 'text-slate-400 line-through decoration-slate-600' : 'text-slate-200'}`}>{q.nome}</span>
+                      </span>
+                      <span className="flex items-center gap-2 shrink-0 text-xs font-semibold ds-num">
+                        <span className="text-secondary">+{q.staminaReward} Stamina</span>
+                        {q.xpReward > 0 && <span className="text-accent">+{q.xpReward} XP</span>}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteQuestTarget(q)}
+                      className="ds-icon-btn opacity-60 group-hover:opacity-100 hover:!text-primary"
+                      aria-label={`Elimina protocollo ${q.nome}`}
+                    >
+                      <Icon name="trash" className="w-4 h-4" />
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -1562,14 +1618,12 @@ export default function MissionControl() {
         onConfirm={confirmInterrupt}
         title="Blood Pact"
         message={`Interrompere ora la sessione di Focus costa ${derived.effectiveBloodPactPenalty} XP${
-            minutiSalvabili > 0 ? ` e butta via ${minutiSalvabili} minuti già fatti — per tenerli usa "Termina e salva"` : ''
-          }. Confermi il sacrificio?`}
+          minutiSalvabili > 0 ? ` e butta via ${minutiSalvabili} minuti già fatti — per tenerli usa "Termina e salva"` : ''
+        }. Confermi il sacrificio?`}
         confirmLabel="Sacrifica XP"
       />
 
-      {/* V39 — eliminare un protocollo passa da una conferma: il cestino
-          stava a pochi pixel dal protocollo stesso e un tocco impreciso lo
-          cancellava senza possibilità di tornare indietro. */}
+      {/* V39 — eliminare un protocollo passa da una conferma. */}
       <ConfirmDialog
         open={!!deleteQuestTarget}
         onClose={() => setDeleteQuestTarget(null)}
@@ -1582,16 +1636,14 @@ export default function MissionControl() {
         confirmLabel="Elimina"
       />
 
-      {/* V35.0 — guardia "sessione non salvata": mai più una concatenazione
-          silenziosa di una nuova sessione su una materia/nodo diversi
-          mentre minuti già chiusi restano ancora da Debriefare. */}
+      {/* V35.0 — guardia "sessione non salvata". */}
       <ConfirmDialog
         open={confirmRestartOpen}
         onClose={() => setConfirmRestartOpen(false)}
         onConfirm={confirmRestartFocus}
-        title="Sessione Non Salvata"
-        message={`Hai una sessione da ${timer.pendingFocusMinutes} minuti non ancora Debriefata. Avviarne una nuova ora la lascia in sospeso: confermi comunque?`}
-        confirmLabel="Avvia Comunque"
+        title="Sessione non salvata"
+        message={`Hai una sessione da ${timer.pendingFocusMinutes} minuti non ancora salvata. Avviarne una nuova la lascia in sospeso: confermi comunque?`}
+        confirmLabel="Avvia comunque"
       />
 
       <DebriefModal
@@ -1606,46 +1658,62 @@ export default function MissionControl() {
         calibration={derived.calibration}
       />
 
-      <Modal open={questModalOpen} onClose={() => setQuestModalOpen(false)} title="Nuova Quick Quest">
+      <Modal open={questModalOpen} onClose={() => setQuestModalOpen(false)} title="Nuovo Daily Protocol">
         <div className="space-y-4">
           <div>
-            <label className="text-base text-slate-400 block mb-1.5">Nome attività</label>
+            <label className={LABEL} htmlFor="af-quest-nome">
+              Nome attività
+            </label>
             <input
+              id="af-quest-nome"
               type="text"
               value={questNome}
               onChange={(e) => setQuestNome(e.target.value)}
               className={INPUT}
               placeholder="Es. Doccia fredda"
+              maxLength={60}
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-base text-slate-400 block mb-1.5">Ricarica Stamina</label>
+              <label className={LABEL} htmlFor="af-quest-stamina">
+                Ricarica Stamina
+              </label>
               <input
+                id="af-quest-stamina"
                 type="number"
                 min={1}
                 max={100}
                 value={questReward}
-                onChange={(e) => setQuestReward(Number(e.target.value))}
+                onChange={(e) => setQuestReward(e.target.value)}
                 className={INPUT}
               />
             </div>
             <div>
-              <label className="text-base text-slate-400 block mb-1.5">Bonus XP (opz.)</label>
+              <label className={LABEL} htmlFor="af-quest-xp">
+                Bonus XP (facoltativo)
+              </label>
               <input
+                id="af-quest-xp"
                 type="number"
                 min={0}
+                max={500}
                 value={questXpReward}
-                onChange={(e) => setQuestXpReward(Number(e.target.value))}
+                onChange={(e) => setQuestXpReward(e.target.value)}
                 className={INPUT}
               />
             </div>
           </div>
+          <p className="text-xs text-slate-500">Stamina da 1 a 100, bonus XP da 0 a 500. Ogni protocollo vale una volta al giorno.</p>
           <button
             type="button"
             disabled={!questNome.trim()}
             onClick={() => {
-              actions.addQuickQuest(questNome.trim(), questReward, questXpReward);
+              // V41 — valori sempre validi: prima un campo svuotato arrivava
+              // al reducer come NaN e rendeva la Stamina "NaN%" per sempre.
+              const stamina = Math.min(100, Math.max(1, Math.round(Number(questReward) || 0)));
+              const xp = Math.min(500, Math.max(0, Math.round(Number(questXpReward) || 0)));
+              actions.addQuickQuest(questNome.trim(), stamina, xp);
               setQuestNome('');
               setQuestReward(20);
               setQuestXpReward(0);
@@ -1653,7 +1721,8 @@ export default function MissionControl() {
             }}
             className={`w-full ${BTN_SECONDARY}`}
           >
-            Aggiungi Quest
+            <Icon name="plus" className="w-4 h-4" />
+            Aggiungi protocollo
           </button>
         </div>
       </Modal>

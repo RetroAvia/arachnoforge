@@ -10,6 +10,11 @@ import PageErrorBoundary from './components/PageErrorBoundary.jsx';
 import NexusGate from './components/NexusGate.jsx';
 import BootScreen from './components/BootScreen.jsx';
 import MaxCarnageBanner from './components/MaxCarnageBanner.jsx';
+import CommandPalette from './components/CommandPalette.jsx';
+import PasswordDialog from './components/PasswordDialog.jsx';
+import { NAV_ITEMS } from './components/Sidebar.jsx';
+import { useFocusTimerContext } from './context/ArachnoForgeContext.jsx';
+import { formatClock } from './utils/dateUtils.js';
 import { APP_BG } from './utils/designSystem.js';
 import { lazyPage } from './utils/lazyPage.js';
 
@@ -108,10 +113,33 @@ function PageSwitch({ currentPage }) {
  * Sidebar e il resto della Shell restano sempre visibili e interattivi. */
 function PageLoadingFallback() {
   return (
-    <div className="flex items-center justify-center py-24">
-      <span className="w-10 h-10 rounded-full border-[3px] border-secondary/25 border-t-secondary animate-spin" />
+    <div className="flex items-center justify-center py-24" role="status" aria-label="Caricamento della pagina">
+      <span className="w-8 h-8 rounded-full border-2 border-white/10 border-t-secondary animate-spin" />
     </div>
   );
+}
+
+/**
+ * V41 — Il titolo della scheda del browser dice cosa sta succedendo:
+ * con il timer in corso mostra il countdown (utile su PC, con l'app in
+ * una scheda dietro alle slide o al PDF), altrimenti la sezione aperta.
+ * Nessuna UI: vive qui perché è l'unico punto che conosce sia la rotta sia
+ * il timer.
+ */
+const PAGE_TITLES = new Map(NAV_ITEMS.map((i) => [i.route, i.label]));
+function DocumentTitle({ currentPage }) {
+  const timer = useFocusTimerContext();
+  const page = PAGE_TITLES.get(currentPage) || 'Stark-Web Terminal';
+  let title = `${page} · ArachnoForge`;
+  if (timer.status === 'FOCUS') title = `▶ ${formatClock(timer.remainingSeconds)} ${timer.isOverdriveActive ? 'Overdrive' : 'Focus'} · ArachnoForge`;
+  else if (timer.status === 'BREAK') title = `☕ ${formatClock(timer.remainingSeconds)} Pausa · ArachnoForge`;
+  else if (timer.status === 'PAUSED')
+    title = `⏸ ${formatClock(timer.remainingSeconds)} ${timer.blockMode === 'BREAK' ? 'Pausa sospesa' : 'In pausa'} · ArachnoForge`;
+  else if (timer.awaitingDebrief) title = `✓ Sessione da salvare · ArachnoForge`;
+  useEffect(() => {
+    document.title = title;
+  }, [title]);
+  return null;
 }
 
 /**
@@ -137,6 +165,25 @@ function KarenTrophyBridge() {
   }, [briefing, todayStr]);
 
   return null;
+}
+
+/**
+ * V41 — Arrivo dal link "Password dimenticata?": la sessione è aperta,
+ * ma senza una password nuova il prossimo accesso da un altro dispositivo
+ * sarebbe di nuovo bloccato. La finestra si apre da sola; "Più tardi" la
+ * chiude, e la password si cambia comunque dalle Impostazioni.
+ */
+function PasswordRecoveryPrompt() {
+  const { passwordRecovery, endPasswordRecovery } = useAuthContext();
+  const { pushToast } = useArachnoForge();
+  return (
+    <PasswordDialog
+      open={passwordRecovery}
+      mode="recovery"
+      onClose={endPasswordRecovery}
+      onSuccess={() => pushToast('Password aggiornata: usala dai prossimi accessi.', 'success')}
+    />
+  );
 }
 
 function Shell() {
@@ -215,7 +262,6 @@ function Shell() {
       {/* V36.0 — la grana esiste solo quando gli effetti pesanti sono
           attivi: è un <div> fisso a schermo intero con una texture SVG,
           ripagato in fluidità appena lo si toglie. */}
-      {state.settings.heavyEffects !== false && <div className="af-grain" />}
       {/* V27.0 — Pillar 3: vignette simbionte a schermo intero, sopra ogni
           pagina ma sotto toast/modali — Feedback Sensoriale Completo. */}
       {derived.isMaxCarnageActive && <div className="af-carnage-overlay" />}
@@ -230,7 +276,7 @@ function Shell() {
         // `.af-viewport` (index.css) con `max(…, env(safe-area-*))`: due
         // fonti in conflitto azzeravano il gutter su ogni dispositivo
         // senza notch. Qui resta solo il padding superiore.
-        className={`flex-1 min-w-0 h-[100dvh] overflow-y-auto af-viewport pt-6 md:pt-8 transition-shadow duration-500 relative ${
+        className={`flex-1 min-w-0 h-[100dvh] overflow-y-auto af-viewport pt-6 md:pt-9 transition-shadow duration-500 relative ${
           // V36.0 — vedi .af-fatigued in index.css: il segnale di fatica
           // resta (vignette + bordo interno) ma smette di desaturare e
           // scurire l'INTERA pagina, cioè di rendere più difficile leggere
@@ -238,7 +284,7 @@ function Shell() {
           derived.fatigued ? 'af-fatigued' : ''
         }`}
       >
-        <div className="max-w-[1400px] mx-auto pt-10 md:pt-0">
+        <div className="max-w-[1320px] mx-auto pt-12 lg:pt-0">
           <KarenTrophyBridge />
           <MaxCarnageBanner />
           <PageErrorBoundary key={currentPage} onRecover={() => navigate(ROUTES.MISSION_CONTROL)}>
@@ -249,6 +295,9 @@ function Shell() {
         </div>
       </main>
       <CyberToastStack toasts={toasts} onDismiss={dismissToast} />
+      <CommandPalette />
+      <PasswordRecoveryPrompt />
+      <DocumentTitle currentPage={currentPage} />
     </div>
   );
 }
@@ -268,7 +317,7 @@ export default function App() {
   const { session, loading, isGuest } = useAuthContext();
 
   if (loading) {
-    return <BootScreen message="Verifica sessione Nexus in corso..." />;
+    return <BootScreen message="Verifica dell’accesso in corso…" />;
   }
 
   // V28.1 — Pillar 2: Modalità Ospite monta lo stesso Provider di una

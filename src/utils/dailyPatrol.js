@@ -27,9 +27,9 @@
 export const QUEST_DIFFICULTY = { EASY: 'EASY', MEDIUM: 'MEDIUM', HARD: 'HARD' };
 
 export const QUEST_DIFFICULTY_META = {
-  EASY: { label: 'Facile', color: 'text-emerald-400', border: 'border-emerald-400/40', bg: 'bg-emerald-900/20', bar: 'from-emerald-500 to-emerald-600' },
-  MEDIUM: { label: 'Media', color: 'text-accent', border: 'border-accent/40', bg: 'bg-accent/10', bar: 'from-accent to-accent/70' },
-  HARD: { label: 'Difficile', color: 'text-primary', border: 'border-primary/40', bg: 'bg-primary/10', bar: 'from-primary to-primary-dark' }
+  EASY: { label: 'Facile', color: 'text-emerald-300', border: 'border-emerald-400/35', bg: 'bg-emerald-900/20', bar: 'from-emerald-500 to-emerald-600', solid: 'bg-emerald-400' },
+  MEDIUM: { label: 'Media', color: 'text-accent', border: 'border-accent/35', bg: 'bg-accent/10', bar: 'from-accent to-accent/70', solid: 'bg-accent' },
+  HARD: { label: 'Difficile', color: 'text-primary', border: 'border-primary/35', bg: 'bg-primary/10', bar: 'from-primary to-primary-dark', solid: 'bg-primary' }
 };
 
 export const QUEST_TYPE = {

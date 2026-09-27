@@ -17,12 +17,19 @@ import {
   CAREER_MIN_EXAMS
 } from '../utils/gpaEngine.js';
 import { formatDateOnlyHuman, formatMonthYearHuman, monthKeyFromDateKey, dateOnlyToUtcMs, formatHoursMinutes } from '../utils/dateUtils.js';
-import { CARD, CARD_BARE, H1, H2, BADGE } from '../utils/designSystem.js';
+import { CARD, CARD_NOPAD, BADGE } from '../utils/designSystem.js';
+import PageHeader from '../components/PageHeader.jsx';
+import { formatDecimal, formatInt, formatNumber } from '../utils/format.js';
 
-/** Slider "Stark-Tech" per il voto ipotizzato (18-30), tinta Accento (Decay) — coerente col resto del Design System, mai uno slider nativo. */
-function VotoSlider({ value, onChange }) {
+/** Cursore del voto ipotizzato (18–30). La lode entra in media come 30. */
+function VotoSlider({ value, onChange, label }) {
+  const pct = ((value - MIN_VOTO) / (MAX_VOTO - MIN_VOTO)) * 100;
   return (
     <div>
+      <div className="flex items-baseline justify-between gap-3 mb-2">
+        <span className="text-xs text-slate-400">Voto ipotizzato</span>
+        <span className="text-lg font-bold text-accent ds-num">{value}</span>
+      </div>
       <input
         type="range"
         min={MIN_VOTO}
@@ -30,31 +37,33 @@ function VotoSlider({ value, onChange }) {
         step={1}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full h-2 rounded-full appearance-none bg-surface/80 border border-white/10 cursor-pointer accent-accent"
+        className="ds-range"
+        style={{ '--range-pct': `${pct}%`, '--range-fill': 'rgb(var(--af-decay-rgb))' }}
+        aria-label={label}
+        aria-valuetext={`${value} su 30`}
       />
-      <div className="flex items-center justify-between mt-1.5">
-        <span className="text-xs text-slate-500">{MIN_VOTO}</span>
-        <span className="text-lg font-mono font-bold text-accent">{value}{value === MAX_VOTO ? ' e lode' : ''}</span>
-        <span className="text-xs text-slate-500">{MAX_VOTO}</span>
+      <div className="flex items-center justify-between mt-1 text-[11px] text-slate-500 ds-num">
+        <span>{MIN_VOTO}</span>
+        <span>{MAX_VOTO}</span>
       </div>
     </div>
   );
 }
 
-/** Card numerica grande — riusata per Media Ponderata e Proiezione di Laurea, mai un box piatto. */
-function StatHero({ icon, label, value, suffix, accent, hint }) {
+/** Card numerica: il numero grande a sinistra, il contesto sotto. */
+function StatCard({ icon, iconTone, label, value, suffix, valueTone = 'text-white', hint, children }) {
   return (
-    <div className={`${CARD} flex flex-col items-center text-center`}>
-      <div className={`absolute -top-12 left-1/2 -translate-x-1/2 w-48 h-48 rounded-full ${accent.glowBg} blur-3xl pointer-events-none`} />
-      <div className={`relative w-12 h-12 rounded-xl ${accent.iconBg} border ${accent.border} flex items-center justify-center ${accent.text} mb-3`}>
-        <Icon name={icon} className="w-6 h-6" />
-      </div>
-      <p className="relative text-sm tracking-widest text-slate-500">{label}</p>
-      <p className={`relative text-5xl font-mono font-extrabold mt-2 ${accent.text}`}>
-        {value}
-        {suffix && <span className="text-2xl text-slate-500 ml-1">{suffix}</span>}
+    <div className={`${CARD} !p-5`}>
+      <p className="text-xs text-slate-400 flex items-center gap-1.5">
+        <Icon name={icon} className={`w-3.5 h-3.5 ${iconTone}`} />
+        {label}
       </p>
-      {hint && <p className="relative text-sm text-slate-400 mt-2 leading-relaxed">{hint}</p>}
+      <p className={`mt-2 text-4xl font-bold tracking-tight ds-num ${valueTone}`}>
+        {value}
+        {suffix && <span className="text-lg font-semibold text-slate-500 ml-1.5">{suffix}</span>}
+      </p>
+      {hint && <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{hint}</p>}
+      {children}
     </div>
   );
 }
@@ -114,7 +123,7 @@ function GradeHistoryChart({ history }) {
         return (
           <g key={v}>
             <line x1={PAD_L} y1={y} x2={W - PAD_R} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
-            <text x={4} y={y + 4} fontSize="11" fill="rgba(148,163,184,0.8)" fontFamily="monospace">
+            <text x={4} y={y + 4} fontSize="11" fill="rgba(148,163,184,0.75)">
               {v}
             </text>
           </g>
@@ -129,46 +138,31 @@ function GradeHistoryChart({ history }) {
           key={i}
           cx={p.x}
           cy={p.y}
-          r="5"
-          fill={p.entry.senzaData ? '#0b1220' : 'rgb(var(--af-refuel-rgb))'}
-          stroke={p.entry.senzaData ? 'rgb(var(--af-refuel-rgb))' : '#0b1220'}
+          r="4"
+          fill={p.entry.senzaData ? 'rgb(var(--af-panel-rgb))' : 'rgb(var(--af-refuel-rgb))'}
+          stroke={p.entry.senzaData ? 'rgb(var(--af-refuel-rgb))' : 'rgb(var(--af-panel-rgb))'}
           strokeWidth={p.entry.senzaData ? 2 : 1.5}
         >
           <title>
-            {`${p.entry.senzaData ? 'Esami senza data' : formatDateOnlyHuman(p.entry.dateKey)} — media ${p.entry.average.toFixed(2)}${
+            {`${p.entry.senzaData ? 'Esami senza data' : formatDateOnlyHuman(p.entry.dateKey)} — media ${formatDecimal(p.entry.average, 2)}${
               Array.isArray(p.entry.esami) && p.entry.esami.length ? ` · ${p.entry.esami.join(', ')}` : ''
             }`}
           </title>
         </circle>
       ))}
       {first && (
-        <text x={PAD_L} y={H - 10} fontSize="11" fill="rgba(148,163,184,0.8)" fontFamily="monospace">
+        <text x={PAD_L} y={H - 10} fontSize="11" fill="rgba(148,163,184,0.75)">
           {first.senzaData ? 'senza data' : formatDateOnlyHuman(first.dateKey)}
         </text>
       )}
       {last && history.length > 1 && (
-        <text x={W - PAD_R} y={H - 10} fontSize="11" fill="rgba(148,163,184,0.8)" fontFamily="monospace" textAnchor="end">
+        <text x={W - PAD_R} y={H - 10} fontSize="11" fill="rgba(148,163,184,0.75)" textAnchor="end">
           {last.senzaData ? 'oggi' : formatDateOnlyHuman(last.dateKey)}
         </text>
       )}
     </svg>
   );
 }
-
-const ACCENT = {
-  secondary: {
-    text: 'text-secondary',
-    border: 'border-secondary/40',
-    iconBg: 'bg-secondary/15',
-    glowBg: 'bg-secondary/15'
-  },
-  primary: {
-    text: 'text-primary',
-    border: 'border-primary/40',
-    iconBg: 'bg-primary/15',
-    glowBg: 'bg-primary/15'
-  }
-};
 
 /**
  * V37.0 — "QUANDO MI LAUREO".
@@ -188,109 +182,100 @@ function GraduationForecastCard({ forecast }) {
 
   if (forecast.done) {
     return (
-      <div className={`${CARD_BARE} border-emerald-400/40`}>
-        <div className="relative flex items-center gap-3">
-          <div className="w-11 h-11 rounded-xl bg-emerald-900/40 border border-emerald-400/40 flex items-center justify-center text-emerald-400 shrink-0">
-            <Icon name="trophy" className="w-6 h-6" />
-          </div>
-          <div>
-            <p className="text-[11px] font-mono tracking-[0.2em] text-emerald-400">PIANO COMPLETATO</p>
-            <p className="text-lg font-bold text-white">
-              {forecast.cfuAcquisiti}/{forecast.cfuTotali} CFU acquisiti. Non manca più niente.
-            </p>
-          </div>
+      <div className={`${CARD} !border-emerald-400/35 flex items-center gap-3`}>
+        <span className="ds-icon-tile text-emerald-300">
+          <Icon name="trophy" className="w-[18px] h-[18px]" />
+        </span>
+        <div>
+          <p className="ds-eyebrow !text-emerald-300">Piano completato</p>
+          <p className="text-base font-semibold text-white">
+            {forecast.cfuAcquisiti}/{forecast.cfuTotali} CFU acquisiti: non manca più niente.
+          </p>
         </div>
       </div>
     );
   }
 
   const CONFIDENCE_META = {
-    ALTA: { label: 'stima affidabile', cls: 'text-emerald-300' },
-    MEDIA: { label: 'stima indicativa', cls: 'text-accent' },
-    BASSA: { label: 'stima ancora grezza', cls: 'text-slate-400' }
+    ALTA: { label: 'Stima affidabile', badge: BADGE.green },
+    MEDIA: { label: 'Stima indicativa', badge: BADGE.amber },
+    BASSA: { label: 'Stima ancora grezza', badge: BADGE.slate }
   };
   const conf = CONFIDENCE_META[forecast.confidence] || CONFIDENCE_META.BASSA;
 
   return (
-    <div className={`${CARD_BARE} border-accent/30`}>
-      <div className="absolute -top-20 -right-16 w-64 h-64 rounded-full bg-accent/10 blur-3xl pointer-events-none" />
-
-      <div className="relative flex items-start justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-11 h-11 rounded-xl bg-accent/15 border border-accent/40 flex items-center justify-center text-accent shrink-0">
-            <Icon name="calendar" className="w-6 h-6" />
-          </div>
+    <section className={CARD_NOPAD} aria-label="Tempo stimato alla laurea">
+      <div className="p-5 flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-start gap-3.5 min-w-0">
+          <span className="ds-icon-tile text-accent">
+            <Icon name="calendar" className="w-[18px] h-[18px]" />
+          </span>
           <div className="min-w-0">
-            <p className="text-[11px] font-mono tracking-[0.2em] text-accent">TEMPO STIMATO ALLA LAUREA</p>
-            <p className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+            <p className="ds-eyebrow">Tempo stimato alla laurea</p>
+            <p className="text-3xl font-bold text-white tracking-tight mt-0.5 first-letter:uppercase">
               {formatMonthYearHuman(monthKeyFromDateKey(forecast.dateKey))}
             </p>
-            <p className={`text-xs mt-0.5 ${conf.cls}`}>
-              {conf.label} ·{' '}
-              {forecast.metodo === 'CARRIERA' ? 'basata sul tuo ritmo di carriera' : 'basata sul carico di studio residuo'}
-            </p>
+            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+              <span className={conf.badge}>{conf.label}</span>
+              <span className="text-xs text-slate-500">
+                {forecast.metodo === 'CARRIERA' ? 'dal tuo ritmo di carriera' : 'dal carico di studio residuo'}
+              </span>
+            </div>
           </div>
         </div>
-
         <div className="text-right shrink-0">
-          <p className="text-3xl font-mono font-bold af-mono-nums text-white leading-none">{forecast.progressPct}%</p>
-          <p className="text-[11px] text-slate-500 tracking-widest mt-1">
-            {forecast.cfuAcquisiti}/{forecast.cfuTotali} CFU
+          <p className="text-3xl font-bold text-white ds-num leading-none">{forecast.progressPct}%</p>
+          <p className="text-xs text-slate-500 mt-1 ds-num">
+            {forecast.cfuAcquisiti} di {forecast.cfuTotali} CFU
           </p>
         </div>
       </div>
 
-      {/* Barra di avanzamento del piano: l'unico numero che non è una
-          proiezione ma un fatto già acquisito. */}
-      <div className="relative mt-4 h-2.5 af-web-bar bg-surface/80 rounded-full overflow-hidden border border-white/10">
-        <div
-          className="h-full bg-gradient-to-r from-accent to-accent/60 transition-[width] duration-700"
-          style={{ width: `${forecast.progressPct}%` }}
-        />
+      {/* L'unico numero che non è una proiezione: i CFU già acquisiti. */}
+      <div className="px-5">
+        <div className="ds-progress !h-2">
+          <span className="bg-accent" style={{ width: `${forecast.progressPct}%` }} />
+        </div>
       </div>
 
-      <div className="relative mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div className="rounded-xl border border-secondary/25 bg-secondary/[0.06] p-3.5">
-          <p className="text-[11px] font-mono tracking-[0.2em] text-secondary">RITMO DI STUDIO</p>
-          <p className="text-xl font-extrabold text-white mt-1">
-            {forecast.byWorkload.mesi} <span className="text-sm font-semibold text-slate-400">mesi</span>
+      <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="ds-well p-4">
+          <p className="text-xs font-semibold text-secondary">Ritmo di studio</p>
+          <p className="text-xl font-bold text-white mt-1 ds-num">
+            {formatNumber(forecast.byWorkload.mesi, 1)} <span className="text-sm font-medium text-slate-400">mesi</span>
           </p>
           <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-            {forecast.byWorkload.oreResidue}h di lavoro residuo a {formatHoursMinutes(forecast.byWorkload.capacitaOreGiorno)} al giorno.
+            {formatInt(forecast.byWorkload.oreResidue)} ore di lavoro residuo a {formatHoursMinutes(forecast.byWorkload.capacitaOreGiorno)} al giorno.
             {!forecast.byWorkload.confident && ' Capacità non ancora calibrata sulle tue giornate reali.'}
             {forecast.byWorkload.oreNonTracciate > 0 &&
-              ` Include ${forecast.byWorkload.oreNonTracciate}h stimate per i CFU non ancora aperti nel Web-Matrix.`}
+              ` Include ${formatInt(forecast.byWorkload.oreNonTracciate)} ore stimate per i CFU non ancora aperti nel Web-Matrix.`}
           </p>
         </div>
 
-        <div
-          className={`rounded-xl border p-3.5 ${
-            forecast.byCareer ? 'border-accent/25 bg-accent/[0.06]' : 'border-white/10 bg-white/[0.02]'
-          }`}
-        >
-          <p className="text-[11px] font-mono tracking-[0.2em] text-accent">RITMO DI CARRIERA</p>
+        <div className="ds-well p-4">
+          <p className="text-xs font-semibold text-accent">Ritmo di carriera</p>
           {forecast.byCareer ? (
             <>
-              <p className="text-xl font-extrabold text-white mt-1">
-                {forecast.byCareer.mesi} <span className="text-sm font-semibold text-slate-400">mesi</span>
+              <p className="text-xl font-bold text-white mt-1 ds-num">
+                {formatNumber(forecast.byCareer.mesi, 1)} <span className="text-sm font-medium text-slate-400">mesi</span>
               </p>
               <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-                {forecast.byCareer.cfuAlMese} CFU/mese, misurati su {forecast.byCareer.esamiOsservati} esami superati.
+                {formatNumber(forecast.byCareer.cfuAlMese, 1)} CFU al mese, misurati su {forecast.byCareer.esamiOsservati} esami superati.
                 {forecast.byCareer.stimateDaAppello > 0 &&
-                  ` Per ${forecast.byCareer.stimateDaAppello} manca la data di verbalizzazione: si usa quella dell\u2019appello.`}
+                  ` Per ${forecast.byCareer.stimateDaAppello} manca la data di verbalizzazione: si usa quella dell’appello.`}
                 {!forecast.byCareer.confident && ' Servono almeno 5 esami con data e un anno di storico per renderla solida.'}
               </p>
             </>
           ) : (
             <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-              Non ancora calcolabile: servono almeno {CAREER_MIN_EXAMS} esami superati con una data (quella di{' '}
-              <span className="text-slate-300">verbalizzazione</span>, oppure quella dell&apos;appello se è già passata).
+              Non ancora calcolabile: servono almeno {CAREER_MIN_EXAMS} esami superati con una data (quella di verbalizzazione, o
+              quella dell&apos;appello se è già passata).
               {forecast.esamiSuperati > 0 && (
                 <>
                   {' '}
-                  Ora: <span className="font-mono text-slate-300">{forecast.esamiConData}</span> con data su{' '}
-                  <span className="font-mono text-slate-300">{forecast.esamiSuperati}</span> superati
-                  {forecast.esamiConData < forecast.esamiSuperati ? ' — apri gli altri nel Web-Matrix e aggiungi la data.' : '.'}
+                  Ora: <span className="ds-num text-slate-300">{forecast.esamiConData}</span> con data su{' '}
+                  <span className="ds-num text-slate-300">{forecast.esamiSuperati}</span> superati
+                  {forecast.esamiConData < forecast.esamiSuperati ? ': aggiungi la data agli altri nel Web-Matrix.' : '.'}
                 </>
               )}
             </p>
@@ -298,25 +283,26 @@ function GraduationForecastCard({ forecast }) {
         </div>
       </div>
 
-      {forecast.limitataDaAppello && (
-        <p className="relative text-xs text-accent mt-3 leading-relaxed flex items-start gap-1.5">
-          <Icon name="alertTriangle" className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-          Il lavoro sarebbe finito prima, ma l'appello più lontano già fissato è il{' '}
-          {formatDateOnlyHuman(forecast.ultimoAppello)}: è quello a dettare la data.
+      <div className="px-5 pb-5 space-y-2">
+        {forecast.limitataDaAppello && (
+          <p className="text-xs text-accent leading-relaxed flex items-start gap-1.5">
+            <Icon name="alertTriangle" className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            Il lavoro sarebbe finito prima, ma l'appello più lontano già fissato è il {formatDateOnlyHuman(forecast.ultimoAppello)}: è
+            quello a dettare la data.
+          </p>
+        )}
+        <p className="text-xs text-slate-500 leading-relaxed">
+          È una proiezione, non una promessa: migliora da sola man mano che registri le date di verbalizzazione e accumuli
+          sessioni di Focus reali.
         </p>
-      )}
-
-      <p className="relative text-xs text-slate-500 mt-3 leading-relaxed">
-        Karen: è una proiezione, non una promessa. Migliora da sola man mano che registri le date di verbalizzazione e
-        accumuli sessioni di Focus reali.
-      </p>
-    </div>
+      </div>
+    </section>
   );
 }
 
 export default function MultiverseSimulator() {
   const { state, derived } = useArachnoForge();
-  const materie = Array.isArray(state.materie) ? state.materie : [];
+  const materie = useMemo(() => (Array.isArray(state.materie) ? state.materie : []), [state.materie]);
 
   // V37.0 — la stima usa la calibrazione reale (capacità giornaliera,
   // bias sulle stime, ritmo pagine/ora) già calcolata una sola volta a
@@ -363,172 +349,216 @@ export default function MultiverseSimulator() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [whatIfSlots, simulatedVoti, materie]);
 
+  const cfuTotali = graduationForecast?.cfuTotali || 180;
+  const cfuAcquisiti = graduationForecast?.cfuAcquisiti ?? 0;
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className={H1}>Multiverse Simulator</h1>
-        <p className="text-base text-slate-400 mt-1.5">
-          Karen: proiezioni multiversali attive. Tempo alla laurea, Media Ponderata e scenari What-If in tempo reale.
-        </p>
+      <PageHeader
+        eyebrow="Media e laurea"
+        icon="multiverse"
+        title="Multiverse Simulator"
+        subtitle="La tua media vera, il voto di partenza alla laurea, quando ti laurei e cosa cambierebbe con i prossimi esami."
+      />
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <StatCard
+          icon="chartBar"
+          iconTone="text-secondary"
+          label="Media ponderata"
+          value={average != null ? formatDecimal(average, 2) : '—'}
+          suffix={average != null ? '/ 30' : ''}
+          valueTone={average != null ? 'text-secondary' : 'text-slate-500'}
+          hint={
+            average != null
+              ? `${gradedCount} ${gradedCount === 1 ? 'esame votato' : 'esami votati'} · ${totalCfu} CFU pesati`
+              : 'Segna un esame come superato, con il voto, nel Web-Matrix.'
+          }
+        />
+        <StatCard
+          icon="trophy"
+          iconTone="text-primary"
+          label="Voto di partenza alla laurea"
+          value={projection != null ? formatDecimal(projection, 1) : '—'}
+          suffix={projection != null ? '/ 110' : ''}
+          valueTone={projection != null ? 'text-primary' : 'text-slate-500'}
+          hint={projection != null ? 'Media × 11 / 3, senza i punti di tesi e attività.' : 'Si attiva col primo voto registrato.'}
+        />
+        <StatCard
+          icon="layers"
+          iconTone="text-accent"
+          label="CFU acquisiti"
+          value={formatInt(cfuAcquisiti)}
+          suffix={`/ ${formatInt(cfuTotali)}`}
+          hint={`${Math.max(0, cfuTotali - cfuAcquisiti)} CFU ancora da conquistare`}
+        >
+          <div className="ds-progress mt-3">
+            <span className="bg-accent" style={{ width: `${Math.min(100, (cfuAcquisiti / Math.max(1, cfuTotali)) * 100)}%` }} />
+          </div>
+        </StatCard>
       </div>
 
       {/* V37.0 — la domanda che l'app non sapeva rispondere: quando. */}
       <GraduationForecastCard forecast={graduationForecast} />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <StatHero
-          icon="chartBar"
-          label="MEDIA PONDERATA REALE"
-          value={average != null ? average.toFixed(2) : '—'}
-          suffix={average != null ? '/ 30' : ''}
-          accent={ACCENT.secondary}
-          hint={
-            average != null
-              ? `${gradedCount} esami votati · ${totalCfu} CFU pesati.`
-              : 'Nessun voto registrato ancora. Segna "Esame Superato" con un Voto su una Materia del Web-Matrix per attivare il calcolo.'
-          }
-        />
-        <StatHero
-          icon="trophy"
-          label="PROIEZIONE DI LAUREA"
-          value={projection != null ? projection.toFixed(1) : '—'}
-          suffix={projection != null ? '/ 110' : ''}
-          accent={ACCENT.primary}
-          hint={
-            projection != null
-              ? 'Voto di partenza = Media Ponderata × 11 / 3. Punteggio puro: bonus tesi/attività non inclusi.'
-              : 'La proiezione si attiva non appena la Media Ponderata ha almeno un voto.'
-          }
-        />
-      </div>
-
-      {/* Dettaglio esami votati */}
-      <div className={CARD}>
-        <div className="relative flex items-center gap-2 mb-4">
-          <Icon name="book" className="w-5 h-5 text-secondary" />
-          <span className={H2}>Esami Votati</span>
-          <span className={`${BADGE.blue} ml-auto`}>{gradedMaterie.length}</span>
-        </div>
-        {gradedMaterie.length === 0 ? (
-          <EmptyState
-            variant="log"
-            compact
-            title="Karen: nessun esame votato ancora"
-            subtitle="Torna nel Web-Matrix, segna un esame come Superato e inserisci il Voto per popolare questa lista."
-          />
-        ) : (
-          <div className="relative space-y-2">
-            {gradedMaterie.map((m) => (
-              <div key={m.id} className="flex items-center justify-between gap-3 py-2.5 px-3.5 rounded-xl bg-surface/60 border border-secondary/10">
-                <div className="min-w-0">
-                  <p className="text-sm text-slate-200 truncate">{m.nome}</p>
-                  <p className="text-xs text-slate-500">{m.cfu} CFU</p>
-                </div>
-                <span className={m.voto >= 28 ? BADGE.green : m.voto >= 24 ? BADGE.blue : BADGE.amber}>
-                  {m.voto}{m.lode ? ' e lode' : ''}/30
-                </span>
-              </div>
-            ))}
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-5 items-start">
+        {/* Storico della media */}
+        <section className={`${CARD} xl:col-span-3 space-y-3`} aria-label="Storico della media ponderata">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-[15px] font-semibold text-white flex items-center gap-2">
+              <Icon name="trendUp" className="w-4 h-4 text-secondary" />
+              Andamento della media
+            </h2>
+            {gradeHistory.length > 1 && (
+              <span className="text-xs text-slate-500 ds-num">
+                da {formatDecimal(gradeHistory[0].average, 2)} a {formatDecimal(gradeHistory[gradeHistory.length - 1].average, 2)}
+              </span>
+            )}
           </div>
-        )}
-      </div>
+          {gradeHistory.length === 0 ? (
+            <EmptyState
+              variant="log"
+              compact
+              title="Nessuno storico ancora"
+              subtitle="Ogni esame superato con il voto aggiunge un punto: qui vedrai come si muove la media nel tempo."
+            />
+          ) : (
+            <div key={gradeHistory.length} className="af-chart-reveal">
+              <GradeHistoryChart history={gradeHistory} />
+              <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                {gradeHistory.length === 1
+                  ? 'Un solo punto: col prossimo esame votato (o aggiungendo la data a quelli già inseriti) comparirà l’andamento.'
+                  : `${gradeHistory[gradeHistory.length - 1].gradedCount} esami votati.`}
+                {gradeHistoryInfo.stimateDaAppello > 0 &&
+                  ` ${gradeHistoryInfo.stimateDaAppello === 1 ? '1 esame è collocato' : `${gradeHistoryInfo.stimateDaAppello} esami sono collocati`} alla data dell’appello perché manca quella di verbalizzazione.`}
+                {gradeHistoryInfo.undatedCount > 0 &&
+                  ` ${gradeHistoryInfo.undatedCount === 1 ? '1 esame senza data entra' : `${gradeHistoryInfo.undatedCount} esami senza data entrano`} solo nell’ultimo punto (cerchio vuoto): aggiungi la data nel Web-Matrix per collocarli nel tempo.`}
+              </p>
+            </div>
+          )}
+        </section>
 
-      {/* Storico Media Ponderata */}
-      <div className={CARD}>
-        <div className="relative flex items-center gap-2 mb-4">
-          <Icon name="trendUp" className="w-5 h-5 text-secondary" />
-          <span className={H2}>Storico Media Ponderata</span>
-          {gradeHistory.length > 0 && <span className={`${BADGE.blue} ml-auto`}>{gradeHistory.length}</span>}
-        </div>
-        {gradeHistory.length === 0 ? (
-          <EmptyState
-            variant="log"
-            compact
-            title="Karen: nessuno storico ancora"
-            subtitle="Ogni volta che registri il Voto di un nuovo esame superato, un punto viene aggiunto qui — traccia l'andamento della tua Media nel multiverso."
-          />
-        ) : (
-          <div key={gradeHistory.length} className="relative af-chart-reveal">
-            <GradeHistoryChart history={gradeHistory} />
-            <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-              {gradeHistory.length === 1
-                ? 'Un solo punto: con il prossimo esame votato (o aggiungendo la data agli esami già inseriti) comparirà l’andamento.'
-                : `Da ${gradeHistory[0].average.toFixed(2)} a ${gradeHistory[gradeHistory.length - 1].average.toFixed(2)} · ${
-                    gradeHistory[gradeHistory.length - 1].gradedCount
-                  } esami votati.`}
-              {gradeHistoryInfo.stimateDaAppello > 0 &&
-                ` ${gradeHistoryInfo.stimateDaAppello === 1 ? '1 esame è collocato' : `${gradeHistoryInfo.stimateDaAppello} esami sono collocati`} alla data dell’appello perché manca quella di verbalizzazione.`}
-              {gradeHistoryInfo.undatedCount > 0 &&
-                ` ${gradeHistoryInfo.undatedCount === 1 ? '1 esame senza alcuna data entra' : `${gradeHistoryInfo.undatedCount} esami senza alcuna data entrano`} solo nell’ultimo punto (cerchio vuoto): aggiungi la data nel Web-Matrix per collocarli nel tempo.`}
-            </p>
-
+        {/* Esami votati */}
+        <section className={`${CARD_NOPAD} xl:col-span-2`} aria-label="Esami votati">
+          <div className="flex items-center justify-between gap-2 px-5 py-4 border-b border-line">
+            <h2 className="text-[15px] font-semibold text-white flex items-center gap-2">
+              <Icon name="book" className="w-4 h-4 text-secondary" />
+              Esami votati
+            </h2>
+            <span className={BADGE.slate}>{gradedMaterie.length}</span>
           </div>
-        )}
+          {gradedMaterie.length === 0 ? (
+            <div className="p-5">
+              <EmptyState
+                variant="log"
+                compact
+                title="Nessun esame votato"
+                subtitle="Nel Web-Matrix, segna un esame come superato e inserisci il voto."
+              />
+            </div>
+          ) : (
+            <ul className="max-h-[360px] overflow-y-auto af-scroll divide-y divide-white/[0.06]">
+              {gradedMaterie.map((m) => (
+                <li key={m.id} className="flex items-center justify-between gap-3 px-5 py-2.5">
+                  <div className="min-w-0">
+                    <p className="text-[13.5px] text-slate-100 truncate">{m.nome}</p>
+                    <p className="text-xs text-slate-500 ds-num">
+                      {m.cfu} CFU{m.examPassedDate ? ` · ${formatDateOnlyHuman(m.examPassedDate)}` : ''}
+                    </p>
+                  </div>
+                  <span className={`${m.voto >= 28 ? BADGE.green : m.voto >= 24 ? BADGE.blue : BADGE.amber} ds-num`}>
+                    {m.voto}
+                    {m.lode ? ' e lode' : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       </div>
 
-      {/* What-If Scenario */}
-      <div className={`${CARD} space-y-5`}>
-        <div className="relative flex items-center gap-2">
-          <Icon name="bolt" className="w-5 h-5 text-accent" />
-          <span className={H2}>What-If Scenario</span>
+      {/* What-If: i prossimi esami prioritari, simulati senza toccare i dati veri. */}
+      <section className={`${CARD} space-y-4`} aria-label="Scenario What-If">
+        <div>
+          <h2 className="text-[15px] font-semibold text-white flex items-center gap-2">
+            <Icon name="bolt" className="w-4 h-4 text-accent" />
+            Scenario What-If
+          </h2>
+          <p className="text-[13px] text-slate-400 mt-0.5">
+            I tuoi prossimi esami prioritari (lo stesso ordine del Web-Matrix): muovi il voto e guarda cosa succede alla laurea. I dati
+            veri non cambiano.
+          </p>
         </div>
-        <p className="relative text-sm text-slate-400 -mt-3">
-          Karen simula i tuoi prossimi esami prioritari (stesso ordine del Web-Path Planner) e proietta l'effetto sul voto di laurea, senza toccare i tuoi dati reali.
-        </p>
 
         {whatIfSlots.length === 0 ? (
           <EmptyState
             variant="radar"
             compact
-            title="Karen: nessun esame da simulare"
-            subtitle="Apri almeno un nodo nel Web-Matrix ancora da superare per attivare il What-If Scenario."
+            title="Nessun esame da simulare"
+            subtitle="Aggiungi nel Web-Matrix almeno una materia ancora da superare."
           />
         ) : (
           <>
-            <div className="relative grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {whatIfSlots.map((m) => {
                 const voto = getVoto(m.id);
                 const marginal = computeMarginalProjection(materie, m.cfu, voto);
                 const baseline = projection;
                 const delta = baseline != null && marginal.projection != null ? Math.round((marginal.projection - baseline) * 10) / 10 : null;
                 return (
-                  <div key={m.id} className="bg-surface/70 border border-accent/20 rounded-2xl p-4 space-y-3">
+                  <div key={m.id} className="ds-well p-4 space-y-3">
                     <div>
                       <p className="text-sm font-semibold text-slate-100 truncate">{m.nome}</p>
                       <p className="text-xs text-slate-500">{m.cfu} CFU</p>
                     </div>
-                    <VotoSlider value={voto} onChange={(v) => setVoto(m.id, v)} />
-                    <p className="text-xs text-slate-400 leading-relaxed pt-2 border-t border-white/5">
-                      Karen: se prendi <span className="text-accent font-mono">{voto}</span> in <span className="text-slate-200">{m.nome}</span>, il tuo voto di partenza{' '}
-                      {baseline == null
-                        ? <>si stabilirebbe a <span className="font-mono text-white">{marginal.projection?.toFixed(1)}</span>.</>
-                        : delta > 0
-                        ? <>salirà a <span className="font-mono text-emerald-400">{marginal.projection.toFixed(1)}</span> (+{delta.toFixed(1)}).</>
-                        : delta < 0
-                        ? <>scenderà a <span className="font-mono text-primary">{marginal.projection.toFixed(1)}</span> ({delta.toFixed(1)}).</>
-                        : <>resterà a <span className="font-mono text-white">{marginal.projection.toFixed(1)}</span>.</>}
+                    <VotoSlider value={voto} onChange={(v) => setVoto(m.id, v)} label={`Voto ipotizzato per ${m.nome}`} />
+                    <p className="text-xs text-slate-400 leading-relaxed pt-2.5 border-t border-line">
+                      Con <span className="text-accent font-semibold ds-num">{voto}</span> il voto di partenza{' '}
+                      {marginal.projection == null ? (
+                        'non cambia.'
+                      ) : baseline == null ? (
+                        <>
+                          si fisserebbe a <span className="ds-num text-white font-semibold">{formatDecimal(marginal.projection, 1)}</span>.
+                        </>
+                      ) : delta > 0 ? (
+                        <>
+                          sale a <span className="ds-num text-emerald-300 font-semibold">{formatDecimal(marginal.projection, 1)}</span> (+
+                          {formatDecimal(delta, 1)}).
+                        </>
+                      ) : delta < 0 ? (
+                        <>
+                          scende a <span className="ds-num text-primary font-semibold">{formatDecimal(marginal.projection, 1)}</span> (
+                          {formatDecimal(delta, 1)}).
+                        </>
+                      ) : (
+                        <>
+                          resta a <span className="ds-num text-white font-semibold">{formatDecimal(marginal.projection, 1)}</span>.
+                        </>
+                      )}
                     </p>
                   </div>
                 );
               })}
             </div>
 
-            <div className="relative flex items-center justify-between gap-3 bg-accent/10 border border-accent/30 rounded-xl px-5 py-4">
+            <div className="flex items-center justify-between gap-3 flex-wrap rounded-xl border border-accent/30 bg-accent/[0.06] px-5 py-4">
               <div>
-                <p className="text-sm text-accent font-semibold flex items-center gap-1.5">
+                <p className="text-sm font-semibold text-accent flex items-center gap-1.5">
                   <Icon name="chip" className="w-4 h-4" />
-                  Proiezione Combinata What-If
+                  Tutti insieme
                 </p>
-                <p className="text-xs text-slate-400 mt-0.5">Se tutti e {whatIfSlots.length} gli esami simulati si verificassero insieme.</p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Se {whatIfSlots.length === 1 ? 'l’esame simulato andasse' : `i ${whatIfSlots.length} esami simulati andassero`} così.
+                </p>
               </div>
-              <p className="text-3xl font-mono font-extrabold text-white">
-                {combinedWhatIf.projection != null ? combinedWhatIf.projection.toFixed(1) : '—'}
-                <span className="text-lg text-slate-500 ml-1">/ 110</span>
+              <p className="text-3xl font-bold text-white ds-num">
+                {combinedWhatIf.projection != null ? formatDecimal(combinedWhatIf.projection, 1) : '—'}
+                <span className="text-lg font-semibold text-slate-500 ml-1.5">/ 110</span>
               </p>
             </div>
           </>
         )}
-      </div>
+      </section>
     </div>
   );
 }

@@ -2,8 +2,10 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Icon } from '../../components/Icons.jsx';
 import EmptyState from '../../components/EmptyState.jsx';
 import { formatHoursMinutes } from '../../utils/dateUtils.js';
-import { CARD, CARD_ALERT, H1, BTN_PRIMARY, BTN_GHOST, INPUT, BADGE } from '../../utils/designSystem.js';
+import { CARD, CARD_ALERT, BTN_PRIMARY, BTN_GHOST, INPUT, LABEL, BADGE } from '../../utils/designSystem.js';
 import { useKarenBrain } from '../../context/KarenBrainContext.jsx';
+import PageHeader from '../../components/PageHeader.jsx';
+import { formatInt } from '../../utils/format.js';
 
 /**
  * SUIT TELEMETRY & NEURAL DIAGNOSTICS — v2 "Recovery Survey & Cache
@@ -28,35 +30,35 @@ import { useKarenBrain } from '../../context/KarenBrainContext.jsx';
 
 const READINESS_BAND_META = {
   OTTIMALE: {
-    label: 'OTTIMALE',
-    ringColor: 'text-secondary',
-    textColor: 'text-secondary',
-    badgeClass: 'inline-flex items-center gap-1.5 rounded-full border border-secondary/40 bg-secondary/10 text-secondary px-3 py-1 text-xs font-mono tracking-widest',
+    label: 'Ottimale',
+    ringColor: 'text-emerald-400',
+    textColor: 'text-emerald-300',
+    badgeClass: BADGE.green,
     icon: 'check',
-    summary: 'Recupero completo. Via libera per la Quota Odierna al massimo regime.'
+    summary: 'Recupero completo: via libera per la quota di oggi al massimo regime.'
   },
   ATTENZIONE: {
-    label: 'ATTENZIONE',
+    label: 'Attenzione',
     ringColor: 'text-accent',
     textColor: 'text-accent',
-    badgeClass: 'inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 text-accent px-3 py-1 text-xs font-mono tracking-widest',
+    badgeClass: BADGE.amber,
     icon: 'alertTriangle',
-    summary: 'Recupero parziale. Margini ridotti: monitora i segnali di affaticamento durante il Focus.'
+    summary: 'Recupero parziale: margini ridotti, tieni d’occhio i segnali di fatica durante il Focus.'
   },
   CRITICO: {
-    label: 'CRITICO',
+    label: 'Critico',
     ringColor: 'text-primary',
     textColor: 'text-primary',
-    badgeClass: 'inline-flex items-center gap-1.5 rounded-full border border-primary/50 bg-primary/15 text-primary px-3 py-1 text-xs font-mono tracking-widest',
+    badgeClass: BADGE.red,
     icon: 'alertTriangle',
-    summary: 'Recupero insufficiente. Consigliata de-escalation: sessioni brevi, recupero attivo prima del prossimo Focus.'
+    summary: 'Recupero insufficiente: meglio blocchi brevi e un po’ di recupero attivo prima del prossimo Focus.'
   }
 };
 
 const CAFFEINE_PRESETS = [
-  { label: '0mg', amount: 0, reset: true },
-  { label: '+50mg Espresso', amount: 50 },
-  { label: '+100mg Doppio/Energy', amount: 100 }
+  { label: 'Azzera', amount: 0, reset: true },
+  { label: '+50 mg · espresso', amount: 50 },
+  { label: '+100 mg · doppio o energy drink', amount: 100 }
 ];
 
 function formatSleepTotal(minutes) {
@@ -66,40 +68,48 @@ function formatSleepTotal(minutes) {
 
 function formatMinutesShort(minutes) {
   if (minutes == null || !Number.isFinite(minutes)) return '—';
-  return `${Math.round(minutes)}min`;
+  return formatHoursMinutes(minutes / 60);
 }
 
 /** Anello SVG circolare del Readiness Score — stessa grammatica geometrica
  * dell'anello del Tactical Timer in MissionControl.jsx. */
-function ReadinessGauge({ score, band }) {
+function ReadinessGauge({ score, band, pending = false }) {
   const meta = READINESS_BAND_META[band] || READINESS_BAND_META.OTTIMALE;
-  const radius = 85;
+  const radius = 84;
   const circumference = 2 * Math.PI * radius;
-  const safeScore = Math.max(0, Math.min(100, score));
+  const safeScore = pending ? 0 : Math.max(0, Math.min(100, Number(score) || 0));
   const dashOffset = circumference - (safeScore / 100) * circumference;
 
   return (
-    <div className="relative w-48 h-48 sm:w-56 sm:h-56 flex items-center justify-center shrink-0">
-      <svg className="w-48 h-48 sm:w-56 sm:h-56 -rotate-90" viewBox="0 0 200 200">
-        <circle cx="100" cy="100" r={radius} fill="none" stroke="currentColor" strokeOpacity="0.12" strokeWidth="10" className="text-secondary" />
+    <div className="relative w-44 h-44 sm:w-48 sm:h-48 flex items-center justify-center shrink-0">
+      <svg className="w-full h-full -rotate-90" viewBox="0 0 200 200" aria-hidden="true">
+        <circle cx="100" cy="100" r={radius} fill="none" stroke="rgb(255 255 255 / 0.08)" strokeWidth="12" />
         <circle
           cx="100"
           cy="100"
           r={radius}
           fill="none"
           stroke="currentColor"
-          strokeWidth="10"
+          strokeWidth="12"
           strokeLinecap="round"
           strokeDasharray={circumference}
           strokeDashoffset={dashOffset}
           className={`${meta.ringColor} transition-[stroke-dashoffset] duration-700 ease-out`}
-          style={{ filter: 'drop-shadow(0 0 10px currentColor)' }}
         />
       </svg>
       <div className="absolute flex flex-col items-center">
-        <p className="text-[10px] tracking-widest text-slate-500 mb-1">READINESS</p>
-        <p className={`text-5xl font-mono font-bold af-mono-nums tabular-nums ${meta.textColor}`}>{Math.round(safeScore)}</p>
-        <p className={`mt-2 text-[11px] font-mono tracking-widest ${meta.textColor}`}>{meta.label}</p>
+        <p className="text-[11px] text-slate-500">Readiness</p>
+        {pending ? (
+          <>
+            <p className="text-5xl font-bold ds-num leading-none mt-1 text-slate-600">—</p>
+            <p className="mt-1.5 text-xs font-semibold text-slate-500">Da calcolare</p>
+          </>
+        ) : (
+          <>
+            <p className={`text-5xl font-bold ds-num leading-none mt-1 ${meta.textColor}`}>{Math.round(safeScore)}</p>
+            <p className={`mt-1.5 text-xs font-semibold ${meta.textColor}`}>{meta.label}</p>
+          </>
+        )}
       </div>
     </div>
   );
@@ -146,12 +156,15 @@ function ComposizionePunteggio({ breakdown, biometrics }) {
   const gruppi = ['Dati dall\'iPhone', 'Recovery Survey'];
 
   return (
-    <details className="relative rounded-xl border border-white/10 bg-black/20 p-3">
-      <summary className="cursor-pointer text-sm text-slate-400 select-none">Com'è composto il punteggio</summary>
+    <details className="group rounded-xl border border-line bg-surface/60 px-3.5 py-3">
+      <summary className="cursor-pointer text-[13px] text-slate-300 select-none flex items-center justify-between gap-2 list-none">
+        Com'è composto il punteggio
+        <Icon name="chevronDown" className="w-4 h-4 text-slate-500 transition-transform group-open:rotate-180" />
+      </summary>
       <div className="mt-2.5 space-y-3">
         {gruppi.map((g) => (
           <div key={g}>
-            <p className="text-[10px] tracking-widest text-slate-500 mb-1.5">{g.toUpperCase()}</p>
+            <p className="ds-eyebrow mb-1.5">{g}</p>
             <ul className="space-y-1">
               {voci
                 .filter((v) => v.gruppo === g)
@@ -161,7 +174,7 @@ function ComposizionePunteggio({ breakdown, biometrics }) {
                     <li key={v.key} className="flex items-start gap-2 text-xs">
                       <Icon
                         name={dentro ? 'check' : 'close'}
-                        className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${dentro ? 'text-emerald-400' : 'text-slate-600'}`}
+                        className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${dentro ? 'text-emerald-300' : 'text-slate-600'}`}
                       />
                       <span className={dentro ? 'text-slate-300' : 'text-slate-500'}>
                         {v.label}
@@ -190,17 +203,17 @@ function ComposizionePunteggio({ breakdown, biometrics }) {
 
 function MetricCard({ icon, label, value, sub, pending }) {
   return (
-    <div className="relative bg-surface/60 border border-secondary/15 rounded-xl p-3.5 sm:p-4 flex items-start gap-3 overflow-hidden">
-      <div className="w-9 h-9 rounded-lg bg-secondary/10 border border-secondary/25 flex items-center justify-center text-secondary shrink-0">
-        <Icon name={icon} className="w-5 h-5" />
-      </div>
+    <div className="ds-well p-3.5 flex items-start gap-3">
+      <span className="ds-icon-tile !w-8 !h-8 text-secondary">
+        <Icon name={icon} className="w-4 h-4" />
+      </span>
       <div className="min-w-0">
-        <p className="text-[10px] tracking-widest text-slate-500 mb-0.5">{label}</p>
+        <p className="text-[11px] text-slate-500">{label}</p>
         {pending ? (
-          <p className="text-xs text-accent font-mono">In attesa di sync da iOS</p>
+          <p className="text-xs text-accent mt-0.5">In attesa del sync dall'iPhone</p>
         ) : (
           <>
-            <p className="text-lg font-mono font-bold text-slate-100 af-mono-nums leading-tight">{value}</p>
+            <p className="text-lg font-bold text-slate-100 ds-num leading-tight mt-0.5">{value}</p>
             {sub && <p className="text-[11px] text-slate-500 mt-0.5">{sub}</p>}
           </>
         )}
@@ -209,12 +222,20 @@ function MetricCard({ icon, label, value, sub, pending }) {
   );
 }
 
-function SubjectiveSlider({ label, value, onChange, min = 1, max = 10, lowLabel, highLabel }) {
+function SubjectiveSlider({ label, value, onChange, min = 1, max = 10, lowLabel, highLabel, invert = false }) {
+  const pct = ((value - min) / (max - min)) * 100;
+  // Per stress e indolenzimento "alto" è peggio: il colore lo dice.
+  const good = invert ? value <= 3 : value >= 7;
+  const bad = invert ? value >= 8 : value <= 3;
+  const fill = bad ? 'rgb(var(--af-attack-rgb))' : good ? 'rgb(52 211 153)' : 'rgb(var(--af-refuel-rgb))';
   return (
     <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="text-xs tracking-widest text-slate-400">{label}</span>
-        <span className="text-sm font-mono font-bold text-secondary af-mono-nums">{value}</span>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm text-slate-300">{label}</span>
+        <span className="text-sm font-bold text-white ds-num">
+          {value}
+          <span className="text-slate-500 font-normal">/{max}</span>
+        </span>
       </div>
       <input
         type="range"
@@ -223,12 +244,15 @@ function SubjectiveSlider({ label, value, onChange, min = 1, max = 10, lowLabel,
         step={1}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full h-2 rounded-full bg-surface/80 border border-secondary/20 accent-secondary cursor-pointer"
+        className="ds-range"
+        style={{ '--range-pct': `${pct}%`, '--range-fill': fill }}
+        aria-label={label}
+        aria-valuetext={`${value} su ${max}`}
       />
       {(lowLabel || highLabel) && (
         <div className="flex items-center justify-between mt-1">
-          <span className="text-[10px] text-slate-600">{lowLabel}</span>
-          <span className="text-[10px] text-slate-600">{highLabel}</span>
+          <span className="text-[11px] text-slate-500">{lowLabel}</span>
+          <span className="text-[11px] text-slate-500">{highLabel}</span>
         </div>
       )}
     </div>
@@ -336,42 +360,45 @@ export default function SuitTelemetryView() {
   );
 
   const connectionMeta = useMemo(() => {
-    if (loading) {
-      return { icon: 'cloud', label: 'SINCRONIZZAZIONE...', className: 'text-accent border-accent/30 bg-accent/10', spin: true };
-    }
-    if (error) {
-      return { icon: 'cloudOff', label: 'ERRORE TELEMETRIA', className: 'text-primary border-primary/40 bg-primary/10', spin: false };
-    }
-    if (hasBiometricsToday) {
-      return { icon: 'cloudCheck', label: 'TELEMETRIA RICEVUTA', className: 'text-secondary border-secondary/30 bg-secondary/10', spin: false };
-    }
-    return { icon: 'cloudOff', label: 'IN ATTESA DI SYNC iOS', className: 'text-accent border-accent/30 bg-accent/10', spin: false };
+    if (loading) return { icon: 'cloud', label: 'Sincronizzazione…', badge: BADGE.amber, spin: true };
+    if (error) return { icon: 'cloudOff', label: 'Errore di telemetria', badge: BADGE.red, spin: false };
+    if (hasBiometricsToday) return { icon: 'cloudCheck', label: 'Dati di oggi ricevuti', badge: BADGE.green, spin: false };
+    return { icon: 'cloudOff', label: 'In attesa del sync dall’iPhone', badge: BADGE.amber, spin: false };
   }, [loading, error, hasBiometricsToday]);
+
+  const header = (actions = null) => (
+    <PageHeader
+      eyebrow="Readiness e dati biometrici"
+      icon="heart"
+      title="Suit Telemetry & Neural Diagnostics"
+      subtitle="Quanto sei pronto oggi, dai dati del tuo iPhone e da come ti senti. Karen usa il Readiness per calibrare timer e carico della giornata."
+      actions={actions}
+    />
+  );
 
   if (loading && !biometrics && !briefing && !subjectiveLog) {
     return (
-      <div className="flex items-center justify-center py-24">
-        <span className="w-10 h-10 rounded-full border-[3px] border-secondary/25 border-t-secondary animate-spin" />
+      <div className="space-y-6">
+        {header()}
+        <div className="flex items-center justify-center py-24" role="status" aria-label="Caricamento della telemetria">
+          <span className="w-10 h-10 rounded-full border-[3px] border-secondary/25 border-t-secondary animate-spin" />
+        </div>
       </div>
     );
   }
 
-  // Modalità Ospite (AuthContext.jsx, GUEST_USER) non ha una sessione
-  // Supabase reale: nessuna delle 3 tabelle biometriche è raggiungibile
-  // (RLS le blocca comunque per "anon"), quindi l'HUD lo dichiara subito
-  // invece di mostrare card vuote che sembrano un errore di sync.
+  // Modalità Ospite (AuthContext.jsx, GUEST_USER): nessuna sessione
+  // Supabase reale, quindi nessuna delle tabelle biometriche è
+  // raggiungibile. Lo si dice subito invece di mostrare card vuote.
   if (!loading && !hasSession) {
     return (
       <div className="space-y-6">
-        <div>
-          <h1 className={H1}>Suit Telemetry & Neural Diagnostics</h1>
-          <p className="text-base text-slate-400 mt-1.5">K.A.R.E.N. OS — modulo di telemetria biometrica e readiness tattico.</p>
-        </div>
+        {header()}
         <div className={CARD}>
           <EmptyState
             variant="radar"
-            title="Nessuna sessione Nexus attiva"
-            subtitle="La Telemetria Biometrica richiede un account Nexus reale (login o registrazione) — la Modalità Ospite resta 100% locale e non sincronizza dati con K.A.R.E.N."
+            title="Serve un account"
+            subtitle="La telemetria arriva dall'iPhone al tuo account Nexus: in Modalità Ospite tutto resta su questo browser e Karen non riceve i dati biometrici. Accedi o registrati dal Nexus Gate."
           />
         </div>
       </div>
@@ -380,175 +407,173 @@ export default function SuitTelemetryView() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1 className={H1}>Suit Telemetry & Neural Diagnostics</h1>
-          <p className="text-base text-slate-400 mt-1.5">K.A.R.E.N. OS — modulo di telemetria biometrica e readiness tattico.</p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-mono tracking-wide ${connectionMeta.className}`}>
-            <Icon name={connectionMeta.icon} className={`w-3.5 h-3.5 ${connectionMeta.spin ? 'animate-spin' : ''}`} />
+      {header(
+        <>
+          <span className={connectionMeta.badge}>
+            <Icon name={connectionMeta.icon} className={`w-3 h-3 ${connectionMeta.spin ? 'animate-spin' : ''}`} />
             {connectionMeta.label}
           </span>
-          <button
-            type="button"
-            onClick={refresh}
-            disabled={loading}
-            aria-label="Aggiorna telemetria"
-            className="w-9 h-9 rounded-xl bg-white/[0.03] backdrop-blur-md border border-white/10 text-slate-300 hover:bg-white/[0.07] hover:border-secondary/40 hover:text-white transition-all duration-300 disabled:opacity-40 disabled:pointer-events-none flex items-center justify-center"
-          >
-            <Icon name="undo" className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          <button type="button" onClick={refresh} disabled={loading} aria-label="Aggiorna la telemetria" title="Aggiorna" className="ds-icon-btn border border-line">
+            <Icon name="refresh" className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
-        </div>
-      </div>
+        </>
+      )}
 
       {error && (
-        <div className={`${CARD_ALERT} flex items-center gap-3`}>
+        <div className={`${CARD_ALERT} !py-4 flex items-center gap-3`}>
           <Icon name="alertTriangle" className="w-5 h-5 text-primary shrink-0" />
-          <p className="text-sm text-slate-300 relative">{error}</p>
+          <p className="text-sm text-slate-300">{error}</p>
         </div>
       )}
 
-      {/* Grid Principale HUD — Readiness Gauge + Metriche Biometriche */}
-      <div className={`${CARD} grid grid-cols-1 lg:grid-cols-[auto_1fr] gap-6 lg:gap-10 items-center`}>
-        <div className="absolute -top-10 -left-10 w-56 h-56 rounded-full bg-secondary/10 blur-3xl pointer-events-none" />
-        <div className="relative flex justify-center">
-          <ReadinessGauge score={readinessScore} band={readinessBand} />
-        </div>
-        <div className="relative space-y-4 w-full">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className={bandMeta.badgeClass}>
-              <Icon name={bandMeta.icon} className="w-3.5 h-3.5" />
-              {bandMeta.label}
-            </span>
-            <span className={BADGE.slate}>Dati disponibili: {Math.round(dataCompleteness * 100)}%</span>
-            {!briefing && (
-              <span className={BADGE.amber}>Diagnostica non ancora eseguita oggi</span>
-            )}
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-5 items-start">
+        {/* Readiness + metriche biometriche */}
+        <section className={`${CARD} xl:col-span-3 space-y-5`} aria-label="Readiness di oggi">
+          <div className="flex flex-col sm:flex-row items-center gap-6">
+            {/* V41 — senza la diagnostica di oggi il punteggio non esiste
+                ancora: prima si vedeva il valore di default (100, "ottimale")
+                come se fosse misurato. */}
+            <ReadinessGauge score={readinessScore} band={readinessBand} pending={!briefing} />
+            <div className="min-w-0 flex-1 space-y-3 text-center sm:text-left">
+              <div className="flex items-center gap-2 flex-wrap justify-center sm:justify-start">
+                {briefing && (
+                  <span className={bandMeta.badgeClass}>
+                    <Icon name={bandMeta.icon} className="w-3 h-3" />
+                    {bandMeta.label}
+                  </span>
+                )}
+                <span className={BADGE.slate} title="Quota delle voci del punteggio disponibili oggi">
+                  Dati disponibili {Math.round(dataCompleteness * 100)}%
+                </span>
+                {!briefing && <span className={BADGE.amber}>Diagnostica di oggi da fare</span>}
+              </div>
+              <p className="text-[15px] text-slate-200 leading-relaxed">
+                {briefing
+                  ? bandMeta.summary
+                  : 'Il Readiness di oggi si calcola con la diagnostica di Karen, dai dati dell’iPhone e dal log di come ti senti.'}
+              </p>
+            </div>
           </div>
-          <p className="text-sm text-slate-300 leading-relaxed">{bandMeta.summary}</p>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
             <MetricCard
               icon="moon"
-              label="SONNO TOTALE"
+              label="Sonno"
               pending={!hasBiometricsToday || biometrics?.sleep_total_min == null}
               value={formatSleepTotal(biometrics?.sleep_total_min)}
               sub={
                 biometrics?.sleep_deep_min != null || biometrics?.sleep_rem_min != null
-                  ? `Profondo ${formatMinutesShort(biometrics?.sleep_deep_min)} · REM ${formatMinutesShort(biometrics?.sleep_rem_min)}`
+                  ? `profondo ${formatMinutesShort(biometrics?.sleep_deep_min)} · REM ${formatMinutesShort(biometrics?.sleep_rem_min)}`
                   : null
               }
             />
             <MetricCard
               icon="heart"
-              label="FREQUENZA A RIPOSO"
+              label="Battito a riposo"
               pending={!hasBiometricsToday || biometrics?.resting_hr == null}
               value={biometrics?.resting_hr != null ? `${biometrics.resting_hr} bpm` : '—'}
             />
             <MetricCard
               icon="flame"
-              label="ATTIVITÀ FISICA"
+              label="Attività"
               pending={!hasBiometricsToday || (biometrics?.steps == null && biometrics?.active_calories == null)}
-              value={biometrics?.steps != null ? `${biometrics.steps.toLocaleString('it-IT')} passi` : '—'}
-              sub={biometrics?.active_calories != null ? `${biometrics.active_calories} kcal attive` : null}
+              value={biometrics?.steps != null ? `${formatInt(biometrics.steps)} passi` : '—'}
+              sub={biometrics?.active_calories != null ? `${formatInt(biometrics.active_calories)} kcal attive` : null}
             />
           </div>
 
           {/* V40.3 — quali voci sono entrate nel punteggio e quali no. */}
           <ComposizionePunteggio breakdown={briefing?.score_breakdown} biometrics={biometrics} />
-        </div>
-      </div>
+        </section>
 
-      {/* K.A.R.E.N. Tactical Terminal */}
-      <div className={CARD}>
-        <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-primary/10 blur-3xl pointer-events-none" />
-        <div className="relative flex items-center gap-3 mb-4">
-          <div className="w-9 h-9 rounded-xl bg-primary/15 border border-primary/40 flex items-center justify-center text-primary shrink-0">
-            <Icon name="terminal" className="w-5 h-5" />
+        {/* K.A.R.E.N. Tactical Terminal */}
+        <section className={`${CARD} xl:col-span-2 space-y-4`} aria-label="Diagnostica di Karen">
+          <div className="flex items-center gap-3">
+            <span className="ds-icon-tile text-primary">
+              <Icon name="terminal" className="w-[18px] h-[18px]" />
+            </span>
+            <div>
+              <p className="ds-eyebrow">K.A.R.E.N. Tactical Terminal</p>
+              <h2 className="text-[15px] font-semibold text-white">Diagnostica neurale</h2>
+            </div>
           </div>
-          <div>
-            <p className="text-xs tracking-widest text-primary font-mono">K.A.R.E.N. TACTICAL TERMINAL</p>
-            <h2 className="text-lg font-bold text-white tracking-tight">Diagnostica Neurale</h2>
-          </div>
-        </div>
 
-        {briefing ? (
-          <div className="relative space-y-4">
-            <div className="p-3.5 rounded-xl bg-surface/60 border border-secondary/15">
-              <p className="text-[10px] tracking-widest text-slate-500 mb-1.5">BRIEFING</p>
-              <p className="text-base italic text-slate-300 leading-relaxed">"{briefing.briefing_text}"</p>
+          {briefing ? (
+            <div className="space-y-3">
+              <div className="ds-well p-3.5">
+                <p className="ds-eyebrow mb-1.5">Briefing</p>
+                <p className="text-[15px] text-slate-200 leading-relaxed">“{briefing.briefing_text}”</p>
+              </div>
+              {briefing.tactical_advice && (
+                <div className="rounded-xl border border-primary/25 bg-primary/[0.05] p-3.5">
+                  <p className="ds-eyebrow !text-primary/90 mb-1.5">Consiglio tattico</p>
+                  <p className="text-sm text-slate-200 leading-relaxed">{briefing.tactical_advice}</p>
+                </div>
+              )}
+              <div className="flex items-center gap-3 flex-wrap">
+                <button type="button" onClick={() => handleScan(true)} disabled={scanning} className={`${BTN_GHOST} ds-btn-sm`}>
+                  <Icon name="refresh" className={`w-3.5 h-3.5 ${scanning ? 'animate-spin' : ''}`} />
+                  {scanning ? 'Rigenerazione…' : 'Rigenera'}
+                </button>
+                {scanFeedback === 'success' && <span className="text-xs text-secondary">Briefing rigenerato.</span>}
+                {scanFeedback === 'cached' && <span className="text-xs text-slate-500">Già presente per oggi: nessuna nuova chiamata all'IA.</span>}
+                {scanFeedback === 'error' && <span className="text-xs text-primary">Rigenerazione non riuscita. Riprova.</span>}
+              </div>
             </div>
-            <div className="p-3.5 rounded-xl bg-primary/5 border border-primary/25">
-              <p className="text-[10px] tracking-widest text-primary/80 mb-1.5">CONSIGLIO TATTICO</p>
-              <p className="text-sm text-slate-200 leading-relaxed">{briefing.tactical_advice}</p>
-            </div>
-            <div className="flex items-center gap-3 flex-wrap">
-              <button
-                type="button"
-                onClick={() => handleScan(true)}
-                disabled={scanning}
-                className={`${BTN_GHOST} ${scanning ? 'animate-pulse' : ''}`}
-              >
-                <Icon name="radar" className={`w-4 h-4 ${scanning ? 'animate-spin' : ''}`} />
-                {scanning ? 'Rigenerazione in corso...' : 'Rigenera Diagnostica'}
+          ) : (
+            <div className="flex flex-col items-center text-center py-6 gap-4">
+              <p className="text-sm text-slate-400 max-w-sm">
+                Nessun briefing per oggi. Avvia la diagnostica: Karen calcola il Readiness e ti dà il consiglio tattico della giornata.
+              </p>
+              <button type="button" onClick={() => handleScan(false)} disabled={scanning} className={BTN_PRIMARY}>
+                <Icon name={scanning ? 'radar' : 'satellite'} className={`w-4 h-4 ${scanning ? 'animate-spin' : ''}`} />
+                {scanning ? 'Diagnostica in corso…' : 'Avvia la diagnostica'}
               </button>
-              {scanFeedback === 'success' && <span className="text-xs text-secondary font-mono">Briefing rigenerato.</span>}
-              {scanFeedback === 'cached' && <span className="text-xs text-slate-500 font-mono">Già presente per oggi — nessuna nuova chiamata AI.</span>}
-              {scanFeedback === 'error' && <span className="text-xs text-primary font-mono">Rigenerazione non riuscita. Riprova.</span>}
+              {scanFeedback === 'error' && <p className="text-xs text-primary">Diagnostica non riuscita. Riprova.</p>}
             </div>
-          </div>
-        ) : (
-          <div className="relative flex flex-col items-center text-center py-6 gap-4">
-            <p className="text-sm text-slate-400 max-w-md">
-              Nessun briefing generato per oggi. Avvia la Diagnostica Neurale per calcolare il Readiness Score e ricevere il briefing tattico di K.A.R.E.N.
-            </p>
-            <button
-              type="button"
-              onClick={() => handleScan(false)}
-              disabled={scanning}
-              className={`${BTN_PRIMARY} ${scanning ? 'animate-pulse' : ''}`}
-            >
-              <Icon name={scanning ? 'radar' : 'satellite'} className={`w-5 h-5 ${scanning ? 'animate-spin' : ''}`} />
-              {scanning ? 'DIAGNOSTICA IN CORSO...' : 'AVVIA DIAGNOSTICA NEURALE K.A.R.E.N.'}
-            </button>
-            {scanFeedback === 'error' && <p className="text-xs text-primary font-mono">Diagnostica non riuscita. Riprova.</p>}
-          </div>
-        )}
+          )}
+        </section>
       </div>
 
-      {/* Quick Log Soggettivo Cadetto — Recovery Survey a 4 assi */}
-      <div className={CARD}>
-        <div className="relative flex items-center gap-3 mb-5">
-          <div className="w-9 h-9 rounded-xl bg-secondary/15 border border-secondary/40 flex items-center justify-center text-secondary shrink-0">
-            <Icon name="edit" className="w-5 h-5" />
+      {/* Recovery Survey — come ti senti oggi, su quattro assi */}
+      <section className={`${CARD} space-y-5`} aria-label="Recovery Survey">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            <span className="ds-icon-tile text-secondary">
+              <Icon name="edit" className="w-[18px] h-[18px]" />
+            </span>
+            <div>
+              <p className="ds-eyebrow">Quick Log del Cadetto</p>
+              <h2 className="text-[15px] font-semibold text-white">Come ti senti oggi</h2>
+            </div>
           </div>
-          <div>
-            <p className="text-xs tracking-widest text-secondary font-mono">QUICK LOG CADETTO</p>
-            <h2 className="text-lg font-bold text-white tracking-tight">Recovery Survey Soggettivo</h2>
-          </div>
+          {subjectiveLog && <span className={BADGE.green}>Già compilato oggi · puoi aggiornarlo</span>}
         </div>
 
-        <div className="relative space-y-5">
-          <SubjectiveSlider label="LIVELLO FOCUS" value={focusLevel} onChange={setFocusLevel} lowLabel="Disperso" highLabel="Lucido" />
-          <SubjectiveSlider label="LIVELLO ENERGIA" value={energyLevel} onChange={setEnergyLevel} lowLabel="Esausto" highLabel="Carico" />
-          <SubjectiveSlider label="LIVELLO STRESS" value={stressLevel} onChange={setStressLevel} lowLabel="Rilassato" highLabel="Teso" />
-          <SubjectiveSlider label="INDOLENZIMENTO MUSCOLARE" value={muscleSoreness} onChange={setMuscleSoreness} lowLabel="Nessuno" highLabel="Severo" />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-5">
+          <SubjectiveSlider label="Focus" value={focusLevel} onChange={setFocusLevel} lowLabel="Disperso" highLabel="Lucido" />
+          <SubjectiveSlider label="Energia" value={energyLevel} onChange={setEnergyLevel} lowLabel="Esausto" highLabel="Carico" />
+          <SubjectiveSlider label="Stress" value={stressLevel} onChange={setStressLevel} lowLabel="Rilassato" highLabel="Teso" invert />
+          <SubjectiveSlider
+            label="Indolenzimento muscolare"
+            value={muscleSoreness}
+            onChange={setMuscleSoreness}
+            lowLabel="Nessuno"
+            highLabel="Forte"
+            invert
+          />
+        </div>
 
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-5 pt-4 border-t border-line">
           <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs tracking-widest text-slate-400">CAFFEINA (mg)</span>
-              <span className="text-sm font-mono font-bold text-secondary af-mono-nums">{caffeineMg}mg</span>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm text-slate-300">Caffeina di oggi</span>
+              <span className="text-sm font-bold text-white ds-num">{formatInt(caffeineMg)} mg</span>
             </div>
-            <div className="flex flex-wrap gap-2 mb-2">
+            <div className="flex flex-wrap gap-1.5 mb-2">
               {CAFFEINE_PRESETS.map((preset) => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  onClick={() => handleCaffeinePreset(preset)}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-secondary/25 bg-surface/60 text-slate-200 px-3 py-1.5 text-xs font-mono hover:border-secondary/60 hover:text-secondary transition-all duration-300 active:scale-95"
-                >
-                  <Icon name="bolt" className="w-3.5 h-3.5" />
+                <button key={preset.label} type="button" onClick={() => handleCaffeinePreset(preset)} className="ds-btn ds-btn-ghost ds-btn-sm">
+                  {!preset.reset && <Icon name="bolt" className="w-3.5 h-3.5 text-accent" />}
                   {preset.label}
                 </button>
               ))}
@@ -559,35 +584,36 @@ export default function SuitTelemetryView() {
               step={10}
               value={caffeineMg}
               onChange={(e) => setCaffeineMg(Math.max(0, Number(e.target.value) || 0))}
-              className={INPUT}
-              placeholder="Inserimento manuale (mg)"
+              className={`${INPUT} ds-input-sm ds-num`}
+              placeholder="mg a mano"
+              aria-label="Caffeina in milligrammi"
             />
           </div>
-
           <div>
-            <label className="text-xs tracking-widest text-slate-400 block mb-1.5">NOTA TATTICA (opzionale)</label>
-            <input
-              type="text"
+            <label className={LABEL} htmlFor="telemetry-note">
+              Nota <span className="text-slate-500 font-normal">(facoltativa)</span>
+            </label>
+            <textarea
+              id="telemetry-note"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              className={INPUT}
-              placeholder="Es. Notte interrotta, allenamento pesante ieri..."
+              rows={3}
+              className={`${INPUT} resize-none`}
+              placeholder="Es. notte interrotta, allenamento pesante ieri…"
               maxLength={280}
             />
           </div>
-
-          <button type="button" onClick={handleSave} disabled={saving} className={`w-full ${BTN_PRIMARY}`}>
-            <Icon name={saving ? 'radar' : 'check'} className={`w-5 h-5 ${saving ? 'animate-spin' : ''}`} />
-            {saving ? 'REGISTRAZIONE...' : 'REGISTRA TELEMETRIA SOGGETTIVA'}
-          </button>
-          {saveFeedback === 'success' && (
-            <p className="text-xs text-secondary text-center font-mono">Telemetria registrata. Karen ha aggiornato il contesto odierno.</p>
-          )}
-          {saveFeedback === 'error' && (
-            <p className="text-xs text-primary text-center font-mono">Salvataggio non riuscito. Riprova.</p>
-          )}
         </div>
-      </div>
+
+        <div className="flex items-center justify-end gap-3 flex-wrap">
+          {saveFeedback === 'success' && <p className="text-xs text-emerald-300">Registrato: Karen ha aggiornato il contesto di oggi.</p>}
+          {saveFeedback === 'error' && <p className="text-xs text-primary">Salvataggio non riuscito. Riprova.</p>}
+          <button type="button" onClick={handleSave} disabled={saving} className={BTN_PRIMARY}>
+            <Icon name={saving ? 'radar' : 'check'} className={`w-4 h-4 ${saving ? 'animate-spin' : ''}`} />
+            {saving ? 'Registrazione…' : subjectiveLog ? 'Aggiorna il log di oggi' : 'Registra il log di oggi'}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

@@ -5,7 +5,8 @@ import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import Dropdown from '../components/Dropdown.jsx';
 import { goTo, ROUTES } from '../hooks/useArachnoForgeRouter.js';
-import { CARD, H1, H2, INPUT, BTN_PRIMARY, BTN_SECONDARY, BTN_GHOST, BADGE } from '../utils/designSystem.js';
+import { CARD, INPUT, LABEL, BTN_PRIMARY, BTN_SECONDARY, BTN_GHOST, BADGE } from '../utils/designSystem.js';
+import PageHeader from '../components/PageHeader.jsx';
 import { formatDateOnlyHuman, formatHoursMinutes, getDateKey, addDaysToDateOnly } from '../utils/dateUtils.js';
 import {
   FASE,
@@ -54,14 +55,14 @@ import { pagineLabel } from '../utils/format.js';
  * include nel CSS.
  * ------------------------------------------------------------------ */
 const PALETTE = [
-  { bar: 'bg-cyan-400', block: 'bg-cyan-500/15 border-cyan-400/50 hover:bg-cyan-500/25', text: 'text-cyan-100', dot: 'bg-cyan-400' },
-  { bar: 'bg-violet-400', block: 'bg-violet-500/15 border-violet-400/50 hover:bg-violet-500/25', text: 'text-violet-100', dot: 'bg-violet-400' },
-  { bar: 'bg-amber-400', block: 'bg-amber-500/15 border-amber-400/50 hover:bg-amber-500/25', text: 'text-amber-100', dot: 'bg-amber-400' },
-  { bar: 'bg-emerald-400', block: 'bg-emerald-500/15 border-emerald-400/50 hover:bg-emerald-500/25', text: 'text-emerald-100', dot: 'bg-emerald-400' },
-  { bar: 'bg-rose-400', block: 'bg-rose-500/15 border-rose-400/50 hover:bg-rose-500/25', text: 'text-rose-100', dot: 'bg-rose-400' },
-  { bar: 'bg-sky-400', block: 'bg-sky-500/15 border-sky-400/50 hover:bg-sky-500/25', text: 'text-sky-100', dot: 'bg-sky-400' },
-  { bar: 'bg-lime-400', block: 'bg-lime-500/15 border-lime-400/50 hover:bg-lime-500/25', text: 'text-lime-100', dot: 'bg-lime-400' },
-  { bar: 'bg-fuchsia-400', block: 'bg-fuchsia-500/15 border-fuchsia-400/50 hover:bg-fuchsia-500/25', text: 'text-fuchsia-100', dot: 'bg-fuchsia-400' }
+  { bar: 'bg-cyan-400', block: 'bg-cyan-400/[0.10] border-cyan-400/35 hover:bg-cyan-400/[0.16]', text: 'text-cyan-50', dot: 'bg-cyan-400' },
+  { bar: 'bg-violet-400', block: 'bg-violet-400/[0.10] border-violet-400/35 hover:bg-violet-400/[0.16]', text: 'text-violet-50', dot: 'bg-violet-400' },
+  { bar: 'bg-amber-400', block: 'bg-amber-400/[0.10] border-amber-400/35 hover:bg-amber-400/[0.16]', text: 'text-amber-50', dot: 'bg-amber-400' },
+  { bar: 'bg-emerald-400', block: 'bg-emerald-400/[0.10] border-emerald-400/35 hover:bg-emerald-400/[0.16]', text: 'text-emerald-50', dot: 'bg-emerald-400' },
+  { bar: 'bg-rose-400', block: 'bg-rose-400/[0.10] border-rose-400/35 hover:bg-rose-400/[0.16]', text: 'text-rose-50', dot: 'bg-rose-400' },
+  { bar: 'bg-sky-400', block: 'bg-sky-400/[0.10] border-sky-400/35 hover:bg-sky-400/[0.16]', text: 'text-sky-50', dot: 'bg-sky-400' },
+  { bar: 'bg-lime-400', block: 'bg-lime-400/[0.10] border-lime-400/35 hover:bg-lime-400/[0.16]', text: 'text-lime-50', dot: 'bg-lime-400' },
+  { bar: 'bg-fuchsia-400', block: 'bg-fuchsia-400/[0.10] border-fuchsia-400/35 hover:bg-fuchsia-400/[0.16]', text: 'text-fuchsia-50', dot: 'bg-fuchsia-400' }
 ];
 
 function colorFor(id) {
@@ -126,6 +127,26 @@ function layoutDay(lezioni) {
   return out;
 }
 
+/** Testata di una sezione della pagina: icona, titolo, sottotitolo, azioni a destra. */
+function SectionHead({ icon, iconTone = 'text-slate-300', title, subtitle, children }) {
+  return (
+    <div className="flex items-start justify-between gap-3 flex-wrap">
+      <div className="flex items-start gap-3 min-w-0">
+        {icon && (
+          <span className={`ds-icon-tile ${iconTone}`}>
+            <Icon name={icon} className="w-[18px] h-[18px]" />
+          </span>
+        )}
+        <div className="min-w-0">
+          <h2 className="text-[15px] font-semibold text-white leading-snug">{title}</h2>
+          {subtitle && <p className="text-[13px] text-slate-400 mt-0.5 leading-relaxed">{subtitle}</p>}
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
 /* ================================================================== *
  * FASE
  * ================================================================== */
@@ -155,32 +176,28 @@ function PhaseCard({ snap, onSetOverride }) {
   }
 
   return (
-    <section className={`${CARD} space-y-5`}>
-      <div className="flex items-start gap-4">
-        <div
-          className={`w-14 h-14 rounded-2xl border flex items-center justify-center shrink-0 ${meta.border} ${meta.bg} ${meta.tone}`}
-        >
-          <Icon name={meta.icon} className="w-7 h-7" />
-        </div>
+    <section className={`${CARD} space-y-4 h-full`} aria-label="Fase di studio">
+      <div className="flex items-start gap-3">
+        <span className={`ds-icon-tile ${meta.tone}`}>
+          <Icon name={meta.icon} className="w-[18px] h-[18px]" />
+        </span>
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-mono tracking-widest text-slate-500">FASE DI STUDIO</p>
-          <p className={`text-2xl font-extrabold tracking-tight ${meta.tone}`}>{meta.titolo}</p>
-          <p className="text-sm text-slate-300 mt-1 leading-relaxed">{dettaglio}</p>
-          {snap.sospeso && (
-            <p className="text-sm text-accent mt-1">Oggi le lezioni sono sospese.</p>
-          )}
+          <p className="ds-eyebrow">Fase di studio</p>
+          <p className={`text-lg font-bold tracking-tight ${meta.tone}`}>{meta.titolo}</p>
+          <p className="text-[13px] text-slate-300 mt-0.5 leading-relaxed">{dettaglio}</p>
+          {snap.sospeso && <p className="text-[13px] text-accent mt-1">Oggi le lezioni sono sospese.</p>}
         </div>
       </div>
 
-      <p className="text-sm text-slate-400 leading-relaxed">{meta.descrizione}</p>
+      <p className="text-[13px] text-slate-400 leading-relaxed">{meta.descrizione}</p>
 
-      <div className="space-y-2.5">
-        <p className="text-xs font-semibold tracking-widest text-slate-400">MODALITÀ</p>
-        <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="Modalità di studio">
+      <div className="space-y-2">
+        <p className="ds-label !mb-0">Modalità</p>
+        <div className="space-y-1.5" role="radiogroup" aria-label="Modalità di studio">
           {[
-            { v: 'AUTO', label: 'Automatica', icon: 'radar' },
-            { v: FASE.LEZIONI, label: 'Lezioni', icon: FASE_META.LEZIONI.icon },
-            { v: FASE.SESSIONE, label: 'Sessione', icon: FASE_META.SESSIONE.icon }
+            { v: 'AUTO', label: 'Automatica', hint: 'Decide Karen dal calendario dei semestri', icon: 'radar' },
+            { v: FASE.LEZIONI, label: 'Lezioni', hint: 'Forza la modalità lezioni', icon: FASE_META.LEZIONI.icon },
+            { v: FASE.SESSIONE, label: 'Sessione', hint: 'Forza la modalità sessione', icon: FASE_META.SESSIONE.icon }
           ].map((o) => {
             const attivo = scelta === o.v;
             return (
@@ -190,23 +207,28 @@ function PhaseCard({ snap, onSetOverride }) {
                 role="radio"
                 aria-checked={attivo}
                 onClick={() => imposta(o.v)}
-                className={`flex flex-col sm:flex-row items-center justify-center gap-1.5 rounded-xl border px-2 py-2.5 text-sm font-semibold transition-colors duration-200 ${
-                  attivo
-                    ? 'border-secondary/60 bg-secondary/15 text-white'
-                    : 'border-white/10 bg-white/[0.02] text-slate-400 hover:text-slate-200 hover:border-white/25'
+                className={`w-full flex items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors ${
+                  attivo ? 'border-secondary/50 bg-secondary/[0.08]' : 'border-line bg-surface/70 hover:border-line-strong'
                 }`}
               >
-                <Icon name={o.icon} className="w-4 h-4 shrink-0" />
-                {o.label}
+                <span
+                  className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
+                    attivo ? 'border-secondary' : 'border-white/25'
+                  }`}
+                  aria-hidden="true"
+                >
+                  {attivo && <span className="w-2 h-2 rounded-full bg-secondary" />}
+                </span>
+                <Icon name={o.icon} className={`w-4 h-4 shrink-0 ${attivo ? 'text-secondary' : 'text-slate-500'}`} />
+                <span className="min-w-0">
+                  <span className={`block text-sm font-medium ${attivo ? 'text-white' : 'text-slate-300'}`}>{o.label}</span>
+                  <span className="block text-[11px] text-slate-500 truncate">{o.hint}</span>
+                </span>
               </button>
             );
           })}
         </div>
-        {snap.automatica ? (
-          <p className="text-xs text-slate-500 leading-relaxed">
-            Karen decide da sola: Lezioni dentro i periodi dei semestri qui sotto, Sessione fuori.
-          </p>
-        ) : (
+        {snap.automatica ? null : (
           <div className="flex items-center gap-2 flex-wrap text-xs text-slate-400">
             <span>Forzata fino al</span>
             <label htmlFor={idFino} className="sr-only">
@@ -221,9 +243,9 @@ function PhaseCard({ snap, onSetOverride }) {
                 setFinoA(e.target.value);
                 if (isValidDateKey(e.target.value) && e.target.value >= snap.oggi) onSetOverride(snap.fase, e.target.value);
               }}
-              className="bg-surface/80 border border-secondary/30 rounded-lg px-2.5 py-1.5 text-slate-100 text-xs focus:outline-none focus:border-primary"
+              className={`${INPUT} ds-input-sm !w-auto`}
             />
-            <span className="text-slate-500">— poi torna automatica da sola.</span>
+            <span className="text-slate-500">poi torna automatica.</span>
           </div>
         )}
       </div>
@@ -237,12 +259,12 @@ function PhaseCard({ snap, onSetOverride }) {
 
 /** V40.0 — stato di sintesi di una lezione già finita, come chip. */
 const SINTESI_CHIP = {
-  [STATO_LEZIONE.DA_FARE]: { label: 'da sistemare', cls: 'text-accent border-accent/40 bg-accent/10' },
-  [STATO_LEZIONE.FATTA]: { label: 'sistemata', cls: 'text-emerald-300 border-emerald-400/40 bg-emerald-500/10', manuale: true },
-  [STATO_LEZIONE.FATTA_APP]: { label: 'sistemata', cls: 'text-emerald-300 border-emerald-400/40 bg-emerald-500/10' },
-  [STATO_LEZIONE.FATTA_NODI]: { label: 'sistemata sui nodi', cls: 'text-emerald-300 border-emerald-400/40 bg-emerald-500/10' },
-  [STATO_LEZIONE.SALTATA]: { label: 'niente da sistemare', cls: 'text-slate-400 border-white/15 bg-white/[0.03]', manuale: true },
-  [STATO_LEZIONE.NIENTE]: { label: 'nessuna fonte aperta', cls: 'text-slate-500 border-white/10 bg-transparent' }
+  [STATO_LEZIONE.DA_FARE]: { label: 'da sistemare', cls: 'ds-badge ds-badge-amber' },
+  [STATO_LEZIONE.FATTA]: { label: 'sistemata', cls: 'ds-badge ds-badge-green', manuale: true },
+  [STATO_LEZIONE.FATTA_APP]: { label: 'sistemata', cls: 'ds-badge ds-badge-green' },
+  [STATO_LEZIONE.FATTA_NODI]: { label: 'sistemata sui nodi', cls: 'ds-badge ds-badge-green' },
+  [STATO_LEZIONE.SALTATA]: { label: 'niente da sistemare', cls: 'ds-badge ds-badge-slate', manuale: true },
+  [STATO_LEZIONE.NIENTE]: { label: 'nessuna fonte aperta', cls: 'ds-badge ds-badge-slate !text-slate-500' }
 };
 
 const MOTIVO_NIENTE = {
@@ -283,50 +305,52 @@ function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
   const renderStato = (l, chip, dove) => {
     if (!chip) {
       return (
-        <span className={`text-[11px] font-mono whitespace-nowrap ${l.stato === 'IN_CORSO' ? 'text-cyan-300' : 'text-slate-400'}`}>
-          {l.stato === 'IN_CORSO' ? '● in corso' : 'più tardi'}
+        <span className={`text-xs font-medium whitespace-nowrap ${l.stato === 'IN_CORSO' ? 'text-cyan-300' : 'text-slate-500'}`}>
+          {l.stato === 'IN_CORSO' ? '● In corso' : 'Più tardi'}
         </span>
       );
     }
-    const cls = `text-[11px] font-mono whitespace-nowrap rounded-full border px-2 py-0.5 ${chip.cls}`;
     return chip.manuale ? (
       <button
         type="button"
         onClick={() => onEsito([{ id: l.id, dateKey: snap.oggi }], null)}
         title="Annulla la scelta"
         aria-label={`Annulla: ${chip.label}`}
-        className={`${cls} hover:brightness-125`}
+        className={`${chip.cls} hover:brightness-125`}
         data-pos={dove}
       >
-        {chip.label} ×
+        {chip.label}
+        <Icon name="close" className="w-3 h-3" />
       </button>
     ) : (
-      <span className={cls} data-pos={dove}>
+      <span className={chip.cls} data-pos={dove}>
         {chip.label}
       </span>
     );
   };
   return (
-    <section className={`${CARD} space-y-5`}>
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="clock" className="w-5 h-5 text-cyan-300" />
-          OGGI · {GIORNI[isoWeekday(snap.oggi)].toUpperCase()}
-        </h2>
-        {prossima && !prossima.inCorso && (
+    <section className={`${CARD} space-y-4 h-full`} aria-label="Oggi">
+      <SectionHead
+        icon="clock"
+        iconTone="text-cyan-300"
+        title={`Oggi · ${GIORNI[isoWeekday(snap.oggi)].toLowerCase()}`}
+        subtitle={
+          snap.lezioniOggi.length === 0
+            ? `${snap.sospeso ? 'Lezioni sospese.' : 'Nessuna lezione oggi.'}${prossima ? ` La prossima è ${prossima.materia.nome}, ${quandoProssima(prossima)}.` : ''}`
+            : snap.lezioniOggi.length === 1
+            ? '1 lezione in orario'
+            : `${snap.lezioniOggi.length} lezioni in orario`
+        }
+      >
+        {prossima && !prossima.inCorso && snap.lezioniOggi.length > 0 && (
           <span className={`${BADGE.cyan} max-w-full !whitespace-normal text-left leading-snug`}>
             Prossima: {prossima.materia.nome} · {quandoProssima(prossima)}
           </span>
         )}
-      </div>
+      </SectionHead>
 
-      {snap.lezioniOggi.length === 0 ? (
-        <p className="text-sm text-slate-400">
-          {snap.sospeso ? 'Lezioni sospese.' : 'Nessuna lezione oggi.'}
-          {prossima && ` La prossima è ${prossima.materia.nome}, ${quandoProssima(prossima)}.`}
-        </p>
-      ) : (
-        <ol className="space-y-2">
+      {snap.lezioniOggi.length > 0 && (
+        <ol className="space-y-1.5">
           {snap.lezioniOggi.map((l) => {
             const c = colorFor(l.materiaId);
             const chip = l.sintesi
@@ -337,12 +361,12 @@ function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
             return (
               <li
                 key={l.id}
-                className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 ${
-                  l.stato === 'IN_CORSO' ? 'border-cyan-400/50 bg-cyan-500/10' : 'border-white/10 bg-surface/60'
+                className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 ${
+                  l.stato === 'IN_CORSO' ? 'border-cyan-400/40 bg-cyan-400/[0.07]' : 'border-line bg-surface/70'
                 }`}
               >
-                <span className={`w-1.5 self-stretch rounded-full ${c.bar}`} />
-                <span className="font-mono af-mono-nums text-sm text-slate-300 shrink-0 w-12 sm:w-24">
+                <span className={`w-1 self-stretch rounded-full ${c.bar}`} />
+                <span className="ds-num text-[13px] text-slate-300 shrink-0 w-12 sm:w-24">
                   <span className="sm:hidden">
                     {l.inizio}
                     <span className="block text-xs text-slate-500">{l.fine}</span>
@@ -352,15 +376,14 @@ function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
                   </span>
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold text-slate-100 break-words leading-snug">{l.materia.nome}</span>
+                  <span className="block text-sm font-medium text-slate-100 break-words leading-snug">{l.materia.nome}</span>
                   <span className="block text-xs text-slate-500">
                     {TIPO_LEZIONE_META[l.tipo].label}
                     {l.aula ? ` · ${l.aula}` : ''}
                   </span>
                   <span className="flex sm:hidden mt-1.5">{renderStato(l, chip, 'below')}</span>
                 </span>
-                {/* V40.0 — su telefono lo stato va SOTTO il nome: accanto,
-                    con testo lungo, schiacciava il nome a una lettera per riga. */}
+                {/* V40.0 — su telefono lo stato va SOTTO il nome. */}
                 <span className="hidden sm:flex shrink-0">{renderStato(l, chip, 'right')}</span>
               </li>
             );
@@ -368,27 +391,27 @@ function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
         </ol>
       )}
 
-      <div className="pt-4 border-t border-white/10 space-y-3">
+      <div className="pt-4 border-t border-line space-y-3">
         <div className="flex items-center justify-between gap-x-3 gap-y-1 flex-wrap">
-          <p className="text-sm font-bold tracking-widest text-accent flex items-center gap-2">
-            <Icon name="flask" className="w-4 h-4" />
-            DA SISTEMARE
+          <p className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+            <Icon name="flask" className="w-4 h-4 text-accent" />
+            Da sistemare
+            {lezioniInCoda > 0 && <span className={BADGE.amber}>{lezioniInCoda}</span>}
           </p>
           {snap.coda.length > 0 && (
-            <span className="text-xs text-slate-500 min-w-0">
-              {lezioniInCoda === 1 ? '1 lezione' : `${lezioniInCoda} lezioni`} ·{' '}
-              {minutiLabel(snap.sintesiDovutaMin)} di sintesi
+            <span className="text-xs text-slate-500 min-w-0 ds-num">
+              {lezioniInCoda === 1 ? '1 lezione' : `${lezioniInCoda} lezioni`} · {minutiLabel(snap.sintesiDovutaMin)} di sintesi
             </span>
           )}
         </div>
         {snap.coda.length === 0 ? (
-          <p className="text-sm text-slate-400 leading-relaxed">
+          <p className="text-[13px] text-slate-400 leading-relaxed">
             Niente in sospeso. Una lezione finisce qui solo se la materia ha fonti ancora da snellire nei suoi nodi, ed
             esce appena la sistemi: con una sessione in modo <span className="text-accent">Sintesi</span>, aggiornando la
             sintesi del nodo a mano, oppure segnandola come fatta.
           </p>
         ) : (
-          <ul className="space-y-2.5">
+          <ul className="space-y-2">
             {snap.coda.map((l) => {
               const materia = materieById.get(l.materiaId);
               const argomenti = argomentiSintesi(materia);
@@ -400,9 +423,9 @@ function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
               const c = colorFor(l.materiaId);
               const occorrenze = l.lezioni || [];
               return (
-                <li key={`${l.materiaId}_${l.dateKey}`} className="rounded-xl border border-accent/30 bg-accent/[0.06] p-3 space-y-3">
+                <li key={`${l.materiaId}_${l.dateKey}`} className="rounded-xl border border-accent/25 bg-accent/[0.045] p-3.5 space-y-3">
                   <div className="flex items-start gap-3 min-w-0">
-                    <span className={`w-2.5 h-2.5 mt-1.5 rounded-full shrink-0 ${c.dot}`} />
+                    <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${c.dot}`} />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-semibold text-slate-100 break-words">{l.materia.nome}</p>
                       <p className="text-xs text-slate-400 mt-0.5">
@@ -416,7 +439,7 @@ function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
                   </div>
                   {argomenti.length > 0 && (
                     <div className="pl-0 sm:pl-5 max-w-md">
-                      <p className="text-xs text-slate-400 mb-1">Su quale argomento hai fatto sintesi?</p>
+                      <p className="text-xs text-slate-400 mb-1">Su quale argomento fai la sintesi?</p>
                       <Dropdown
                         compact
                         value={sceltoValido}
@@ -430,27 +453,27 @@ function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
                     <button
                       type="button"
                       onClick={() => onAvviaSintesi(l.materiaId, sceltoValido || null)}
-                      className={`${BTN_PRIMARY} !px-4 !py-2 grow sm:grow-0`}
+                      className={`${BTN_PRIMARY} ds-btn-sm grow sm:grow-0`}
                     >
-                      <Icon name="play" className="w-4 h-4" />
+                      <Icon name="play" className="w-3.5 h-3.5" />
                       Avvia sintesi
                     </button>
                     <button
                       type="button"
                       onClick={() => onEsito(occorrenze, ESITO_LEZIONE.FATTA)}
-                      className={`${BTN_GHOST} !px-3 !py-2`}
+                      className={`${BTN_GHOST} ds-btn-sm`}
                       title="L'hai già sistemata, anche fuori dall'app"
                     >
-                      <Icon name="check" className="w-4 h-4 text-emerald-400" />
+                      <Icon name="check" className="w-3.5 h-3.5 text-emerald-300" />
                       Già fatta
                     </button>
                     <button
                       type="button"
                       onClick={() => onEsito(occorrenze, ESITO_LEZIONE.SALTATA)}
-                      className={`${BTN_GHOST} !px-3 !py-2`}
+                      className={`${BTN_GHOST} ds-btn-sm`}
                       title="Non l'hai seguita, o non c'è niente da sistemare"
                     >
-                      <Icon name="close" className="w-4 h-4" />
+                      <Icon name="close" className="w-3.5 h-3.5" />
                       Niente da sistemare
                     </button>
                   </div>
@@ -483,11 +506,11 @@ function LessonBlock({ l, onClick, style }) {
       type="button"
       onClick={onClick}
       style={style}
-      className={`absolute rounded-lg border text-left px-2 py-1.5 overflow-hidden transition-colors duration-200 ${c.block}`}
+      className={`absolute rounded-md border text-left px-2 py-1.5 overflow-hidden transition-colors duration-150 ${c.block}`}
       title={`${l.materia?.nome ?? ''} · ${l.inizio}–${l.fine}${l.aula ? ` · ${l.aula}` : ''}`}
     >
       <span className={`block text-xs font-semibold leading-tight line-clamp-2 ${c.text}`}>{l.materia?.nome}</span>
-      <span className="block text-[10px] font-mono text-slate-300/80 mt-0.5">
+      <span className="block text-[10px] ds-num text-slate-300/80 mt-0.5">
         {l.inizio}–{l.fine}
       </span>
       {alto && (l.aula || l.tipo !== TIPO_LEZIONE.LEZIONE) && (
@@ -547,18 +570,16 @@ function Timetable({ semestre, materieById, oggi, adessoMin, inCorso, onAdd, onE
           <div />
           {giorni.map((g) => (
             <div key={g} className="px-1.5 pb-2 flex items-center justify-between gap-1">
-              <span
-                className={`text-xs font-bold tracking-widest ${
-                  inCorso && g === oggiG ? 'text-cyan-300' : 'text-slate-400'
-                }`}
-              >
-                {GIORNI_BREVI[g].toUpperCase()}
+              <span className={`text-xs font-semibold ${inCorso && g === oggiG ? 'text-cyan-300' : 'text-slate-400'}`}>
+                {GIORNI_BREVI[g]}
+                {inCorso && g === oggiG && <span className="ml-1.5 text-[10px] font-medium text-cyan-300/80">oggi</span>}
               </span>
               <button
                 type="button"
                 onClick={() => onAdd(g)}
-                className="w-7 h-7 flex items-center justify-center rounded-md text-slate-500 hover:text-cyan-300 hover:bg-white/[0.05] transition-colors"
+                className="ds-icon-btn !w-7 !h-7"
                 aria-label={`Aggiungi una lezione il ${GIORNI[g].toLowerCase()}`}
+                title={`Aggiungi una lezione il ${GIORNI[g].toLowerCase()}`}
               >
                 <Icon name="plus" className="w-4 h-4" />
               </button>
@@ -569,7 +590,7 @@ function Timetable({ semestre, materieById, oggi, adessoMin, inCorso, onAdd, onE
             {ore.map((h, i) => (
               <span
                 key={h}
-                className="absolute right-2 -translate-y-1/2 text-[10px] font-mono text-slate-500"
+                className="absolute right-2 -translate-y-1/2 text-[10px] ds-num text-slate-500"
                 style={{ top: i * HOUR_PX }}
               >
                 {String(h).padStart(2, '0')}:00
@@ -579,7 +600,7 @@ function Timetable({ semestre, materieById, oggi, adessoMin, inCorso, onAdd, onE
           {giorni.map((g) => (
             <div
               key={g}
-              className={`relative border-l border-white/[0.06] ${inCorso && g === oggiG ? 'bg-cyan-500/[0.04]' : ''}`}
+              className={`relative border-l border-white/[0.06] ${inCorso && g === oggiG ? 'bg-cyan-400/[0.035]' : ''}`}
               style={{ height: altezza }}
             >
               {ore.map((h, i) => (
@@ -600,7 +621,7 @@ function Timetable({ semestre, materieById, oggi, adessoMin, inCorso, onAdd, onE
               })}
               {mostraNow && g === oggiG && (
                 <div className="absolute inset-x-0 z-10 pointer-events-none" style={{ top: nowTop }}>
-                  <div className="h-px bg-primary shadow-primary-glow" />
+                  <div className="h-px bg-primary" />
                   <div className="absolute -left-1 -top-1 w-2 h-2 rounded-full bg-primary" />
                 </div>
               )}
@@ -622,16 +643,14 @@ function Timetable({ semestre, materieById, oggi, adessoMin, inCorso, onAdd, onE
                 role="tab"
                 aria-selected={attivo}
                 onClick={() => setGiornoMobile(g)}
-                className={`shrink-0 min-w-[3.25rem] rounded-xl border px-2.5 py-2 text-center transition-colors ${
-                  attivo
-                    ? 'border-cyan-400/60 bg-cyan-500/15 text-white'
-                    : 'border-white/10 bg-white/[0.02] text-slate-400'
+                className={`shrink-0 min-w-[3.25rem] rounded-lg border px-2.5 py-2 text-center transition-colors ${
+                  attivo ? 'border-line-strong bg-panel-3 text-white' : 'border-line bg-surface text-slate-400'
                 }`}
               >
                 <span className={`block text-xs font-bold ${inCorso && g === oggiG && !attivo ? 'text-cyan-300' : ''}`}>
                   {GIORNI_BREVI[g]}
                 </span>
-                <span className="block text-[10px] font-mono text-slate-500">{n || '—'}</span>
+                <span className="block text-[10px] ds-num text-slate-500">{n || '—'}</span>
               </button>
             );
           })}
@@ -647,10 +666,10 @@ function Timetable({ semestre, materieById, oggi, adessoMin, inCorso, onAdd, onE
                   <button
                     type="button"
                     onClick={() => onEdit(l)}
-                    className="w-full flex items-center gap-3 rounded-xl border border-white/10 bg-surface/60 px-3 py-3 text-left hover:border-white/25 transition-colors"
+                    className="w-full flex items-center gap-3 rounded-lg border border-line bg-surface/70 px-3 py-3 text-left hover:border-line-strong transition-colors"
                   >
-                    <span className={`w-1.5 self-stretch rounded-full ${c.bar}`} />
-                    <span className="font-mono af-mono-nums text-sm text-slate-300 shrink-0">
+                    <span className={`w-1 self-stretch rounded-full ${c.bar}`} />
+                    <span className="ds-num text-sm text-slate-300 shrink-0">
                       {l.inizio}
                       <span className="block text-slate-500 text-xs">{l.fine}</span>
                     </span>
@@ -692,51 +711,47 @@ const PASSO_META = {
 function PaceCard({ snap, onSetRapporto }) {
   const rapporti = [0.5, 1, 1.5, 2];
   return (
-    <section className={`${CARD} space-y-4`}>
-      <div>
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="gauge" className="w-5 h-5 text-cyan-300" />
-          STARE AL PASSO · QUESTA SETTIMANA
-        </h2>
-        <p className="text-sm text-slate-400 mt-1.5 leading-relaxed">
-          Per ogni ora di lezione già fatta, quanta sintesi le hai dedicato. Contano solo le lezioni con qualcosa da
-          sistemare; la sintesi fatta fuori dal timer (nodi aggiornati a mano, lezioni segnate come fatte) vale come
-          quella misurata.
-        </p>
-      </div>
+    <section className={`${CARD} space-y-4 h-full`} aria-label="Al passo con le lezioni">
+      <SectionHead
+        icon="gauge"
+        iconTone="text-cyan-300"
+        title="Al passo con le lezioni · questa settimana"
+        subtitle="Per ogni ora di lezione già fatta, quanta sintesi le hai dedicato. Vale anche quella fatta fuori dal timer (argomenti aggiornati a mano, lezioni segnate come fatte)."
+      />
 
-      <ul className="space-y-2.5">
-        {snap.passo.map((r) => {
+      <ul className="grid grid-cols-1 xl:grid-cols-2 gap-2">
+        {snap.passo.filter((r) => r.stato !== 'NON_TRACCIATA').map((r) => {
           const c = colorFor(r.materiaId);
           const pct = r.dovutoMin > 0 ? Math.min(100, Math.round((r.sintesiFattaMin / r.dovutoMin) * 100)) : r.sintesiFattaMin > 0 ? 100 : 0;
-          const meta = PASSO_META[r.stato];
+          const meta = PASSO_META[r.stato] || PASSO_META.NESSUNA_LEZIONE;
+          const tracciata = r.stato !== 'NON_TRACCIATA';
           return (
-            <li key={r.materiaId} className="rounded-xl border border-white/10 bg-surface/60 p-3 space-y-2">
+            <li key={r.materiaId} className="rounded-lg border border-line bg-surface/70 px-3 py-2.5 space-y-2">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <span className="flex items-center gap-2 min-w-0">
-                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${c.dot}`} />
-                  <span className="text-sm font-semibold text-slate-100 break-words">{r.materia?.nome}</span>
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${c.dot}`} />
+                  <span className="text-sm font-medium text-slate-100 break-words">{r.materia?.nome}</span>
                 </span>
                 <span className={meta.cls}>
                   {r.stato === 'INDIETRO' || r.stato === 'QUASI' ? `${meta.label} di ${minutiLabel(r.mancanoMin)}` : meta.label}
                 </span>
               </div>
-              <div className="h-2 rounded-full bg-surface border border-white/10 overflow-hidden">
-                <div
-                  className={`h-full transition-all duration-500 ${
-                    r.stato === 'INDIETRO' ? 'bg-primary' : r.stato === 'QUASI' ? 'bg-accent' : 'bg-emerald-400'
-                  }`}
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-              <p className="text-[11px] font-mono af-mono-nums text-slate-400 flex flex-wrap gap-x-3 gap-y-0.5">
+              {tracciata && (
+                <div className="ds-progress">
+                  <span
+                    className={r.stato === 'INDIETRO' ? 'bg-primary' : r.stato === 'QUASI' ? 'bg-accent' : 'bg-emerald-400'}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              )}
+              <p className="text-[11px] ds-num text-slate-500 flex flex-wrap gap-x-3 gap-y-0.5">
                 <span>{minutiLabel(r.lezioneSettMin)} di lezione a settimana</span>
-                {r.stato === 'NON_TRACCIATA' ? (
-                  <span>niente da sistemare finché i nodi non hanno fonti</span>
+                {!tracciata ? (
+                  <span>niente da sistemare finché gli argomenti non hanno fonti</span>
                 ) : (
                   <>
                     <span>dovute finora {minutiLabel(r.dovutoMin)}</span>
-                    <span className="text-slate-200">fatte {minutiLabel(r.sintesiFattaMin)}</span>
+                    <span className="text-slate-300">fatte {minutiLabel(r.sintesiFattaMin)}</span>
                     {r.creditoMin > 0 && <span>di cui {minutiLabel(r.creditoMin)} fuori dal timer</span>}
                     {r.saltateMin > 0 && <span>{minutiLabel(r.saltateMin)} di lezione senza niente da sistemare</span>}
                   </>
@@ -747,22 +762,32 @@ function PaceCard({ snap, onSetRapporto }) {
         })}
       </ul>
 
-      <div className="pt-3 border-t border-white/10 flex items-center gap-3 flex-wrap">
+      {snap.passo.every((r) => r.stato === 'NON_TRACCIATA') && (
+        <p className="text-[13px] text-slate-400">
+          Nessuna materia in orario ha ancora fonti da snellire negli argomenti: non c'è sintesi da tenere al passo.
+        </p>
+      )}
+      {snap.passo.some((r) => r.stato === 'NON_TRACCIATA') && snap.passo.some((r) => r.stato !== 'NON_TRACCIATA') && (
+        <p className="text-xs text-slate-500 leading-relaxed">
+          Senza fonti negli argomenti, quindi fuori dal conteggio:{' '}
+          <span className="text-slate-300">
+            {snap.passo
+              .filter((r) => r.stato === 'NON_TRACCIATA')
+              .map((r) => r.materia?.nome)
+              .filter(Boolean)
+              .join(', ')}
+          </span>
+          .
+        </p>
+      )}
+
+      <div className="pt-3 border-t border-line flex items-center justify-between gap-3 flex-wrap">
         <span className="text-xs text-slate-400">Ore di sintesi per ogni ora di lezione</span>
-        <div className="flex gap-1.5" role="radiogroup" aria-label="Rapporto sintesi su lezione">
+        <div className="ds-segmented" role="radiogroup" aria-label="Rapporto sintesi su lezione">
           {rapporti.map((r) => {
             const attivo = Math.abs(snap.rapportoSintesi - r) < 0.01;
             return (
-              <button
-                key={r}
-                type="button"
-                role="radio"
-                aria-checked={attivo}
-                onClick={() => onSetRapporto(r)}
-                className={`rounded-lg border px-2.5 py-1.5 text-xs font-mono transition-colors ${
-                  attivo ? 'border-cyan-400/60 bg-cyan-500/15 text-white' : 'border-white/10 text-slate-400 hover:text-slate-200'
-                }`}
-              >
+              <button key={r} type="button" role="radio" aria-checked={attivo} onClick={() => onSetRapporto(r)} className="ds-num">
                 {String(r).replace('.', ',')}×
               </button>
             );
@@ -785,48 +810,42 @@ function statoSemestre(s, oggi) {
 
 function SemestriCard({ semestri, oggi, selectedId, onSelect, onNew, onEdit }) {
   return (
-    <section className={`${CARD} space-y-4`}>
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h2 className={`${H2} flex items-center gap-2`}>
-          <Icon name="archive" className="w-5 h-5 text-secondary" />
-          SEMESTRI
-        </h2>
-        <button type="button" onClick={onNew} className={`${BTN_GHOST} !py-2`}>
-          <Icon name="plus" className="w-4 h-4" />
+    <section className={`${CARD} space-y-4 h-full`} aria-label="Semestri">
+      <SectionHead
+        icon="archive"
+        iconTone="text-secondary"
+        title="Semestri"
+        subtitle="I periodi di lezione: dentro l'app è in modalità Lezioni, fuori in Sessione."
+      >
+        <button type="button" onClick={onNew} className={`${BTN_GHOST} ds-btn-sm`}>
+          <Icon name="plus" className="w-3.5 h-3.5" />
           Nuovo semestre
         </button>
-      </div>
-      <p className="text-sm text-slate-400 leading-relaxed">
-        I periodi in cui segui le lezioni. Dentro questi periodi l'app è in modalità Lezioni, fuori in Sessione.
-      </p>
-      <ul className="space-y-2">
+      </SectionHead>
+      <ul className="grid grid-cols-1 xl:grid-cols-2 gap-2">
         {semestri.map((s) => {
           const st = statoSemestre(s, oggi);
           const attivo = s.id === selectedId;
           return (
             <li
               key={s.id}
-              className={`flex items-center gap-3 rounded-xl border p-3 ${
-                attivo ? 'border-secondary/50 bg-secondary/[0.07]' : 'border-white/10 bg-surface/60'
+              className={`flex items-center gap-2 rounded-lg border pl-3 pr-1.5 py-2 transition-colors ${
+                attivo ? 'border-line-strong bg-panel-2' : 'border-line bg-surface/70 hover:border-line-strong'
               }`}
             >
-              <button type="button" onClick={() => onSelect(s.id)} className="min-w-0 flex-1 text-left">
+              <button type="button" onClick={() => onSelect(s.id)} className="min-w-0 flex-1 text-left" aria-pressed={attivo}>
                 <span className="flex items-center gap-2 flex-wrap">
-                  <span className="text-sm font-semibold text-slate-100">{s.nome}</span>
+                  <span className="text-sm font-medium text-slate-100">{s.nome}</span>
                   <span className={st.cls}>{st.label}</span>
+                  {attivo && <span className="text-[11px] text-slate-500">nell'orario qui sopra</span>}
                 </span>
-                <span className="block text-xs text-slate-500 mt-1">
+                <span className="block text-xs text-slate-500 mt-0.5 ds-num">
                   {formatDateOnlyHuman(s.inizio)} → {formatDateOnlyHuman(s.fine)} · {s.lezioni.length}{' '}
                   {s.lezioni.length === 1 ? 'lezione' : 'lezioni'} a settimana
                   {s.sospensioni.length > 0 ? ` · ${s.sospensioni.length} giorni sospesi` : ''}
                 </span>
               </button>
-              <button
-                type="button"
-                onClick={() => onEdit(s)}
-                className="w-10 h-10 flex items-center justify-center rounded-lg text-slate-500 hover:text-secondary hover:bg-white/[0.04] transition-colors shrink-0"
-                aria-label={`Modifica ${s.nome}`}
-              >
+              <button type="button" onClick={() => onEdit(s)} className="ds-icon-btn shrink-0" aria-label={`Modifica ${s.nome}`} title="Modifica">
                 <Icon name="edit" className="w-4 h-4" />
               </button>
             </li>
@@ -863,7 +882,7 @@ function SemestreModal({ open, iniziale, onClose, onSave, onDelete }) {
     <Modal open={open} onClose={onClose} title={iniziale?.id ? 'Modifica semestre' : 'Nuovo semestre'}>
       <div className="space-y-4">
         <div>
-          <label htmlFor={ids.nome} className="text-sm text-slate-400 block mb-1.5">
+          <label htmlFor={ids.nome} className={LABEL}>
             Nome
           </label>
           <input
@@ -877,13 +896,13 @@ function SemestreModal({ open, iniziale, onClose, onSave, onDelete }) {
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label htmlFor={ids.inizio} className="text-sm text-slate-400 block mb-1.5">
+            <label htmlFor={ids.inizio} className={LABEL}>
               Inizio lezioni
             </label>
             <input id={ids.inizio} type="date" value={inizio} onChange={(e) => setInizio(e.target.value)} className={INPUT} />
           </div>
           <div>
-            <label htmlFor={ids.fine} className="text-sm text-slate-400 block mb-1.5">
+            <label htmlFor={ids.fine} className={LABEL}>
               Fine lezioni
             </label>
             <input id={ids.fine} type="date" value={fine} min={inizio || undefined} onChange={(e) => setFine(e.target.value)} className={INPUT} />
@@ -891,8 +910,8 @@ function SemestreModal({ open, iniziale, onClose, onSave, onDelete }) {
         </div>
 
         <div className="space-y-2">
-          <label htmlFor={ids.sosp} className="text-sm text-slate-400 block">
-            Giorni senza lezione <span className="text-slate-500">(festività, ponti, scioperi)</span>
+          <label htmlFor={ids.sosp} className={`${LABEL} !mb-0`}>
+            Giorni senza lezione <span className="text-slate-500 font-normal">(festività, ponti, scioperi)</span>
           </label>
           <div className="flex gap-2">
             <input
@@ -915,7 +934,7 @@ function SemestreModal({ open, iniziale, onClose, onSave, onDelete }) {
                   <button
                     type="button"
                     onClick={() => setSospensioni(sospensioni.filter((x) => x !== d))}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.03] px-2.5 py-1 text-xs text-slate-300 hover:border-primary/50 hover:text-primary transition-colors"
+                    className="ds-badge ds-badge-slate !py-1 hover:!text-primary hover:!border-primary/40 transition-colors"
                     aria-label={`Rimuovi ${formatDateOnlyHuman(d)}`}
                   >
                     {formatDateOnlyHuman(d)}
@@ -931,7 +950,7 @@ function SemestreModal({ open, iniziale, onClose, onSave, onDelete }) {
 
         <div className="flex items-center justify-between gap-2 pt-2 flex-wrap">
           {iniziale?.id ? (
-            <button type="button" onClick={onDelete} className={`${BTN_GHOST} !text-primary hover:!border-primary/50`}>
+            <button type="button" onClick={onDelete} className="ds-btn ds-btn-danger">
               <Icon name="trash" className="w-4 h-4" />
               Elimina
             </button>
@@ -978,7 +997,7 @@ function LezioneModal({ open, iniziale, materie, altreLezioni, onClose, onSave, 
     <Modal open={open} onClose={onClose} title={iniziale?.id ? 'Modifica lezione' : 'Nuova lezione'}>
       <div className="space-y-4">
         <div>
-          <label htmlFor={ids.materia} className="text-sm text-slate-400 block mb-1.5">
+          <label htmlFor={ids.materia} className={LABEL}>
             Materia
           </label>
           <Dropdown
@@ -992,8 +1011,8 @@ function LezioneModal({ open, iniziale, materie, altreLezioni, onClose, onSave, 
         </div>
 
         <div>
-          <p className="text-sm text-slate-400 mb-1.5">Giorno</p>
-          <div className="grid grid-cols-7 gap-1" role="radiogroup" aria-label="Giorno della settimana">
+          <p className={LABEL}>Giorno</p>
+          <div className="ds-segmented w-full !grid grid-cols-7" role="radiogroup" aria-label="Giorno della settimana">
             {[1, 2, 3, 4, 5, 6, 7].map((g) => (
               <button
                 key={g}
@@ -1001,9 +1020,7 @@ function LezioneModal({ open, iniziale, materie, altreLezioni, onClose, onSave, 
                 role="radio"
                 aria-checked={giorno === g}
                 onClick={() => setGiorno(g)}
-                className={`rounded-lg border py-2 text-xs font-bold transition-colors ${
-                  giorno === g ? 'border-cyan-400/60 bg-cyan-500/15 text-white' : 'border-white/10 text-slate-400 hover:text-slate-200'
-                }`}
+                className="justify-center !px-1"
               >
                 {GIORNI_BREVI[g]}
               </button>
@@ -1013,22 +1030,22 @@ function LezioneModal({ open, iniziale, materie, altreLezioni, onClose, onSave, 
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label htmlFor={ids.inizio} className="text-sm text-slate-400 block mb-1.5">
+            <label htmlFor={ids.inizio} className={LABEL}>
               Inizio
             </label>
-            <input id={ids.inizio} type="time" step={300} value={inizio} onChange={(e) => setInizio(e.target.value)} className={`${INPUT} font-mono`} />
+            <input id={ids.inizio} type="time" step={300} value={inizio} onChange={(e) => setInizio(e.target.value)} className={`${INPUT} ds-num`} />
           </div>
           <div>
-            <label htmlFor={ids.fine} className="text-sm text-slate-400 block mb-1.5">
+            <label htmlFor={ids.fine} className={LABEL}>
               Fine
             </label>
-            <input id={ids.fine} type="time" step={300} value={fine} onChange={(e) => setFine(e.target.value)} className={`${INPUT} font-mono`} />
+            <input id={ids.fine} type="time" step={300} value={fine} onChange={(e) => setFine(e.target.value)} className={`${INPUT} ds-num`} />
           </div>
         </div>
 
         <div>
-          <p className="text-sm text-slate-400 mb-1.5">Tipo</p>
-          <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="Tipo di lezione">
+          <p className={LABEL}>Tipo</p>
+          <div className="ds-segmented w-full !grid grid-cols-3" role="radiogroup" aria-label="Tipo di lezione">
             {Object.keys(TIPO_LEZIONE).map((t) => (
               <button
                 key={t}
@@ -1036,9 +1053,7 @@ function LezioneModal({ open, iniziale, materie, altreLezioni, onClose, onSave, 
                 role="radio"
                 aria-checked={tipo === t}
                 onClick={() => setTipo(t)}
-                className={`rounded-lg border py-2 text-xs font-semibold transition-colors ${
-                  tipo === t ? 'border-cyan-400/60 bg-cyan-500/15 text-white' : 'border-white/10 text-slate-400 hover:text-slate-200'
-                }`}
+                className="justify-center !px-1.5 min-w-0"
               >
                 {TIPO_LEZIONE_META[t].label}
               </button>
@@ -1047,8 +1062,8 @@ function LezioneModal({ open, iniziale, materie, altreLezioni, onClose, onSave, 
         </div>
 
         <div>
-          <label htmlFor={ids.aula} className="text-sm text-slate-400 block mb-1.5">
-            Aula <span className="text-slate-500">(facoltativa)</span>
+          <label htmlFor={ids.aula} className={LABEL}>
+            Aula <span className="text-slate-500 font-normal">(facoltativa)</span>
           </label>
           <input id={ids.aula} value={aula} maxLength={40} onChange={(e) => setAula(e.target.value)} placeholder="Es. Aula A1" className={INPUT} />
         </div>
@@ -1063,7 +1078,7 @@ function LezioneModal({ open, iniziale, materie, altreLezioni, onClose, onSave, 
 
         <div className="flex items-center justify-between gap-2 pt-2 flex-wrap">
           {iniziale?.id ? (
-            <button type="button" onClick={onDelete} className={`${BTN_GHOST} !text-primary hover:!border-primary/50`}>
+            <button type="button" onClick={onDelete} className="ds-btn ds-btn-danger">
               <Icon name="trash" className="w-4 h-4" />
               Elimina
             </button>
@@ -1094,8 +1109,9 @@ export default function Campus() {
   const snap = derived.campus;
   const campus = state.campus || { semestri: [] };
 
-  const materieAttive = useMemo(() => state.materie.filter((m) => m && !m.examPassed), [state.materie]);
-  const materieById = useMemo(() => new Map(state.materie.map((m) => [m.id, m])), [state.materie]);
+  const materie = useMemo(() => (Array.isArray(state.materie) ? state.materie.filter(Boolean) : []), [state.materie]);
+  const materieAttive = useMemo(() => materie.filter((m) => !m.examPassed), [materie]);
+  const materieById = useMemo(() => new Map(materie.map((m) => [m.id, m])), [materie]);
   const materieAttiveById = useMemo(() => new Map(materieAttive.map((m) => [m.id, m])), [materieAttive]);
 
   const [selectedSemId, setSelectedSemId] = useState(() => focusSemester(campus, getDateKey())?.id || null);
@@ -1106,6 +1122,13 @@ export default function Campus() {
   const [semModal, setSemModal] = useState(null); // { iniziale }
   const [confirm, setConfirm] = useState(null); // { title, message, onConfirm }
 
+  // V41 — la linea rossa "adesso" nell'orario si sposta da sola: prima
+  // restava ferma all'ora in cui la pagina era stata aperta.
+  const [, setMinuteTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setMinuteTick((n) => n + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
   const adessoMin = minutesOfDay(new Date());
   const semestreInCorso = !!(semestre && semestre.inizio <= snap.oggi && snap.oggi <= semestre.fine);
 
@@ -1159,68 +1182,83 @@ export default function Campus() {
     });
   };
 
+  const puoAggiungereLezione = !!semestre && materieAttive.length > 0;
+  const lezioniTracciate = FASE.LEZIONI === snap.fase;
+
   return (
     <div className="space-y-6">
-      <header className="space-y-2">
-        <h1 className={H1}>Empire State University</h1>
-        <p className="text-base text-slate-400 leading-relaxed max-w-3xl">
-          Semestre, orario e fase di studio. Durante le lezioni, Karen sa quali materie hai seguito oggi e ti ricorda di
-          trasformarle in appunti finché sono fresche; in sessione, lascia comandare le date d'esame.
-        </p>
-      </header>
-
-      <PhaseCard snap={snap} onSetOverride={(fase, finoA) => actions.campusSetOverride(fase, finoA)} />
+      <PageHeader
+        eyebrow="Semestre e orario"
+        icon="calendar"
+        title="Empire State University"
+        subtitle="A lezione, Karen sa cosa hai seguito oggi e ti ricorda di trasformarlo in appunti finché è fresco. In sessione comandano le date d'esame."
+        actions={
+          puoAggiungereLezione ? (
+            <button type="button" onClick={() => apriNuovaLezione(isoWeekday(snap.oggi) <= 5 ? isoWeekday(snap.oggi) : 1)} className={BTN_SECONDARY}>
+              <Icon name="plus" className="w-4 h-4" />
+              Nuova lezione
+            </button>
+          ) : null
+        }
+      />
 
       {campus.semestri.length === 0 ? (
-        <section className={`${CARD} space-y-4 text-center py-10`}>
-          <div className="w-16 h-16 mx-auto rounded-2xl border border-cyan-400/40 bg-cyan-500/10 flex items-center justify-center text-cyan-300">
-            <Icon name="calendar" className="w-8 h-8" />
-          </div>
-          <div className="space-y-2 max-w-md mx-auto">
-            <p className="text-lg font-semibold text-slate-100">Configura il tuo semestre</p>
-            <p className="text-sm text-slate-400 leading-relaxed">
-              Imposta il periodo delle lezioni e il tuo orario settimanale. Da lì l'app capisce da sola quando sei a
-              lezione e quando in sessione.
-            </p>
-          </div>
-          <div className="flex items-center justify-center gap-2 flex-wrap">
-            <button type="button" onClick={creaSemestreSuggerito} className={BTN_SECONDARY}>
-              <Icon name="plus" className="w-4 h-4" />
-              Crea {suggestSemestre(snap.oggi).nome}
-            </button>
-            <button type="button" onClick={() => setSemModal({ iniziale: suggestSemestre(snap.oggi) })} className={BTN_GHOST}>
-              Scegli le date
-            </button>
-          </div>
-        </section>
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-stretch">
+          <section className={`${CARD} xl:col-span-2 flex flex-col items-center justify-center text-center gap-4 py-10`}>
+            <span className="w-14 h-14 rounded-2xl border border-line bg-panel-2 flex items-center justify-center text-cyan-300">
+              <Icon name="calendar" className="w-7 h-7" />
+            </span>
+            <div className="space-y-1.5 max-w-md mx-auto">
+              <p className="text-lg font-semibold text-white">Configura il tuo semestre</p>
+              <p className="text-sm text-slate-400 leading-relaxed">
+                Imposta il periodo delle lezioni e l'orario settimanale: da lì l'app capisce da sola quando sei a lezione e
+                quando in sessione.
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-2 flex-wrap">
+              <button type="button" onClick={creaSemestreSuggerito} className={BTN_SECONDARY}>
+                <Icon name="plus" className="w-4 h-4" />
+                Crea {suggestSemestre(snap.oggi).nome}
+              </button>
+              <button type="button" onClick={() => setSemModal({ iniziale: suggestSemestre(snap.oggi) })} className={BTN_GHOST}>
+                Scegli le date
+              </button>
+            </div>
+          </section>
+          <PhaseCard snap={snap} onSetOverride={(fase, finoA) => actions.campusSetOverride(fase, finoA)} />
+        </div>
       ) : (
         <>
-          {snap.fase === FASE.LEZIONI && (
-            <TodayCard
-              snap={snap}
-              materieById={materieById}
-              onAvviaSintesi={avviaSintesi}
-              onEsito={(lezioni, esito) => {
-                actions.campusSetEsito(lezioni, esito);
-                if (esito === ESITO_LEZIONE.FATTA) pushToast('Segnata come già sistemata.', 'success');
-                else if (esito === ESITO_LEZIONE.SALTATA) pushToast('Tolta dalla coda: niente da sistemare.', 'info');
-              }}
-            />
-          )}
-
-          <section className={`${CARD} space-y-4`}>
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div className="min-w-0">
-                <h2 className={`${H2} flex items-center gap-2`}>
-                  <Icon name="grid" className="w-5 h-5 text-cyan-300" />
-                  ORARIO SETTIMANALE
-                </h2>
-                {semestre && (
-                  <p className="text-sm text-slate-400 mt-1">
-                    {semestre.nome} · {formatDateOnlyHuman(semestre.inizio)} → {formatDateOnlyHuman(semestre.fine)}
-                  </p>
-                )}
+          {/* Oggi + fase: le due cose da guardare appena si apre la pagina. */}
+          <div className={`grid grid-cols-1 gap-5 items-stretch ${lezioniTracciate ? 'xl:grid-cols-3' : ''}`}>
+            {lezioniTracciate && (
+              <div className="xl:col-span-2 min-w-0">
+                <TodayCard
+                  snap={snap}
+                  materieById={materieById}
+                  onAvviaSintesi={avviaSintesi}
+                  onEsito={(lezioni, esito) => {
+                    actions.campusSetEsito(lezioni, esito);
+                    if (esito === ESITO_LEZIONE.FATTA) pushToast('Segnata come già sistemata.', 'success');
+                    else if (esito === ESITO_LEZIONE.SALTATA) pushToast('Tolta dalla coda: niente da sistemare.', 'info');
+                  }}
+                />
               </div>
+            )}
+            <PhaseCard snap={snap} onSetOverride={(fase, finoA) => actions.campusSetOverride(fase, finoA)} />
+          </div>
+
+          <section className={`${CARD} space-y-4`} aria-label="Orario settimanale">
+            <SectionHead
+              icon="grid"
+              iconTone="text-cyan-300"
+              title="Orario settimanale"
+              subtitle={
+                semestre
+                  ? `${semestre.nome} · ${formatDateOnlyHuman(semestre.inizio)} → ${formatDateOnlyHuman(semestre.fine)}`
+                  : undefined
+              }
+            >
               {campus.semestri.length > 1 && (
                 <div className="w-full sm:w-64">
                   <Dropdown
@@ -1228,16 +1266,15 @@ export default function Campus() {
                     onChange={setSelectedSemId}
                     options={campus.semestri.map((s) => ({ value: s.id, label: s.nome }))}
                     ariaLabel="Semestre da visualizzare"
+                    compact
                   />
                 </div>
               )}
-            </div>
+            </SectionHead>
 
             {materieAttive.length === 0 ? (
               <div className="rounded-xl border border-dashed border-white/15 p-5 text-center space-y-3">
-                <p className="text-sm text-slate-300">
-                  L'orario usa le materie del Web-Matrix, e non ce n'è ancora nessuna da seguire.
-                </p>
+                <p className="text-sm text-slate-300">L'orario usa le materie del Web-Matrix, e non ce n'è ancora nessuna da seguire.</p>
                 <button type="button" onClick={() => goTo(ROUTES.QUADRANT_HUB)} className={BTN_GHOST}>
                   <Icon name="web" className="w-4 h-4" />
                   Vai al Web-Matrix
@@ -1248,8 +1285,8 @@ export default function Campus() {
                 <>
                   {semestre.lezioni.length === 0 && (
                     <p className="text-sm text-slate-400">
-                      Nessuna lezione ancora. Aggiungile giorno per giorno con{' '}
-                      <span className="text-cyan-300">+</span>: la materia si sceglie fra quelle del Web-Matrix.
+                      Nessuna lezione ancora. Aggiungile giorno per giorno con <span className="text-slate-200">+</span>: la
+                      materia si sceglie fra quelle del Web-Matrix.
                     </p>
                   )}
                   <Timetable
@@ -1266,22 +1303,19 @@ export default function Campus() {
             )}
           </section>
 
-          {snap.fase === FASE.LEZIONI && snap.passo.length > 0 && (
-            <PaceCard snap={snap} onSetRapporto={(v) => actions.campusSetRapporto(v)} />
-          )}
-
+          {lezioniTracciate && snap.passo.length > 0 && <PaceCard snap={snap} onSetRapporto={(v) => actions.campusSetRapporto(v)} />}
           <SemestriCard
-            semestri={campus.semestri}
-            oggi={snap.oggi}
-            selectedId={semestre?.id}
-            onSelect={setSelectedSemId}
-            onNew={() => {
-              const ultimo = campus.semestri[campus.semestri.length - 1];
-              const base = ultimo ? suggestSemestre(addDaysToDateOnly(ultimo.fine, 45)) : suggestSemestre(snap.oggi);
-              setSemModal({ iniziale: base });
-            }}
-            onEdit={(s) => setSemModal({ iniziale: s })}
-          />
+              semestri={campus.semestri}
+              oggi={snap.oggi}
+              selectedId={semestre?.id}
+              onSelect={setSelectedSemId}
+              onNew={() => {
+                const ultimo = campus.semestri[campus.semestri.length - 1];
+                const base = ultimo ? suggestSemestre(addDaysToDateOnly(ultimo.fine, 45)) : suggestSemestre(snap.oggi);
+                setSemModal({ iniziale: base });
+              }}
+              onEdit={(s) => setSemModal({ iniziale: s })}
+            />
         </>
       )}
 

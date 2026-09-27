@@ -406,6 +406,42 @@ export function reducer(state, action) {
       };
     }
 
+    // V41 — "Annulla" dopo l'eliminazione di una materia: rimette la
+    // materia IDENTICA al suo posto e le lezioni dell'orario che le
+    // appartenevano. Mirato, non un ripristino dell'intero profilo: tutto
+    // ciò che è successo nel frattempo resta com'è. Idempotente: se la
+    // materia c'è già, non fa nulla.
+    case 'RESTORE_MATERIA': {
+      const { materia, index, lezioni } = action.payload || {};
+      if (!materia || typeof materia !== 'object' || !materia.id) return state;
+      if (state.materie.some((m) => m && m.id === materia.id)) return state;
+      const materie = [...state.materie];
+      const at = Math.max(0, Math.min(materie.length, Number.isFinite(Number(index)) ? Number(index) : materie.length));
+      materie.splice(at, 0, materia);
+      let campus = state.campus;
+      if (campus && Array.isArray(campus.semestri) && Array.isArray(lezioni) && lezioni.length > 0) {
+        campus = normalizeCampus(
+          {
+            ...campus,
+            semestri: campus.semestri.map((sem) => {
+              const own = Array.isArray(sem.lezioni) ? sem.lezioni : [];
+              const add = lezioni
+                .filter((x) => x && x.semestreId === sem.id && x.lezione && !own.some((l) => l.id === x.lezione.id))
+                .map((x) => x.lezione);
+              return add.length > 0 ? { ...sem, lezioni: [...own, ...add] } : sem;
+            })
+          },
+          materie.map((m) => m.id)
+        );
+      }
+      return {
+        ...state,
+        materie,
+        campus,
+        combatLog: pushLog(state.combatLog, `Eliminazione annullata: ${materia.nome} è tornata nel Web-Matrix.`, 'HUB')
+      };
+    }
+
     /* -------------------------------------------------------------- *
      * V39.0 — EMPIRE STATE UNIVERSITY (utils/campusEngine.js)
      * Ogni azione ripassa da normalizeCampus: le stesse regole di
@@ -595,6 +631,44 @@ export function reducer(state, action) {
         combatLog: pushLog(
           state.combatLog,
           `${deletedCount} nodo/i rimossi in blocco da ${materia.nome}. Eventuali nodi figli promossi a radice.`,
+          'HUB'
+        )
+      };
+    }
+
+    // V41 — "Annulla" dopo l'eliminazione di uno o più argomenti: li
+    // reinserisce nella posizione originale e ridà ai figli "promossi a
+    // radice" il loro padre di prima (solo se nel frattempo nessuno li ha
+    // già spostati altrove). Idempotente.
+    case 'RESTORE_SFIDE': {
+      const { materiaId, removed, reparent } = action.payload || {};
+      const materia = findMateria(state, materiaId);
+      if (!materia || !Array.isArray(removed) || removed.length === 0) return state;
+      const sfide = [...(Array.isArray(materia.sfide) ? materia.sfide : [])];
+      const ids = new Set(sfide.map((s) => s && s.id));
+      let restored = 0;
+      [...removed]
+        .filter((r) => r && r.sfida && r.sfida.id)
+        .sort((a, b) => (Number(a.index) || 0) - (Number(b.index) || 0))
+        .forEach(({ sfida, index }) => {
+          if (ids.has(sfida.id)) return;
+          const at = Math.max(0, Math.min(sfide.length, Number(index) || 0));
+          sfide.splice(at, 0, sfida);
+          ids.add(sfida.id);
+          restored += 1;
+        });
+      if (restored === 0) return state;
+      const parentById = new Map((Array.isArray(reparent) ? reparent : []).filter((r) => r && r.id).map((r) => [r.id, r.parentId]));
+      const relinked = sfide.map((s) =>
+        s && parentById.has(s.id) && (s.parentId == null || s.parentId === '') && ids.has(parentById.get(s.id))
+          ? { ...s, parentId: parentById.get(s.id) }
+          : s
+      );
+      return {
+        ...updateMateriaSfide(state, materiaId, () => relinked),
+        combatLog: pushLog(
+          state.combatLog,
+          restored === 1 ? `Eliminazione annullata in ${materia.nome}: argomento ripristinato.` : `Eliminazione annullata in ${materia.nome}: ${restored} argomenti ripristinati.`,
           'HUB'
         )
       };
@@ -1123,14 +1197,21 @@ export function reducer(state, action) {
         combatLog: pushLog(state.combatLog, 'Reset giornaliero (03:00): Stamina e Daily Protocols ripristinati.', 'SYSTEM')
       };
 
-    case 'ADD_SHOP_REWARD':
+    // V41 — validazione: prima un nome vuoto o un costo NaN/negativo
+    // (campo svuotato nel form) finivano nello Shop così com'erano, e una
+    // ricompensa a costo NaN non si poteva più né riscattare né capire.
+    case 'ADD_SHOP_REWARD': {
+      const nome = typeof action.payload?.nome === 'string' ? action.payload.nome.trim().slice(0, 80) : '';
+      const costoXp = Math.round(Number(action.payload?.costoXp));
+      if (!nome || !Number.isFinite(costoXp) || costoXp < 1) return state;
       return {
         ...state,
         shopRewards: [
           ...state.shopRewards,
-          { id: `reward_${Date.now()}`, nome: action.payload.nome, costoXp: action.payload.costoXp }
+          { id: `reward_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, nome, costoXp: Math.min(costoXp, 10000000) }
         ]
       };
+    }
 
     case 'DELETE_SHOP_REWARD':
       return { ...state, shopRewards: state.shopRewards.filter((r) => r.id !== action.payload.id) };

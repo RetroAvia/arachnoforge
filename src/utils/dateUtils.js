@@ -108,10 +108,21 @@ export function daysUntilDateOnly(dateKey) {
   return Math.round((targetMs - todayMs) / 86400000);
 }
 
-/** Millisecondi mancanti alla mezzanotte UTC della data-only target — per countdown live. */
-export function msUntilDateOnlyMidnight(dateKey) {
+/**
+ * Millisecondi mancanti all'inizio (mezzanotte LOCALE) del giorno
+ * data-only target — per il countdown live del Doomsday Clock.
+ *
+ * V41 — prima contava fino alla mezzanotte UTC, cioè all'1:00 o alle 2:00
+ * di notte in Italia: il conto alla rovescia sbagliava di una o due ore e
+ * "Esame in corso" compariva nel cuore della notte. Qui, e solo qui,
+ * serve l'ora locale: è un orologio da guardare, non un conteggio di
+ * giorni (quelli restano in UTC assoluto, vedi sopra).
+ */
+export function msUntilDateOnlyMidnight(dateKey, now = Date.now()) {
   if (!dateKey) return null;
-  return dateOnlyToUtcMs(dateKey) - Date.now();
+  const [y, m, d] = String(dateKey).split('-').map(Number);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
+  return new Date(y, m - 1, d, 0, 0, 0, 0).getTime() - now;
 }
 
 /** Somma N giorni (calendariali, UTC) a una data-only "YYYY-MM-DD", ritorna una nuova date-only key. */

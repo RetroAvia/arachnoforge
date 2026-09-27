@@ -670,3 +670,92 @@ describe('FOCUS_COMPLETED — pagine per fonte (V40.2)', () => {
     assert.equal(n.fonti[0].pagineFatte, 100);
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * V41 — "Annulla" dopo un'eliminazione, e le altre blindature nuove.
+ * ------------------------------------------------------------------ */
+describe('V41 — RESTORE_MATERIA', () => {
+  test('rimette la materia nella posizione originale', () => {
+    const s = conMateria({}, [nodo()]);
+    s.materie.push({ ...s.materie[0], id: 'm2', nome: 'Fisica' });
+    const tolta = s.materie[0];
+    const dopo = reducer(s, { type: 'DELETE_MATERIA', payload: { id: 'm1' } });
+    assert.deepEqual(dopo.materie.map((m) => m.id), ['m2']);
+    const ripristinata = reducer(dopo, { type: 'RESTORE_MATERIA', payload: { materia: tolta, index: 0, lezioni: [] } });
+    assert.deepEqual(ripristinata.materie.map((m) => m.id), ['m1', 'm2']);
+    assert.equal(ripristinata.materie[0].sfide.length, 1);
+  });
+  test('idempotente: una seconda volta non duplica', () => {
+    const s = conMateria();
+    const again = reducer(s, { type: 'RESTORE_MATERIA', payload: { materia: s.materie[0], index: 0 } });
+    assert.equal(again, s);
+  });
+  test('payload non valido: nessun cambiamento', () => {
+    const s = conMateria();
+    assert.equal(reducer(s, { type: 'RESTORE_MATERIA', payload: { materia: null } }), s);
+    assert.equal(reducer(s, { type: 'RESTORE_MATERIA', payload: {} }), s);
+  });
+});
+
+describe('V41 — RESTORE_SFIDE', () => {
+  test('ridà gli argomenti eliminati e i padri ai figli promossi', () => {
+    const padre = nodo({ id: 'p', nome: 'Capitolo' });
+    const figlio = nodo({ id: 'f', nome: 'Paragrafo', parentId: 'p' });
+    const altro = nodo({ id: 'z', nome: 'Altro' });
+    const s = conMateria({}, [padre, figlio, altro]);
+    const dopo = reducer(s, { type: 'DELETE_SFIDA', payload: { materiaId: 'm1', sfidaId: 'p' } });
+    assert.equal(dopo.materie[0].sfide.find((x) => x.id === 'f').parentId, null, 'il figlio è stato promosso a radice');
+    const ripristinato = reducer(dopo, {
+      type: 'RESTORE_SFIDE',
+      payload: { materiaId: 'm1', removed: [{ sfida: padre, index: 0 }], reparent: [{ id: 'f', parentId: 'p' }] }
+    });
+    const sfide = ripristinato.materie[0].sfide;
+    assert.deepEqual(sfide.map((x) => x.id), ['p', 'f', 'z']);
+    assert.equal(sfide.find((x) => x.id === 'f').parentId, 'p');
+  });
+  test('un figlio già spostato altrove non viene toccato', () => {
+    const padre = nodo({ id: 'p' });
+    const s = conMateria({}, [nodo({ id: 'f', parentId: 'z' }), nodo({ id: 'z' })]);
+    const out = reducer(s, {
+      type: 'RESTORE_SFIDE',
+      payload: { materiaId: 'm1', removed: [{ sfida: padre, index: 0 }], reparent: [{ id: 'f', parentId: 'p' }] }
+    });
+    assert.equal(out.materie[0].sfide.find((x) => x.id === 'f').parentId, 'z');
+  });
+  test('già presenti: nessun cambiamento', () => {
+    const s = conMateria({}, [nodo()]);
+    assert.equal(reducer(s, { type: 'RESTORE_SFIDE', payload: { materiaId: 'm1', removed: [{ sfida: nodo(), index: 0 }] } }), s);
+  });
+});
+
+describe('V41 — import in blocco e suo annullamento', () => {
+  test('BULK_DELETE_SFIDE con gli id importati riporta lo Skill Tree com’era', () => {
+    const s = conMateria({}, [nodo()]);
+    const importati = [nodo({ id: 'i1', nome: 'Cap' }), nodo({ id: 'i2', nome: 'Par', parentId: 'i1' })];
+    const dopo = reducer(s, { type: 'BULK_IMPORT_SFIDE', payload: { materiaId: 'm1', sfide: importati } });
+    assert.equal(dopo.materie[0].sfide.length, 3);
+    const annullato = reducer(dopo, { type: 'BULK_DELETE_SFIDE', payload: { materiaId: 'm1', sfidaIds: ['i1', 'i2'] } });
+    assert.deepEqual(annullato.materie[0].sfide.map((x) => x.id), ['n1']);
+  });
+});
+
+describe('V41 — ADD_SHOP_REWARD', () => {
+  test('nome ripulito e costo intero', () => {
+    const out = reducer(statoBase(), { type: 'ADD_SHOP_REWARD', payload: { nome: '  Serata film  ', costoXp: 499.6 } });
+    const r = out.shopRewards[out.shopRewards.length - 1];
+    assert.equal(r.nome, 'Serata film');
+    assert.equal(r.costoXp, 500);
+  });
+  test('rifiuta nome vuoto e costi non validi', () => {
+    const s = statoBase();
+    assert.equal(reducer(s, { type: 'ADD_SHOP_REWARD', payload: { nome: '   ', costoXp: 100 } }), s);
+    assert.equal(reducer(s, { type: 'ADD_SHOP_REWARD', payload: { nome: 'X', costoXp: 0 } }), s);
+    assert.equal(reducer(s, { type: 'ADD_SHOP_REWARD', payload: { nome: 'X', costoXp: 'tanto' } }), s);
+  });
+  test('tetto al costo e al nome', () => {
+    const out = reducer(statoBase(), { type: 'ADD_SHOP_REWARD', payload: { nome: 'x'.repeat(200), costoXp: 1e12 } });
+    const r = out.shopRewards[out.shopRewards.length - 1];
+    assert.equal(r.nome.length, 80);
+    assert.equal(r.costoXp, 10000000);
+  });
+});

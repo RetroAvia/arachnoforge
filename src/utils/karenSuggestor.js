@@ -26,11 +26,11 @@ function buildReason(materia, { unlocksCount, daysRemaining, remainingHours, pre
   const oreLabel = `${Math.round(remainingHours)}h di lavoro residuo`;
 
   if (daysRemaining != null && daysRemaining <= 0) {
-    return `EVENT HORIZON: l'esame di ${materia.nome} è oggi o già scaduto e restano ${oreLabel}. Nient'altro ha priorità.`;
+    return `Event Horizon: l'esame di ${materia.nome} è oggi o già scaduto e restano ${oreLabel}. Nient'altro ha priorità.`;
   }
   if (pressure > 1) {
     const disponibili = Math.round(daysRemaining * capacityHours);
-    return `IN DEFICIT: ${materia.nome} ha ${oreLabel} ma solo ~${disponibili}h disponibili in ${daysRemaining} giorni al tuo ritmo reale. Serve recuperare terreno adesso.`;
+    return `In deficit: ${materia.nome} ha ${oreLabel} ma solo ~${disponibili}h disponibili in ${daysRemaining} giorni al tuo ritmo reale. Serve recuperare terreno adesso.`;
   }
   if (pressure > 0.7) {
     return `Margine sottile: ${oreLabel} in ${daysRemaining} giorni — sei in pari, ma senza riserva. Un giorno saltato ti porta in deficit.`;

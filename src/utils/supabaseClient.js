@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { parseAuthRedirect } from './authFlow.js';
 
 /**
  * V26.0 — "The Nexus Gate": client Supabase condiviso (singleton di modulo,
@@ -34,6 +35,17 @@ if (!import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KE
       'compilate nel sorgente. Impostale in .env.local (locale) e nelle Environment Variables di Vercel (produzione).'
   );
 }
+
+/**
+ * V41 — Ritorno da un link inviato per email da Supabase (recupero della
+ * password, conferma dell'account). Va letto QUI, prima di creare il
+ * client: supabase-js ripulisce l'indirizzo appena ha letto i token, e
+ * l'evento PASSWORD_RECOVERY parte una volta sola, magari prima che l'app
+ * si sia messa in ascolto. Un link scaduto invece resta nell'indirizzo
+ * come `#error=…&error_code=…`: il Nexus Gate lo spiega e lo ripulisce.
+ */
+export const AUTH_REDIRECT =
+  typeof window !== 'undefined' ? parseAuthRedirect(window.location.hash, window.location.search) : { recovery: false, error: null };
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {

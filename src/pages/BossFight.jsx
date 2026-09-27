@@ -5,9 +5,12 @@ import { createPortal } from 'react-dom';
 import Modal, { useOverlayLayer } from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import Dropdown from '../components/Dropdown.jsx';
-import { formatClock } from '../utils/dateUtils.js';
-import { computeStreakMultiplier } from '../utils/xpEngine.js';
-import { CARD, CARD_ALERT, BTN_PRIMARY, BTN_SECONDARY, BTN_SUCCESS, BTN_AMBER, BTN_GHOST, INPUT, H1 } from '../utils/designSystem.js';
+import { formatClock, formatDateOnlyHuman } from '../utils/dateUtils.js';
+import { computeStreakMultiplier, MAX_CARNAGE_MULTIPLIER } from '../utils/xpEngine.js';
+import { isMaxCarnageActive } from '../utils/maxCarnage.js';
+import { CARD, CARD_NOPAD, CARD_ALERT, BTN_PRIMARY, BTN_SECONDARY, BTN_SUCCESS, BTN_GHOST, BTN_DANGER, INPUT, LABEL, BADGE } from '../utils/designSystem.js';
+import PageHeader from '../components/PageHeader.jsx';
+import { formatInt, minutiLabel } from '../utils/format.js';
 
 const PHASES = { SETUP: 'SETUP', FIGHTING: 'FIGHTING', WON: 'WON', LOST: 'LOST' };
 const HP_PENALTY = 20;
@@ -24,25 +27,26 @@ const LAST_STAND_WINDOW_MS = 3000;
 // sesto Villain — nessun continue, nessuna seconda chance tra un round e
 // l'altro (a parte gli strumenti già esistenti: Pausa Tattica, Illuminazione, Last Stand).
 const GAUNTLET_SIZE = 6;
+const DURATION_PRESETS = [30, 60, 90, 120, 180];
 
 function computeEfficiency(hp, remainingSeconds, totalSeconds) {
   const hpScore = hp / 100;
   const timeScore = totalSeconds > 0 ? remainingSeconds / totalSeconds : 0;
   const score = hpScore * 0.6 + timeScore * 0.4;
-  if (score >= 0.85) return { grade: 'S', color: 'text-fuchsia-400' };
-  if (score >= 0.7) return { grade: 'A', color: 'text-emerald-400' };
+  if (score >= 0.85) return { grade: 'S', color: 'text-fuchsia-300' };
+  if (score >= 0.7) return { grade: 'A', color: 'text-emerald-300' };
   if (score >= 0.5) return { grade: 'B', color: 'text-secondary' };
   if (score >= 0.3) return { grade: 'C', color: 'text-accent' };
   return { grade: 'D', color: 'text-primary' };
 }
 
-/** Riga informativa del Terminale di Ingaggio — icona + testo, mai un blocco di testo nudo. */
-function BriefLine({ icon, children }) {
+/** Riga delle regole: icona + testo. */
+function BriefLine({ icon, tone = 'text-secondary', children }) {
   return (
-    <div className="flex items-start gap-2.5">
-      <Icon name={icon} className="w-4 h-4 text-secondary shrink-0 mt-0.5" />
-      <p className="text-sm text-slate-400 leading-relaxed">{children}</p>
-    </div>
+    <li className="flex items-start gap-3">
+      <Icon name={icon} className={`w-4 h-4 shrink-0 mt-0.5 ${tone}`} />
+      <p className="text-[13px] text-slate-300 leading-relaxed">{children}</p>
+    </li>
   );
 }
 
@@ -109,9 +113,12 @@ export default function BossFight() {
   };
 
   const buildReport = (win, finalHp, finalRemaining, finalTotal) => {
-    const xpGain = win
+    let xpGain = win
       ? Math.round(500 * (0.5 + finalHp / 200) * computeStreakMultiplier(state.profile.streak, derived.skillEffects.streakThresholdBonus))
       : 0;
+    // V41 — stesso calcolo del reducer: con Maximum Carnage attivo l'XP
+    // accreditato è doppio, e il report deve dire quello vero.
+    if (win && isMaxCarnageActive(state.profile)) xpGain = Math.round(xpGain * MAX_CARNAGE_MULTIPLIER);
     const efficiency = win ? computeEfficiency(finalHp, finalRemaining, finalTotal) : { grade: 'F', color: 'text-primary' };
     return { win, xpGain, hpRemaining: finalHp, timeRemainingSeconds: finalRemaining, totalSeconds: finalTotal, efficiency };
   };
@@ -362,7 +369,6 @@ export default function BossFight() {
   };
 
   const hpPct = (hp / MAX_HP) * 100;
-  const hpColor = hpPct > 60 ? 'from-emerald-400 to-emerald-600' : hpPct > 25 ? 'from-accent to-accent/70' : 'from-primary to-primary-dark';
   const isEnrage = totalSeconds > 0 && remainingSeconds / totalSeconds < ENRAGE_THRESHOLD && phase === PHASES.FIGHTING;
 
   // Goblin Alert: ronzio ansiogeno riprodotto una sola volta all'ingresso
@@ -373,243 +379,304 @@ export default function BossFight() {
     prevEnrageRef.current = isEnrage;
   }, [isEnrage, audio]);
 
+  // V41 — le ultime simulazioni, accanto alla configurazione: il senso di
+  // progresso fra una prova e l'altra (e un promemoria di come è andata).
+  const recentFights = (Array.isArray(state.starLog) ? state.starLog : [])
+    .filter((e) => e && (e.type === 'BOSS_WIN' || e.type === 'BOSS_LOSS'))
+    .slice(-6)
+    .reverse();
+  const hpBarClass = hpPct > 60 ? 'bg-emerald-400' : hpPct > 25 ? 'bg-accent' : 'bg-primary';
+  const durationValid = Number.isFinite(durationMinutes) && durationMinutes >= 1;
+
   return (
-    <div className="space-y-6 min-h-[calc(100dvh-4rem)] flex flex-col">
-      <div>
-        <h1 className={H1}>Sinister Six Simulator</h1>
-        <p className="text-base text-slate-400 mt-1.5">Karen: modalità isolata per la simulazione di prove d'esame a tempo.</p>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Simulazione d'esame"
+        icon="crosshair"
+        title="Sinister Six Simulator"
+        subtitle="Una prova d'esame a tempo, come quella vera. Ogni soluzione sbirciata è un colpo del Villain."
+      />
 
-      <div className="flex-1 flex items-center justify-center py-6">
-        {phase === PHASES.SETUP && (
-          <div className={`w-full max-w-lg ${CARD} space-y-6`}>
-            {/* Cornici angolari da "Terminale di Ingaggio" — stile cockpit, non un form qualunque. */}
-            <span className="absolute top-3 left-3 w-6 h-6 border-t-2 border-l-2 border-secondary/50 rounded-tl-lg pointer-events-none" />
-            <span className="absolute top-3 right-3 w-6 h-6 border-t-2 border-r-2 border-secondary/50 rounded-tr-lg pointer-events-none" />
-            <span className="absolute bottom-3 left-3 w-6 h-6 border-b-2 border-l-2 border-secondary/50 rounded-bl-lg pointer-events-none" />
-            <span className="absolute bottom-3 right-3 w-6 h-6 border-b-2 border-r-2 border-secondary/50 rounded-br-lg pointer-events-none" />
-            <div className="absolute inset-x-0 top-0 h-1/2 opacity-[0.04] pointer-events-none animate-scanline bg-gradient-to-b from-transparent via-white to-transparent" />
-
-            <div className="relative flex items-center gap-3">
-              <div className="w-11 h-11 rounded-xl bg-primary/10 border border-primary/40 flex items-center justify-center text-primary shrink-0">
-                <Icon name="crosshair" className="w-6 h-6" />
-              </div>
+      {phase === PHASES.SETUP && (
+        <div className="grid grid-cols-1 xl:grid-cols-5 gap-5 items-start">
+          <section className={`${CARD} xl:col-span-3 space-y-5`} aria-label="Configura la simulazione">
+            <div className="flex items-center gap-3">
+              <span className="ds-icon-tile text-primary">
+                <Icon name="crosshair" className="w-[18px] h-[18px]" />
+              </span>
               <div>
-                <p className="text-xs tracking-[0.2em] text-slate-500 font-mono">TERMINALE DI INGAGGIO</p>
-                <p className="text-lg font-bold text-white">Configura la Simulazione</p>
+                <p className="ds-eyebrow">Terminale di ingaggio</p>
+                <h2 className="text-[17px] font-semibold text-white">Configura la simulazione</h2>
               </div>
             </div>
 
-            <div className="relative space-y-4">
-              <div>
-                <label className="text-sm text-slate-400 flex items-center gap-1.5 mb-1.5">
-                  <Icon name="book" className="w-4 h-4" />
-                  Materia (opzionale)
-                </label>
-                <Dropdown value={materiaId} onChange={setMateriaId} options={materiaOptions} placeholder="Simulazione generica" />
-              </div>
-              <div>
-                <label className="text-sm text-slate-400 flex items-center gap-1.5 mb-1.5">
-                  <Icon name="radar" className="w-4 h-4" />
-                  Tempo prova (minuti)
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  value={durationMinutes}
-                  onChange={(e) => setDurationMinutes(Number(e.target.value))}
-                  className={INPUT}
-                />
-              </div>
-              <div>
-                <label className="text-sm text-slate-400 flex items-center gap-1.5 mb-1.5">
-                  <Icon name="skull" className="w-4 h-4" />
-                  Modalità
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setGauntletMode(false)}
-                    className={`py-2.5 rounded-xl border text-sm font-semibold transition-all duration-300 ${
-                      !gauntletMode
-                        ? 'border-secondary/60 bg-secondary/10 text-secondary shadow-secondary-glow'
-                        : 'border-white/10 bg-white/[0.02] text-slate-400 hover:border-white/20'
-                    }`}
-                  >
-                    Villain Singolo
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setGauntletMode(true)}
-                    className={`py-2.5 rounded-xl border text-sm font-semibold transition-all duration-300 ${
-                      gauntletMode
-                        ? 'border-primary/60 bg-primary/10 text-primary shadow-primary-glow'
-                        : 'border-white/10 bg-white/[0.02] text-slate-400 hover:border-white/20'
-                    }`}
-                  >
-                    Gauntlet (6 in fila)
-                  </button>
+            <div>
+              <label className={LABEL}>Materia</label>
+              <Dropdown value={materiaId} onChange={setMateriaId} options={materiaOptions} placeholder="Simulazione generica" ariaLabel="Materia della simulazione" />
+            </div>
+
+            <div>
+              <label className={LABEL} htmlFor="boss-durata">
+                Durata della prova
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="ds-segmented" role="radiogroup" aria-label="Durate rapide">
+                  {DURATION_PRESETS.map((m) => (
+                    <button key={m} type="button" role="radio" aria-checked={durationMinutes === m} onClick={() => setDurationMinutes(m)} className="ds-num">
+                      {m < 60 ? `${m}m` : minutiLabel(m)}
+                    </button>
+                  ))}
+                </div>
+                <div className="relative w-32">
+                  <input
+                    id="boss-durata"
+                    type="number"
+                    min={1}
+                    max={600}
+                    value={Number.isFinite(durationMinutes) ? durationMinutes : ''}
+                    onChange={(e) => setDurationMinutes(Number(e.target.value))}
+                    className={`${INPUT} ds-input-sm ds-num !pr-10`}
+                    aria-label="Durata in minuti"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500 pointer-events-none">min</span>
                 </div>
               </div>
             </div>
 
-            <div className="relative bg-surface/70 border border-secondary/15 rounded-xl p-4 space-y-2.5">
-              <BriefLine icon="skull">
-                HP iniziali: 100. Penalità -{effectiveHpPenalty} HP per sbirciare una soluzione.
-                {derived.skillEffects.bossDamageReduction > 0 && (
-                  <span className="text-secondary"> (Istinto di Ragno: -{Math.round(derived.skillEffects.bossDamageReduction * 100)}% danno)</span>
-                )}
-              </BriefLine>
-              <BriefLine icon="moon">Pausa Tattica: congela il timer 3 minuti per -{TACTICAL_PAUSE_COST} HP.</BriefLine>
-              <BriefLine icon="bolt">Illuminazione: +{ILLUMINATION_HEAL} HP, usabile max {ILLUMINATION_MAX_USES} volte a run.</BriefLine>
-              <BriefLine icon="alertTriangle">Sotto il {Math.round(ENRAGE_THRESHOLD * 100)}% del tempo residuo: Fase Enrage.</BriefLine>
-              {gauntletMode && (
-                <BriefLine icon="skull">
-                  <span className="text-primary">Sinister Six Gauntlet:</span> {GAUNTLET_SIZE} Villain in fila, HP che torna a 100 a ogni nuovo ingaggio. La sconfitta in un QUALSIASI round chiude subito l'intera run.
-                </BriefLine>
-              )}
+            <div>
+              <p className={LABEL}>Modalità</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" role="radiogroup" aria-label="Modalità">
+                {[
+                  { v: false, title: 'Villain singolo', hint: 'Una prova, un avversario.', icon: 'crosshair' },
+                  { v: true, title: `Gauntlet · ${GAUNTLET_SIZE} in fila`, hint: 'HP pieni a ogni round; una sconfitta chiude la run.', icon: 'skull' }
+                ].map((o) => {
+                  const active = gauntletMode === o.v;
+                  return (
+                    <button
+                      key={String(o.v)}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => setGauntletMode(o.v)}
+                      className={`flex items-start gap-3 rounded-xl border px-3.5 py-3 text-left transition-colors ${
+                        active ? (o.v ? 'border-primary/50 bg-primary/[0.07]' : 'border-secondary/50 bg-secondary/[0.07]') : 'border-line bg-surface/70 hover:border-line-strong'
+                      }`}
+                    >
+                      <Icon name={o.icon} className={`w-4 h-4 mt-0.5 shrink-0 ${active ? (o.v ? 'text-primary' : 'text-secondary') : 'text-slate-500'}`} />
+                      <span className="min-w-0">
+                        <span className={`block text-sm font-semibold ${active ? 'text-white' : 'text-slate-300'}`}>{o.title}</span>
+                        <span className="block text-xs text-slate-500 mt-0.5">{o.hint}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
-            <button type="button" onClick={startFight} className={`relative w-full ${BTN_PRIMARY}`}>
-              <Icon name="crosshair" className="w-6 h-6" />
-              {gauntletMode ? `Ingaggia il Sinister Six Gauntlet (${GAUNTLET_SIZE} Villain)` : 'Ingaggia Sinister Six Simulator'}
+            <button type="button" onClick={startFight} disabled={!durationValid} className={`w-full ${BTN_PRIMARY} ds-btn-lg`}>
+              <Icon name="crosshair" className="w-5 h-5" />
+              {gauntletMode ? `Ingaggia il Gauntlet (${GAUNTLET_SIZE} Villain)` : 'Ingaggia il Villain'}
             </button>
-          </div>
-        )}
+          </section>
 
-        {phase === PHASES.FIGHTING && (
-          <div className={`relative w-full max-w-xl ${shake ? 'af-shake' : ''}`}>
-            {/* V39 — il flash vive in document.body: dentro .af-shake (che
-                anima `transform`) il `fixed` diventava relativo alla card
-                e il lampo rosso copriva solo lei, non lo schermo. */}
-            {flash && typeof document !== 'undefined' &&
-              createPortal(<div className="af-flash fixed inset-0 z-50 bg-primary pointer-events-none" />, document.body)}
-            <div className={isEnrage ? `${CARD_ALERT} space-y-6` : `${CARD} space-y-6`}>
-              {isEnrage && <div className="absolute -inset-1 rounded-2xl bg-primary/10 blur-xl pointer-events-none" />}
-              <div className="relative flex items-center justify-between gap-3 flex-wrap">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-base tracking-widest text-slate-400 font-mono line-clamp-2 break-words min-w-0">{materia ? materia.nome.toUpperCase() : 'SIMULAZIONE'}</span>
+          <div className="xl:col-span-2 space-y-5">
+            <section className={`${CARD} space-y-3`} aria-label="Regole">
+              <h2 className="text-[15px] font-semibold text-white">Regole dello scontro</h2>
+              <ul className="space-y-2.5">
+                <BriefLine icon="heart" tone="text-emerald-300">
+                  Parti con {MAX_HP} HP. Ogni soluzione sbirciata costa {effectiveHpPenalty} HP
+                  {derived.skillEffects.bossDamageReduction > 0 && (
+                    <span className="text-secondary"> (Istinto di Ragno: −{Math.round(derived.skillEffects.bossDamageReduction * 100)}% danno)</span>
+                  )}
+                  .
+                </BriefLine>
+                <BriefLine icon="moon">Pausa Tattica: congela il timer per 3 minuti al costo di {TACTICAL_PAUSE_COST} HP.</BriefLine>
+                <BriefLine icon="bolt" tone="text-accent">
+                  Illuminazione: +{ILLUMINATION_HEAL} HP quando risolvi un passaggio da solo, al massimo {ILLUMINATION_MAX_USES} volte.
+                </BriefLine>
+                <BriefLine icon="alertTriangle" tone="text-primary">
+                  Sotto il {Math.round(ENRAGE_THRESHOLD * 100)}% del tempo il Villain entra in Fase Enrage.
+                </BriefLine>
+                <BriefLine icon="skull" tone="text-primary">
+                  A 0 HP hai 3 secondi per il Last Stand: sacrifichi il 10% dell'XP e resti in piedi a 1 HP.
+                </BriefLine>
+                <BriefLine icon="trophy" tone="text-amber-300">
+                  Vittoria: fino a 500 XP (di più con HP alti e streak lunga), più il grado di efficienza S–D.
+                </BriefLine>
+              </ul>
+            </section>
+
+            <section className={CARD_NOPAD} aria-label="Ultime simulazioni">
+              <div className="flex items-center justify-between gap-2 px-5 py-3.5 border-b border-line">
+                <h2 className="text-[15px] font-semibold text-white">Ultime simulazioni</h2>
+                {recentFights.length > 0 && (
+                  <span className="text-xs text-slate-500 ds-num">
+                    {recentFights.filter((f) => f.type === 'BOSS_WIN').length}/{recentFights.length} vinte
+                  </span>
+                )}
+              </div>
+              {recentFights.length === 0 ? (
+                <p className="px-5 py-4 text-[13px] text-slate-400">Nessuna ancora: la prima è quella che conta.</p>
+              ) : (
+                <ul className="divide-y divide-white/[0.06]">
+                  {recentFights.map((f, i) => {
+                    const won = f.type === 'BOSS_WIN';
+                    return (
+                      <li key={`${f.timestamp || f.dateKey}-${i}`} className="flex items-center justify-between gap-3 px-5 py-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <Icon name={won ? 'trophy' : 'skull'} className={`w-4 h-4 shrink-0 ${won ? 'text-emerald-300' : 'text-primary'}`} />
+                          <div className="min-w-0">
+                            <p className="text-[13px] text-slate-100 truncate">{f.materiaNome || 'Simulazione generica'}</p>
+                            <p className="text-xs text-slate-500 ds-num">
+                              {formatDateOnlyHuman(f.dateKey)} · {formatInt(f.hpRemaining)} HP
+                            </p>
+                          </div>
+                        </div>
+                        <span className={`${won ? BADGE.green : BADGE.red} ds-num`}>{won ? `+${formatInt(f.xp)} XP` : 'Persa'}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          </div>
+        </div>
+      )}
+
+      {phase === PHASES.FIGHTING && (
+        <div className={`relative w-full max-w-2xl mx-auto ${shake ? 'af-shake' : ''}`}>
+          {/* V39 — il flash vive in document.body: dentro .af-shake (che
+              anima `transform`) il `fixed` diventava relativo alla card. */}
+          {flash && typeof document !== 'undefined' &&
+            createPortal(<div className="af-flash fixed inset-0 z-50 bg-primary pointer-events-none" />, document.body)}
+          <div className={`${isEnrage ? CARD_ALERT : CARD} space-y-6`}>
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div className="min-w-0">
+                <p className="ds-eyebrow flex items-center gap-2">
+                  {isEnrage ? <span className="text-primary">Fase Enrage</span> : 'Scontro in corso'}
                   {gauntletMode && (
-                    <span
-                      key={gauntletRound}
-                      className="af-gauntlet-round-pop shrink-0 text-[11px] font-mono px-2 py-0.5 rounded-full border border-primary/50 bg-primary/10 text-primary"
-                    >
-                      VILLAIN {gauntletRound}/{GAUNTLET_SIZE}
+                    <span key={gauntletRound} className={`af-gauntlet-round-pop ${BADGE.red}`}>
+                      Villain {gauntletRound}/{GAUNTLET_SIZE}
                     </span>
                   )}
-                </div>
-                <span className={`text-3xl sm:text-4xl font-mono font-bold af-mono-nums shrink-0 ${isEnrage ? 'text-primary af-enrage' : 'text-white'}`}>
-                  {formatClock(remainingSeconds)}
+                </p>
+                <p className="text-lg font-semibold text-white mt-1 break-words">{materia ? materia.nome : 'Simulazione generica'}</p>
+              </div>
+              <span className={`text-5xl font-bold ds-num tracking-tight shrink-0 ${isEnrage ? 'text-primary af-enrage' : 'text-white'}`}>
+                {formatClock(remainingSeconds)}
+              </span>
+            </div>
+
+            {frozen && (
+              <div className="rounded-xl border border-secondary/35 bg-secondary/[0.07] px-4 py-2.5 flex items-center justify-between">
+                <span className="text-sm font-medium text-secondary flex items-center gap-2">
+                  <Icon name="moon" className="w-4 h-4" />
+                  Pausa Tattica: timer congelato
+                </span>
+                <span className="text-sm ds-num text-secondary">{formatClock(Math.ceil(freezeRemainingMs / 1000))}</span>
+              </div>
+            )}
+
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium text-slate-300 flex items-center gap-1.5">
+                  <Icon name="heart" className="w-4 h-4" />
+                  HP
+                </span>
+                <span className="text-sm ds-num text-white font-semibold">
+                  {hp}
+                  <span className="text-slate-500 font-normal">/{MAX_HP}</span>
                 </span>
               </div>
-
-              {frozen && (
-                <div className="relative bg-secondary/10 border border-secondary/40 rounded-xl px-4 py-2.5 flex items-center justify-between">
-                  <span className="text-base text-secondary flex items-center gap-2">
-                    <Icon name="moon" className="w-5 h-5" />
-                    PAUSA TATTICA ATTIVA
-                  </span>
-                  <span className="text-base font-mono text-secondary">{formatClock(Math.ceil(freezeRemainingMs / 1000))}</span>
-                </div>
-              )}
-
-              <div className="relative">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-base font-semibold text-slate-300 flex items-center gap-1.5">
-                    <Icon name="heart" className="w-5 h-5" />
-                    HP BOSS
-                  </span>
-                  <span className="text-base font-mono text-white">{hp}/100</span>
-                </div>
-                <div className="w-full h-4 bg-surface/80 border border-white/10 rounded-full overflow-hidden">
-                  <div className={`h-full bg-gradient-to-r ${hpColor} transition-all duration-300`} style={{ width: `${hpPct}%` }} />
-                </div>
+              <div className="ds-progress !h-3">
+                <span className={hpBarClass} style={{ width: `${hpPct}%` }} />
               </div>
+            </div>
 
-              <div className="relative grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={applyPenalty}
-                  disabled={frozen || lastStandActive}
-                  className="py-3 rounded-xl bg-white/[0.03] backdrop-blur-md border border-primary/30 text-primary font-semibold hover:bg-primary/10 hover:border-primary/60 transition-all duration-300 flex flex-col items-center gap-1 disabled:opacity-40 disabled:pointer-events-none"
-                >
-                  <Icon name="skull" className="w-6 h-6" />
-                  <span className="text-center">PENALITÀ (-{effectiveHpPenalty} HP)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAbandonConfirmOpen(true)}
-                  disabled={lastStandActive}
-                  className={BTN_GHOST}
-                >
-                  Abbandona
-                </button>
-              </div>
-
-              <div className="relative grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={activateTacticalPause}
-                  disabled={frozen || hp < TACTICAL_PAUSE_COST || lastStandActive}
-                  className={BTN_SECONDARY}
-                >
-                  <Icon name="moon" className="w-5 h-5 shrink-0" />
-                  <span className="min-w-0">Pausa Tattica (-{TACTICAL_PAUSE_COST} HP)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={useIllumination}
-                  disabled={illuminazioniUsate >= ILLUMINATION_MAX_USES || frozen || lastStandActive}
-                  className={BTN_AMBER}
-                >
-                  <Icon name="bolt" className="w-5 h-5 shrink-0" />
-                  <span className="min-w-0">Illuminazione ({ILLUMINATION_MAX_USES - illuminazioniUsate} rim.)</span>
-                </button>
-              </div>
-
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <button type="button" onClick={applyPenalty} disabled={frozen || lastStandActive} className={`${BTN_DANGER} ds-btn-lg flex-col !gap-1`}>
+                <Icon name="skull" className="w-5 h-5" />
+                <span>Ho sbirciato</span>
+                <span className="text-xs font-normal opacity-80">−{effectiveHpPenalty} HP</span>
+              </button>
               <button
                 type="button"
-                onClick={declareVictory}
-                disabled={frozen || lastStandActive}
-                className={`relative w-full ${BTN_SUCCESS}`}
+                onClick={activateTacticalPause}
+                disabled={frozen || hp < TACTICAL_PAUSE_COST || lastStandActive}
+                className={`${BTN_GHOST} ds-btn-lg flex-col !gap-1`}
               >
-                Dichiaro Vittoria (prova completata)
+                <Icon name="moon" className="w-5 h-5 text-secondary" />
+                <span>Pausa Tattica</span>
+                <span className="text-xs font-normal text-slate-500">3 min · −{TACTICAL_PAUSE_COST} HP</span>
               </button>
-
-              <p className="relative text-[11px] text-slate-500 text-center">Penalità usate: {penaltyLog}</p>
+              <button
+                type="button"
+                onClick={useIllumination}
+                disabled={illuminazioniUsate >= ILLUMINATION_MAX_USES || frozen || lastStandActive}
+                className={`${BTN_GHOST} ds-btn-lg flex-col !gap-1`}
+              >
+                <Icon name="bolt" className="w-5 h-5 text-accent" />
+                <span>Illuminazione</span>
+                <span className="text-xs font-normal text-slate-500">
+                  +{ILLUMINATION_HEAL} HP · {ILLUMINATION_MAX_USES - illuminazioniUsate} rimaste
+                </span>
+              </button>
             </div>
-          </div>
-        )}
 
-        {(phase === PHASES.WON || phase === PHASES.LOST) && (
-          <div className={`w-full max-w-xl ${phase === PHASES.WON ? CARD : CARD_ALERT} text-center space-y-5`}>
-            <div className={`absolute -top-16 left-1/2 -translate-x-1/2 w-56 h-56 rounded-full blur-3xl pointer-events-none ${phase === PHASES.WON ? 'bg-emerald-500/20' : 'bg-primary/20'}`} />
-            <Icon name={phase === PHASES.WON ? 'trophy' : 'skull'} className={`relative w-16 h-16 mx-auto ${phase === PHASES.WON ? 'text-emerald-400' : 'text-primary'}`} />
-            <h2 className={`relative text-3xl font-extrabold ${phase === PHASES.WON ? 'text-emerald-400' : 'text-primary'}`}>
-              {gauntletMode
-                ? (phase === PHASES.WON ? 'SINISTER SIX GAUNTLET COMPLETATA' : `GAUNTLET FALLITA — VILLAIN ${gauntletRound}/${GAUNTLET_SIZE}`)
-                : (phase === PHASES.WON ? 'BOSS ABBATTUTO' : 'GAME OVER')}
-            </h2>
-            <p className="relative text-base text-slate-400">
-              {gauntletMode
-                ? (phase === PHASES.WON
-                    ? `Tutti e ${GAUNTLET_SIZE} i Villain abbattuti in fila. Consulta il Post-Match Report per il riepilogo round per round.`
-                    : 'La run si è interrotta qui. L\'XP dei round già vinti resta comunque accreditato — consulta il report.')
-                : (phase === PHASES.WON
-                    ? 'Prova superata. Consulta il Post-Match Report per il dettaglio.'
-                    : 'La simulazione è fallita. Nessun XP guadagnato — riprova quando sei pronto.')}
+            <div className="flex flex-col-reverse sm:flex-row gap-2.5">
+              <button type="button" onClick={() => setAbandonConfirmOpen(true)} disabled={lastStandActive} className={`${BTN_GHOST} sm:w-40`}>
+                Abbandona
+              </button>
+              <button type="button" onClick={declareVictory} disabled={frozen || lastStandActive} className={`${BTN_SUCCESS} flex-1`}>
+                <Icon name="trophy" className="w-4 h-4" />
+                Prova completata: dichiaro vittoria
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-500 text-center ds-num">
+              {penaltyLog === 0 ? 'Nessuna soluzione sbirciata finora.' : penaltyLog === 1 ? '1 soluzione sbirciata.' : `${penaltyLog} soluzioni sbirciate.`}
             </p>
-            <div className="relative flex items-center justify-center gap-3">
-              <button type="button" onClick={() => setReportOpen(true)} className={BTN_SECONDARY}>
-                Rivedi Report
-              </button>
-              <button type="button" onClick={resetToSetup} className={BTN_GHOST}>
-                Nuova Simulazione
-              </button>
-            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {(phase === PHASES.WON || phase === PHASES.LOST) && (
+        <div className={`w-full max-w-xl mx-auto ${phase === PHASES.WON ? CARD : CARD_ALERT} text-center space-y-4 !py-8`}>
+          <span
+            className={`mx-auto w-14 h-14 rounded-2xl border flex items-center justify-center ${
+              phase === PHASES.WON ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300' : 'border-primary/40 bg-primary/10 text-primary'
+            }`}
+          >
+            <Icon name={phase === PHASES.WON ? 'trophy' : 'skull'} className="w-7 h-7" />
+          </span>
+          <h2 className={`text-2xl font-bold ${phase === PHASES.WON ? 'text-emerald-300' : 'text-primary'}`}>
+            {gauntletMode
+              ? phase === PHASES.WON
+                ? 'Gauntlet completato'
+                : `Gauntlet interrotto al Villain ${gauntletRound}/${GAUNTLET_SIZE}`
+              : phase === PHASES.WON
+              ? 'Villain abbattuto'
+              : 'Game over'}
+          </h2>
+          <p className="text-sm text-slate-400 max-w-md mx-auto">
+            {gauntletMode
+              ? phase === PHASES.WON
+                ? `Tutti e ${GAUNTLET_SIZE} i Villain abbattuti in fila. Il report ha il riepilogo round per round.`
+                : "La run si ferma qui. L'XP dei round già vinti resta tuo."
+              : phase === PHASES.WON
+              ? 'Prova superata. Nel report trovi XP, HP e grado di efficienza.'
+              : 'Nessun XP questa volta. Rivedi dove hai sbirciato e riprova quando sei pronto.'}
+          </p>
+          <div className="flex items-center justify-center gap-2 pt-1">
+            <button type="button" onClick={() => setReportOpen(true)} className={BTN_SECONDARY}>
+              Rivedi il report
+            </button>
+            <button type="button" onClick={resetToSetup} className={BTN_GHOST}>
+              Nuova simulazione
+            </button>
+          </div>
+        </div>
+      )}
 
       {lastStandActive && <LastStandOverlay msLeft={lastStandMsLeft} onTrigger={triggerLastStand} />}
 
@@ -617,11 +684,11 @@ export default function BossFight() {
         open={abandonConfirmOpen}
         onClose={() => setAbandonConfirmOpen(false)}
         onConfirm={abandon}
-        title={gauntletMode ? 'Abbandona il Sinister Six Gauntlet' : 'Abbandona Sinister Six Simulator'}
+        title={gauntletMode ? 'Abbandonare il Gauntlet?' : 'Abbandonare la simulazione?'}
         message={
           gauntletMode
-            ? `Abbandonare ora chiude l'intero Gauntlet come sconfitta al Villain ${gauntletRound}/${GAUNTLET_SIZE}: quel round non darà XP, ma l'XP dei round già vinti resta accreditato. Confermi?`
-            : 'Abbandonare ora la simulazione conta come sconfitta: nessun XP verrà accreditato. Confermi?'
+            ? `Il Gauntlet si chiude come sconfitta al Villain ${gauntletRound}/${GAUNTLET_SIZE}: questo round non dà XP, quelli già vinti restano.`
+            : 'Conta come sconfitta: nessun XP.'
         }
         confirmLabel="Abbandona"
       />
@@ -629,41 +696,43 @@ export default function BossFight() {
       <Modal open={reportOpen} onClose={() => setReportOpen(false)} title="Post-Match Report">
         {reportData && (
           <div className="space-y-4">
-            <div className="flex items-center justify-center">
-              <span className={`text-6xl font-mono font-bold ${reportData.efficiency.color}`}>{reportData.efficiency.grade}</span>
+            <div className="text-center">
+              <span className={`text-6xl font-bold ds-num ${reportData.efficiency.color}`}>{reportData.efficiency.grade}</span>
+              <p className="ds-eyebrow mt-1">Grado di efficienza</p>
             </div>
-            <p className="text-center text-base text-slate-500 -mt-2">GRADO DI EFFICIENZA</p>
-            <div className="grid grid-cols-2 gap-2 sm:gap-3">
-              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-2.5 sm:p-3 text-center">
-                <p className="text-lg sm:text-xl font-mono text-accent">+{reportData.xpGain}</p>
-                <p className="text-[10px] sm:text-xs text-slate-500">XP Guadagnati</p>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="ds-well px-3 py-2.5 text-center">
+                <p className="text-lg font-bold ds-num text-accent">+{formatInt(reportData.xpGain)}</p>
+                <p className="text-[11px] text-slate-500">XP</p>
               </div>
-              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-2.5 sm:p-3 text-center">
-                <p className="text-lg sm:text-xl font-mono text-white">{reportData.hpRemaining}/100</p>
-                <p className="text-[10px] sm:text-xs text-slate-500">HP Rimanenti</p>
+              <div className="ds-well px-3 py-2.5 text-center">
+                <p className="text-lg font-bold ds-num text-white">{reportData.hpRemaining}</p>
+                <p className="text-[11px] text-slate-500">HP rimasti</p>
               </div>
-              <div className="bg-surface/70 border border-secondary/15 rounded-xl p-2.5 sm:p-3 text-center col-span-2">
-                <p className="text-lg sm:text-xl font-mono text-secondary">{formatClock(reportData.timeRemainingSeconds)}</p>
-                <p className="text-[10px] sm:text-xs text-slate-500">Tempo Avanzato</p>
+              <div className="ds-well px-3 py-2.5 text-center">
+                <p className="text-lg font-bold ds-num text-secondary">{formatClock(reportData.timeRemainingSeconds)}</p>
+                <p className="text-[11px] text-slate-500">tempo avanzato</p>
               </div>
             </div>
 
             {gauntletMode && gauntletHistory.length > 0 && (
-              <div className="space-y-2 pt-2 border-t border-white/5">
-                <p className="text-xs tracking-widest text-slate-500 font-mono">SINISTER SIX GAUNTLET — RIEPILOGO</p>
-                <div className="space-y-1.5">
+              <div className="space-y-2 pt-3 border-t border-line">
+                <p className="ds-eyebrow">Gauntlet · round per round</p>
+                <ul className="space-y-1.5">
                   {gauntletHistory.map((r) => (
-                    <div key={r.round} className="flex items-center justify-between gap-2 bg-surface/60 border border-white/5 rounded-lg px-3 py-1.5">
-                      <span className="text-sm text-slate-300 flex items-center gap-1.5">
-                        <Icon name={r.win ? 'trophy' : 'skull'} className={`w-4 h-4 ${r.win ? 'text-emerald-400' : 'text-primary'}`} />
+                    <li key={r.round} className="flex items-center justify-between gap-2 ds-well px-3 py-2">
+                      <span className="text-sm text-slate-200 flex items-center gap-2">
+                        <Icon name={r.win ? 'trophy' : 'skull'} className={`w-4 h-4 ${r.win ? 'text-emerald-300' : 'text-primary'}`} />
                         Villain {r.round}/{GAUNTLET_SIZE}
                       </span>
-                      <span className="text-xs font-mono text-slate-400">HP {r.hp}/100 · +{r.xpGain} XP</span>
-                    </div>
+                      <span className="text-xs ds-num text-slate-400">
+                        {r.hp} HP · +{formatInt(r.xpGain)} XP
+                      </span>
+                    </li>
                   ))}
-                </div>
+                </ul>
                 {gauntletHistory.length === GAUNTLET_SIZE && gauntletHistory.every((r) => r.win) && (
-                  <p className="text-xs text-emerald-400 font-mono text-center pt-1">GAUNTLET PULITA — {GAUNTLET_SIZE}/{GAUNTLET_SIZE} VILLAIN ABBATTUTI</p>
+                  <p className="text-xs text-emerald-300 text-center pt-1">Gauntlet pulito: {GAUNTLET_SIZE} Villain su {GAUNTLET_SIZE}.</p>
                 )}
               </div>
             )}
@@ -676,7 +745,7 @@ export default function BossFight() {
               }}
               className={`w-full ${BTN_GHOST}`}
             >
-              Chiudi Report
+              Chiudi il report
             </button>
           </div>
         )}
@@ -701,25 +770,26 @@ function LastStandOverlay({ msLeft, onTrigger }) {
   if (typeof document === 'undefined') return null;
   return createPortal(
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center px-4 bg-surface/85 backdrop-blur-md"
+      className="fixed inset-0 z-[80] flex items-center justify-center px-4 bg-black/75 backdrop-blur-sm"
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="af-last-stand-title"
     >
-      <div ref={panelRef} className={`${CARD_ALERT} w-full max-w-sm text-center space-y-4`}>
-        <div className="absolute -inset-2 rounded-2xl bg-primary/15 blur-2xl pointer-events-none" />
-        <Icon name="skull" className="relative w-16 h-16 mx-auto text-primary" />
-        <h3 id="af-last-stand-title" className="relative text-3xl font-extrabold text-primary tracking-wide af-enrage">
-          LAST STAND
+      <div ref={panelRef} className={`${CARD_ALERT} !shadow-pop w-full max-w-sm text-center space-y-4 !py-7`}>
+        <span className="mx-auto w-14 h-14 rounded-2xl border border-primary/40 bg-primary/10 text-primary flex items-center justify-center">
+          <Icon name="skull" className="w-7 h-7" />
+        </span>
+        <h3 id="af-last-stand-title" className="text-2xl font-bold text-primary af-enrage">
+          Last Stand
         </h3>
-        <p className="relative text-base text-slate-400 leading-relaxed">
-          Lo Spider-Sense ti grida di reagire: 0 HP. Sacrifica il 10% del tuo XP totale bancato per sopravvivere a 1 HP e continuare la prova.
+        <p className="text-sm text-slate-300 leading-relaxed">
+          Sei a 0 HP. Sacrifica il 10% del tuo XP disponibile per restare in piedi a 1 HP e continuare la prova.
         </p>
-        <p className="relative text-4xl font-mono font-bold text-primary af-mono-nums" aria-live="off">
-          {(msLeft / 1000).toFixed(1)}s
+        <p className="text-4xl font-bold ds-num text-primary" aria-live="off">
+          {(msLeft / 1000).toFixed(1).replace('.', ',')} s
         </p>
-        <button ref={btnRef} type="button" onClick={onTrigger} className={`relative w-full ${BTN_PRIMARY}`}>
-          SACRIFICA XP — LAST STAND
+        <button ref={btnRef} type="button" onClick={onTrigger} className={`w-full ${BTN_PRIMARY} ds-btn-lg`}>
+          Sacrifica XP e resisti
         </button>
       </div>
     </div>,
