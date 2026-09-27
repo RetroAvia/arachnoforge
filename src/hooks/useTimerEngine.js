@@ -20,6 +20,14 @@ export function useTimerEngine({ onFocusComplete, onBreakComplete } = {}) {
   const [remainingSeconds, setRemainingSeconds] = useState(0);
   const [totalSeconds, setTotalSeconds] = useState(0);
   const [isOverdriveActive, setIsOverdriveActive] = useState(false);
+  // V41 — cambia a ogni avvio, pausa, ripresa o arresto: chi salva il
+  // blocco in corso (useFocusTimer) sa che deve riscriverlo anche quando
+  // lo stato resta FOCUS → FOCUS, come in un Overdrive concatenato.
+  const [runId, setRunId] = useState(0);
+  // V41 — il TIPO di blocco ('FOCUS' | 'BREAK' | null). In pausa lo stato
+  // è PAUSED per entrambi: senza questo, una pausa sospesa veniva
+  // scambiata per un Focus sospeso (e i suoi minuti salvati come studio).
+  const [mode, setMode] = useState(null);
 
   const endTimestampRef = useRef(null);
   const pausedRemainingMsRef = useRef(null);
@@ -39,6 +47,12 @@ export function useTimerEngine({ onFocusComplete, onBreakComplete } = {}) {
   // Un ref è la sola fonte di verità leggibile dall'intervallo: viene
   // scritto in modo SINCRONO da start/stop, prima che React renderizzi.
   const isOverdriveRef = useRef(false);
+  // V41 — durata REALE del blocco in corso, letta dall'intervallo come
+  // isOverdriveRef. Serve a chi accredita i minuti: la durata impostata
+  // può cambiare mentre il blocco corre (il timer adattivo di Karen arriva
+  // dopo l'avvio, o la cambi dalle Impostazioni), e un blocco da 25
+  // minuti non deve valerne 45.
+  const totalSecondsRef = useRef(0);
 
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { onFocusCompleteRef.current = onFocusComplete; }, [onFocusComplete]);
@@ -62,13 +76,16 @@ export function useTimerEngine({ onFocusComplete, onBreakComplete } = {}) {
       const finishedMode = modeRef.current;
       // Letto dal ref, mai dallo state: vedi il commento su isOverdriveRef.
       const wasOverdrive = isOverdriveRef.current;
+      const durationSeconds = totalSecondsRef.current;
       endTimestampRef.current = null;
       modeRef.current = null;
       isOverdriveRef.current = false;
       setStatus(TIMER_STATUS.IDLE);
       setIsOverdriveActive(false);
+      setMode(null);
+      setRunId((n) => n + 1);
       if (finishedMode === 'FOCUS' && onFocusCompleteRef.current) {
-        onFocusCompleteRef.current({ wasOverdrive });
+        onFocusCompleteRef.current({ wasOverdrive, durationSeconds });
       } else if (finishedMode === 'BREAK' && onBreakCompleteRef.current) {
         onBreakCompleteRef.current();
       }
@@ -89,10 +106,13 @@ export function useTimerEngine({ onFocusComplete, onBreakComplete } = {}) {
     // nascere leggerà il valore giusto anche se React non ha ancora
     // committato lo state qui sotto.
     isOverdriveRef.current = mode === 'FOCUS' ? overdrive : false;
+    totalSecondsRef.current = durationSeconds;
     setTotalSeconds(durationSeconds);
     setRemainingSeconds(durationSeconds);
     setIsOverdriveActive(mode === 'FOCUS' ? overdrive : false);
     setStatus(mode === 'FOCUS' ? TIMER_STATUS.FOCUS : TIMER_STATUS.BREAK);
+    setMode(mode);
+    setRunId((n) => n + 1);
     startTick();
   }, [startTick]);
 
@@ -102,6 +122,7 @@ export function useTimerEngine({ onFocusComplete, onBreakComplete } = {}) {
     pausedRemainingMsRef.current = endTimestampRef.current ? endTimestampRef.current - Date.now() : 0;
     endTimestampRef.current = null;
     setStatus(TIMER_STATUS.PAUSED);
+    setRunId((n) => n + 1);
   }, [clearTick]);
 
   const resume = useCallback(() => {
@@ -109,6 +130,7 @@ export function useTimerEngine({ onFocusComplete, onBreakComplete } = {}) {
     endTimestampRef.current = Date.now() + pausedRemainingMsRef.current;
     pausedRemainingMsRef.current = null;
     setStatus(modeRef.current === 'FOCUS' ? TIMER_STATUS.FOCUS : TIMER_STATUS.BREAK);
+    setRunId((n) => n + 1);
     startTick();
   }, [startTick]);
 
@@ -120,14 +142,75 @@ export function useTimerEngine({ onFocusComplete, onBreakComplete } = {}) {
     pausedRemainingMsRef.current = null;
     modeRef.current = null;
     isOverdriveRef.current = false;
+    totalSecondsRef.current = 0;
     setRemainingSeconds(0);
     setTotalSeconds(0);
     setIsOverdriveActive(false);
     setStatus(TIMER_STATUS.IDLE);
+    setMode(null);
+    setRunId((n) => n + 1);
     return finishedMode;
   }, [clearTick]);
 
+  /**
+   * V41 — Riprende un blocco salvato prima di un ricaricamento (vedi
+   * utils/focusRecovery.js). `endsAt` è l'istante di fine ASSOLUTO, lo
+   * stesso di prima: il tempo passato con l'app chiusa è già scalato.
+   * Con `pausedRemainingMs` il blocco torna in pausa.
+   */
+  const restore = useCallback(
+    ({ mode, endsAt = null, pausedRemainingMs = null, totalSeconds: total, overdrive = false }) => {
+      if (mode !== 'FOCUS' && mode !== 'BREAK') return false;
+      const safeTotal = Math.max(1, Math.round(Number(total) || 0));
+      clearTick();
+      modeRef.current = mode;
+      isOverdriveRef.current = mode === 'FOCUS' ? !!overdrive : false;
+      totalSecondsRef.current = safeTotal;
+      setMode(mode);
+      setTotalSeconds(safeTotal);
+      setIsOverdriveActive(mode === 'FOCUS' ? !!overdrive : false);
+      if (pausedRemainingMs != null) {
+        endTimestampRef.current = null;
+        pausedRemainingMsRef.current = Math.max(0, pausedRemainingMs);
+        setRemainingSeconds(Math.max(0, Math.ceil(pausedRemainingMs / 1000)));
+        setStatus(TIMER_STATUS.PAUSED);
+        setRunId((n) => n + 1);
+        return true;
+      }
+      if (!Number.isFinite(endsAt)) return false;
+      endTimestampRef.current = endsAt;
+      pausedRemainingMsRef.current = null;
+      setRemainingSeconds(Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)));
+      setStatus(mode === 'FOCUS' ? TIMER_STATUS.FOCUS : TIMER_STATUS.BREAK);
+      setRunId((n) => n + 1);
+      startTick();
+      return true;
+    },
+    [clearTick, startTick]
+  );
+
+  /** V41 — Fotografia del blocco corrente, per poterlo riprendere dopo un ricaricamento. */
+  const snapshot = useCallback(
+    () => ({
+      mode: modeRef.current,
+      endsAt: endTimestampRef.current,
+      pausedRemainingMs: pausedRemainingMsRef.current,
+      overdrive: isOverdriveRef.current
+    }),
+    []
+  );
+
+  // V41 — Il countdown si riaggancia da solo se lo stato dice "in corso"
+  // ma l'intervallo non c'è (per esempio dopo lo smontaggio simulato di
+  // React.StrictMode in sviluppo, che lo cancella mentre il blocco resta
+  // attivo): mai un timer fermo su un numero.
+  useEffect(() => {
+    if ((status === TIMER_STATUS.FOCUS || status === TIMER_STATUS.BREAK) && endTimestampRef.current && !intervalRef.current) {
+      startTick();
+    }
+  }, [status, startTick]);
+
   useEffect(() => () => clearTick(), [clearTick]);
 
-  return { status, remainingSeconds, totalSeconds, isOverdriveActive, start, pause, resume, stop };
+  return { status, remainingSeconds, totalSeconds, isOverdriveActive, runId, mode, start, pause, resume, stop, restore, snapshot };
 }

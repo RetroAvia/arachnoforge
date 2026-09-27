@@ -246,7 +246,7 @@ function migrateSfida(raw, index, arr) {
       : 0);
   return {
     id: raw.id,
-    nome: raw.nome,
+    nome: typeof raw.nome === 'string' && raw.nome.trim() ? raw.nome : 'Argomento senza nome',
     obiettivo: raw.obiettivo || '',
     // V34.2 — "Ore Previste": migrazione silenziosa dal vecchio campo
     // `giorni` (numero intero di giorni) al nuovo `oreStimate` (ore,
@@ -336,12 +336,58 @@ function migrateSfida(raw, index, arr) {
   };
 }
 
+/** Un elemento di lista utilizzabile: un oggetto vero, non null né un array. */
+function isRecord(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * V41 — Id presenti e unici. Un backup modificato a mano (o un import
+ * esterno) poteva contenere voci `null`, voci senza id o due voci con lo
+ * stesso id: nel primo caso l'avvio si fermava con un errore, negli altri
+ * selezionare o eliminare un argomento colpiva anche il suo "gemello". Il
+ * rimedio è deterministico (stesso input, stessi id), così non cambia a
+ * ogni caricamento.
+ */
+function withUniqueIds(list, prefix) {
+  const valido = (id) => (typeof id === 'string' && id !== '') || (typeof id === 'number' && Number.isFinite(id));
+  // Primo passaggio: ogni id valido appartiene alla sua PRIMA occorrenza,
+  // che lo tiene identico (anche nel tipo): lezioni, Star Log e ripassi
+  // lo usano come riferimento. Nessun id generato può rubarlo.
+  const riservati = new Set();
+  const proprietario = new Map();
+  list.forEach((item, index) => {
+    if (!valido(item.id)) return;
+    const key = String(item.id);
+    riservati.add(key);
+    if (!proprietario.has(key)) proprietario.set(key, index);
+  });
+  // Secondo passaggio: id nuovi solo per chi non ne ha uno o ne ha uno
+  // già preso, sempre diversi da tutti gli altri.
+  const usati = new Set(riservati);
+  const libero = (base) => {
+    let candidato = base;
+    let n = 1;
+    while (usati.has(candidato)) {
+      n += 1;
+      candidato = `${base}-${n}`;
+    }
+    usati.add(candidato);
+    return candidato;
+  };
+  return list.map((item, index) => {
+    if (valido(item.id) && proprietario.get(String(item.id)) === index) return item;
+    const id = valido(item.id) ? libero(`${item.id}-dup${index}`) : libero(`${prefix}-${index}`);
+    return { ...item, id };
+  });
+}
+
 function migrateMateria(raw) {
-  const sfideRaw = Array.isArray(raw.sfide) ? raw.sfide : [];
+  const sfideRaw = withUniqueIds((Array.isArray(raw.sfide) ? raw.sfide : []).filter(isRecord), `${raw.id}-s`);
   const cfu = typeof raw.cfu === 'number' ? raw.cfu : (raw.isCritical ? 9 : DEFAULT_CFU);
   return {
     id: raw.id,
-    nome: raw.nome,
+    nome: typeof raw.nome === 'string' && raw.nome.trim() ? raw.nome : 'Materia senza nome',
     examDate: raw.examDate ? String(raw.examDate).slice(0, 10) : null,
     cfu,
     createdAt: raw.createdAt || new Date().toISOString(),
@@ -423,11 +469,17 @@ export function hydrateState(rawState) {
     lastStreakShieldGrantMonthKey: typeof rawProfile.lastStreakShieldGrantMonthKey === 'string' ? rawProfile.lastStreakShieldGrantMonthKey : null
   };
 
+  // V41 — solo voci che sono oggetti, con id presenti e unici (vedi
+  // withUniqueIds): una voce `null` in un backup fermava l'avvio.
+  const materie = Array.isArray(rawState.materie)
+    ? withUniqueIds(rawState.materie.filter(isRecord), 'materia').map(migrateMateria)
+    : defaults.materie;
+
   return {
     metadata: { ...defaults.metadata, ...(rawState.metadata || {}), version: SCHEMA_VERSION },
     profile: safeProfile,
     settings: { ...defaults.settings, ...(rawState.settings || {}) },
-    materie: Array.isArray(rawState.materie) ? rawState.materie.map(migrateMateria) : defaults.materie,
+    materie,
     // V37.0 — Potatura al boot. Era l'unico array dello stato senza
     // tetto: ogni salvataggio riscrive l'INTERO app_state, quindi un
     // Star Log che cresce all'infinito fa crescere all'infinito anche il
@@ -466,9 +518,6 @@ export function hydrateState(rawState) {
     // V39.0 — normalizzato contro le materie REALI del profilo: una
     // lezione che punta a una materia cancellata non sopravvive alla
     // reidratazione (integrità referenziale in un punto solo).
-    campus: normalizeCampus(
-      rawState.campus,
-      new Set((Array.isArray(rawState.materie) ? rawState.materie : []).map((m) => m && m.id).filter(Boolean))
-    )
+    campus: normalizeCampus(rawState.campus, new Set(materie.map((m) => m.id)))
   };
 }

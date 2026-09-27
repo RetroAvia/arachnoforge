@@ -8,16 +8,16 @@ import React, { memo } from 'react';
  */
 function EmptyState({ variant = 'safe', title, subtitle, action = null, compact = false }) {
   return (
-    <div className={`flex flex-col items-center justify-center text-center gap-3 ${compact ? 'py-8 px-4' : 'py-14 px-6'}`}>
-      <div className={compact ? 'w-20 h-20' : 'w-28 h-28'}>
+    <div className={`flex flex-col items-center justify-center text-center gap-3 ${compact ? 'py-7 px-4' : 'py-12 px-6'}`}>
+      <div className={`${compact ? 'w-16 h-16' : 'w-20 h-20'} opacity-90`}>
         {variant === 'safe' && <SafeCityIllustration />}
         {variant === 'radar' && <RadarScanIllustration />}
         {variant === 'tree' && <EmptyTreeIllustration />}
         {variant === 'log' && <EmptyLogIllustration />}
       </div>
-      <div className="space-y-1.5 max-w-sm">
-        <p className={`font-semibold text-af-text ${compact ? 'text-base' : 'text-lg'}`}>{title}</p>
-        {subtitle && <p className="text-base text-slate-500 leading-relaxed">{subtitle}</p>}
+      <div className="space-y-1 max-w-sm">
+        <p className={`font-semibold text-white ${compact ? 'text-[15px]' : 'text-base'}`}>{title}</p>
+        {subtitle && <p className="text-sm text-slate-400 leading-relaxed">{subtitle}</p>}
       </div>
       {action}
     </div>

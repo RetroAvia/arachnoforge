@@ -107,21 +107,20 @@ export default function WebSlingChest() {
 
   return (
     <div className={`${CARD} space-y-4`}>
-      <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-primary/10 blur-3xl pointer-events-none" />
-      <div className="relative flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-primary/15 border border-primary/40 flex items-center justify-center text-primary shrink-0">
-            <Icon name="web" className="w-5 h-5" />
-          </div>
+          <span className="ds-icon-tile text-primary">
+            <Icon name="web" className="w-[18px] h-[18px]" />
+          </span>
           <div>
-            <p className="text-xs tracking-widest text-primary font-mono">DAILY WEB-SLING</p>
-            <h2 className="text-lg font-bold text-white tracking-tight">Il Forziere di Parker</h2>
+            <p className="ds-eyebrow">Daily Web-Sling</p>
+            <h2 className="ds-h2">Il Forziere di Parker</h2>
           </div>
         </div>
-        <span className={BADGE.slate}>1x al giorno</span>
+        <span className={BADGE.slate}>1 al giorno</span>
       </div>
 
-      <div className="relative min-h-[168px] flex flex-col items-center justify-center gap-3 py-2">
+      <div className="relative min-h-[172px] flex flex-col items-center justify-center gap-3 py-1 ds-well">
         {phase === PHASE.IDLE && !claimedToday && (
           <>
             <div className="af-chest-float">
@@ -131,18 +130,16 @@ export default function WebSlingChest() {
               <Icon name="target" className="w-5 h-5" />
               Lancia la Ragnatela
             </button>
-            <p className="text-[11px] text-slate-500 text-center max-w-xs">
-              75% Bonus Standard · 20% Bonus Medio · 4% Bonus Raro · 1% Forziere di Parker (Tech Token)
+            <p className="text-[11px] text-slate-500 text-center max-w-xs px-3">
+              75% Standard · 20% Medio · 4% Raro · 1% Forziere di Parker (Tech Token)
             </p>
           </>
         )}
 
         {phase === PHASE.SHOOTING && (
           <div className="relative w-full h-24 flex items-center">
-            <div className="af-web-shoot-line absolute left-2 right-2 h-[3px] rounded-full bg-gradient-to-r from-transparent via-secondary to-primary shadow-secondary-glow" />
-            <p className="relative mx-auto text-sm text-secondary font-mono tracking-widest animate-pulse">
-              WEB-SHOOTER ATTIVO...
-            </p>
+            <div className="af-web-shoot-line absolute left-3 right-3 h-[2px] rounded-full bg-gradient-to-r from-transparent via-secondary to-primary" />
+            <p className="relative mx-auto text-sm text-secondary font-medium animate-pulse">Web-Shooter attivo…</p>
           </div>
         )}
 
@@ -174,8 +171,8 @@ export default function WebSlingChest() {
             </div>
 
             {phase === PHASE.RESULT && reward && (
-              <div className={`af-reward-reveal text-center rounded-xl border ${reward.borderClass} ${reward.glowClass} bg-surface/70 px-5 py-3.5`}>
-                <p className={`text-[11px] font-mono tracking-widest ${reward.colorClass}`}>{reward.rarity.toUpperCase()}</p>
+              <div className={`af-reward-reveal text-center rounded-xl border ${reward.borderClass} bg-panel px-5 py-3.5 mb-2`}>
+                <p className={`ds-eyebrow ${reward.colorClass}`}>{reward.rarity}</p>
                 <p className="text-base font-bold text-white mt-0.5">{reward.label}</p>
                 <p className="text-sm text-slate-300 mt-1 flex items-center justify-center gap-2 flex-wrap">
                   <span className={BADGE.amber}>+{reward.xp} XP</span>
@@ -189,9 +186,9 @@ export default function WebSlingChest() {
                 <button
                   type="button"
                   onClick={() => setPhase(PHASE.IDLE)}
-                  className="mt-2.5 text-xs font-mono tracking-widest text-slate-400 hover:text-white px-3 py-1.5 rounded-lg hover:bg-white/[0.05] transition-colors duration-200"
+                  className="mt-2.5 ds-btn ds-btn-quiet ds-btn-sm"
                 >
-                  OK
+                  Ok
                 </button>
               </div>
             )}
@@ -207,9 +204,7 @@ export default function WebSlingChest() {
               <Icon name="lock" className="w-4 h-4" />
               Forziere già riscattato oggi
             </p>
-            <span className="font-mono text-lg font-bold text-white af-mono-nums tabular-nums">
-              {formatMsRemaining(countdownMs)}
-            </span>
+            <span className="font-mono text-xl font-bold text-white ds-num">{formatMsRemaining(countdownMs)}</span>
             <p className="text-[11px] text-slate-500">al prossimo Web-Sling</p>
           </>
         )}

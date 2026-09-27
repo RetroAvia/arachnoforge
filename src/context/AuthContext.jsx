@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
-import { supabase } from '../utils/supabaseClient.js';
+import { supabase, AUTH_REDIRECT } from '../utils/supabaseClient.js';
 
 /**
  * V26.0 — "The Nexus Gate" (Pillar 2: Authentication Logic).
@@ -70,6 +70,28 @@ export function AuthProvider({ children }) {
   // V37.0 — inizializzatore lazy: il flag viene riletto una sola volta al
   // mount, così rientrare nell'app da Ospite non passa più dal Nexus Gate.
   const [guestActive, setGuestActive] = useState(readGuestFlag);
+  // V41 — Arrivo dal link "password dimenticata": la sessione è valida
+  // ma la password vecchia non è nota. La Shell chiede subito di
+  // sceglierne una nuova (vedi PasswordDialog). Letto anche dall'indirizzo
+  // (AUTH_REDIRECT) perché l'evento di Supabase può partire prima che
+  // questo Provider sia in ascolto.
+  const [passwordRecovery, setPasswordRecovery] = useState(AUTH_REDIRECT.recovery);
+  // V41 — l'errore di un link email scaduto si mostra UNA volta: il Nexus
+  // Gate lo "consuma" appena lo legge, e un accesso riuscito lo spegne.
+  // Prima era una costante del modulo e ricompariva a ogni logout.
+  const [redirectError, setRedirectError] = useState(AUTH_REDIRECT.error);
+
+  // V41 — l'indirizzo `#error=…` di un link email scaduto non serve più
+  // a nessuno (il messaggio lo mostra il Nexus Gate): via dalla barra
+  // degli indirizzi, qualunque schermata venga mostrata.
+  useEffect(() => {
+    if (!AUTH_REDIRECT.error) return;
+    try {
+      window.history.replaceState(window.history.state, '', window.location.pathname);
+    } catch {
+      /* best effort */
+    }
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -82,24 +104,49 @@ export function AuthProvider({ children }) {
       if (next) {
         writeGuestFlag(false);
         setGuestActive(false);
+        // Con l'accesso già fatto, l'errore di un vecchio link email non
+        // riguarda più nessuno.
+        setRedirectError(null);
       }
       setSession(next);
     };
 
-    supabase.auth.getSession().then(({ data }) => {
-      applySession(data.session);
-    });
+    // V41 — un errore imprevisto qui lasciava `session` a undefined per
+    // sempre: schermata di avvio infinita. Ora si ricade sul Nexus Gate.
+    supabase.auth
+      .getSession()
+      .then(({ data }) => applySession(data?.session ?? null))
+      .catch(() => applySession(null));
 
     // Sincronizza in tempo reale login/logout/refresh token da QUALSIASI
     // punto dell'app (incluso un logout scatenato da un'altra tab del
     // browser — Supabase propaga l'evento via BroadcastChannel/storage).
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, newSession) => {
+      if (event === 'PASSWORD_RECOVERY' && mounted) setPasswordRecovery(true);
+      if (event === 'SIGNED_OUT' && mounted) setPasswordRecovery(false);
       applySession(newSession);
     });
+
+    // V41 — Aperta offline con il token scaduto, l'app mostrava il Nexus
+    // Gate anche se l'accesso era stato fatto: Supabase conserva la
+    // sessione ma non può rinnovarla senza rete. Al ritorno della
+    // connessione si riprova subito, invece di aspettare il suo timer
+    // interno. Solo in positivo: questo controllo non chiude mai una
+    // sessione aperta.
+    const onOnline = () => {
+      supabase.auth
+        .getSession()
+        .then(({ data }) => {
+          if (data?.session) applySession(data.session);
+        })
+        .catch(() => {});
+    };
+    window.addEventListener('online', onOnline);
 
     return () => {
       mounted = false;
       listener.subscription.unsubscribe();
+      window.removeEventListener('online', onOnline);
     };
   }, []);
 
@@ -139,6 +186,26 @@ export function AuthProvider({ children }) {
     setGuestActive(true);
   }, []);
 
+  // V41 — "Password dimenticata?": Supabase invia un link che riporta a
+  // questa stessa pagina già con l'accesso fatto. Per ragioni di
+  // sicurezza la risposta è identica che l'email esista o no.
+  const requestPasswordReset = useCallback(async (email) => {
+    const redirectTo = typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}` : undefined;
+    const { error } = await supabase.auth.resetPasswordForEmail(email, redirectTo ? { redirectTo } : undefined);
+    return { error };
+  }, []);
+
+  // V41 — Cambio password dall'interno dell'app (Impostazioni, oppure
+  // subito dopo un link di recupero).
+  const updatePassword = useCallback(async (password) => {
+    const { data, error } = await supabase.auth.updateUser({ password });
+    if (!error) setPasswordRecovery(false);
+    return { data, error };
+  }, []);
+
+  const endPasswordRecovery = useCallback(() => setPasswordRecovery(false), []);
+  const consumeRedirectError = useCallback(() => setRedirectError(null), []);
+
   const value = useMemo(() => {
     const isGuest = !session && guestActive;
     return {
@@ -149,9 +216,28 @@ export function AuthProvider({ children }) {
       signUp,
       signIn,
       signOut,
-      enterGuest
+      enterGuest,
+      requestPasswordReset,
+      updatePassword,
+      passwordRecovery: Boolean(session) && passwordRecovery,
+      endPasswordRecovery,
+      redirectError,
+      consumeRedirectError
     };
-  }, [session, guestActive, signUp, signIn, signOut, enterGuest]);
+  }, [
+    session,
+    guestActive,
+    signUp,
+    signIn,
+    signOut,
+    enterGuest,
+    requestPasswordReset,
+    updatePassword,
+    passwordRecovery,
+    endPasswordRecovery,
+    redirectError,
+    consumeRedirectError
+  ]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

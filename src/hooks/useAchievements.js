@@ -42,7 +42,7 @@ export function useAchievements({ evaluated, unlockedIds, dispatch, pushToast, a
       payload: { ids: newlyUnlocked.map((t) => t.id), names: newlyUnlocked.map((t) => t.nome) }
     });
     newlyUnlocked.forEach((t) => {
-      pushToast(`🏆 Trofeo Sbloccato! — ${t.nome}`, 'trophy');
+      pushToast(`Trofeo sbloccato: ${t.nome}`, 'trophy');
     });
 
     // I trofei Multiverse sono i più rari del Ragno-Verso: meritano un

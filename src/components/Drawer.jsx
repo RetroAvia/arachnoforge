@@ -42,31 +42,31 @@ export default function Drawer({ open, onClose, eyebrow, title, subtitle, childr
   return createPortal(
     <div className="fixed inset-0 z-[60]" role="dialog" aria-modal="true" aria-labelledby={titleId}>
       <div
-        className={`absolute inset-0 bg-surface/75 backdrop-blur-sm transition-opacity duration-300 ${visible ? 'opacity-100' : 'opacity-0'}`}
+        className={`absolute inset-0 bg-black/55 backdrop-blur-[2px] transition-opacity duration-300 ${visible ? 'opacity-100' : 'opacity-0'}`}
         onClick={onClose}
       />
       <div
         ref={panelRef}
-        className={`absolute top-0 right-0 h-full w-full max-w-md bg-surface/95 backdrop-blur-lg border-l border-secondary/20 shadow-2xl flex flex-col transition-transform duration-300 ease-out ${
+        className={`absolute top-0 right-0 h-full w-full max-w-md bg-panel border-l border-line-strong shadow-pop flex flex-col transition-transform duration-300 ease-out ${
           visible ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
-        <div className="shrink-0 flex items-start justify-between gap-3 px-5 sm:px-6 py-4 border-b border-secondary/15">
+        <div className="shrink-0 flex items-start justify-between gap-3 pl-5 sm:pl-6 pr-3 py-4 border-b border-line">
           <div className="min-w-0">
-            {eyebrow && <p className={`text-xs font-mono tracking-widest ${eyebrowClassName}`}>{eyebrow}</p>}
-            <p id={titleId} className="text-lg font-semibold mt-0.5 text-white break-words">
+            {eyebrow && <p className={`ds-eyebrow ${eyebrowClassName}`}>{eyebrow}</p>}
+            <p id={titleId} className="ds-h2 mt-1 break-words">
               {title}
             </p>
-            {subtitle && <p className="text-sm text-slate-400 break-words">{subtitle}</p>}
+            {subtitle && <p className="text-sm text-slate-400 mt-0.5 break-words">{subtitle}</p>}
           </div>
           <button
             ref={closeBtnRef}
             type="button"
             onClick={onClose}
-            className="-mr-2 w-10 h-10 flex items-center justify-center rounded-xl text-slate-500 hover:text-primary hover:bg-white/[0.04] transition-all duration-300 shrink-0"
+            className="ds-icon-btn shrink-0"
             aria-label="Chiudi"
           >
-            <Icon name="close" className="w-6 h-6" />
+            <Icon name="close" className="w-5 h-5" />
           </button>
         </div>
         {children}

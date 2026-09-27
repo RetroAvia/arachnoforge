@@ -3,29 +3,39 @@ import { Icon } from './Icons.jsx';
 import { formatCountdown, formatDateOnlyHuman, msUntilDateOnlyMidnight } from '../utils/dateUtils.js';
 import { CARD, CARD_ALERT } from '../utils/designSystem.js';
 
+/**
+ * Doomsday Clock — conto alla rovescia al prossimo esame. V41: stesso
+ * dato, disegno pulito (quattro caselle numeriche, stato della
+ * traiettoria in un badge) e un tick al secondo solo mentre la card è
+ * sullo schermo.
+ */
 const TRAJECTORY_META = {
-  GREEN: { label: 'IN TRAIETTORIA', color: 'text-emerald-400', chipBg: 'bg-emerald-900/40', glow: 'shadow-[0_0_16px_rgba(52,211,153,0.35)]' },
-  YELLOW: { label: 'DERIVA RILEVATA', color: 'text-accent', chipBg: 'bg-accent/15', glow: 'shadow-accent-glow' },
-  RED: { label: 'COLLISIONE IMMINENTE', color: 'text-primary', chipBg: 'bg-primary/15', glow: 'shadow-primary-glow' }
+  GREEN: { label: 'In traiettoria', badge: 'ds-badge ds-badge-green', num: 'text-white' },
+  YELLOW: { label: 'Deriva rilevata', badge: 'ds-badge ds-badge-amber', num: 'text-accent' },
+  RED: { label: 'Collisione imminente', badge: 'ds-badge ds-badge-red', num: 'text-primary' }
 };
 
 export default function DoomsdayClock({ nextExam, trajectory }) {
   const [, forceTick] = useState(0);
 
   useEffect(() => {
+    if (!nextExam) return undefined;
     const id = setInterval(() => forceTick((n) => n + 1), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [nextExam]);
 
   const meta = TRAJECTORY_META[trajectory] || TRAJECTORY_META.GREEN;
 
   if (!nextExam) {
     return (
-      <div className={`${CARD} flex flex-col items-center justify-center text-center`}>
-        <div className="w-14 h-14 rounded-xl bg-secondary/10 flex items-center justify-center text-secondary mb-3">
-          <Icon name="target" className="w-7 h-7" />
+      <div className={`${CARD} flex items-center gap-3`}>
+        <span className="ds-icon-tile text-slate-400">
+          <Icon name="target" className="w-[18px] h-[18px]" />
+        </span>
+        <div>
+          <p className="ds-eyebrow">Doomsday Clock</p>
+          <p className="text-sm text-slate-400 mt-0.5">Nessun esame in calendario. Dai una data a una materia nel Web-Matrix.</p>
         </div>
-        <p className="text-base text-slate-400">Nessun esame pianificato. Apri un nodo nel Web-Matrix.</p>
       </div>
     );
   }
@@ -36,35 +46,37 @@ export default function DoomsdayClock({ nextExam, trajectory }) {
 
   return (
     <div className={wrapperClass}>
-      <div className="absolute inset-0 opacity-[0.05] pointer-events-none animate-scanline bg-gradient-to-b from-transparent via-white to-transparent h-1/3" />
-      <div className="relative flex items-center justify-between mb-5 flex-wrap gap-2">
-        <div>
-          <p className="text-base text-slate-500 tracking-widest">DOOMSDAY CLOCK</p>
-          <p className="text-lg font-semibold mt-0.5 text-white">{nextExam.nome}</p>
-          <p className="text-[11px] text-slate-500 mt-0.5">{formatDateOnlyHuman(nextExam.examDate)}</p>
+      <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className={`ds-icon-tile ${trajectory === 'RED' ? 'text-primary' : 'text-slate-300'}`}>
+            <Icon name="clock" className="w-[18px] h-[18px]" />
+          </span>
+          <div className="min-w-0">
+            <p className="ds-eyebrow">Doomsday Clock · prossimo esame</p>
+            <p className="text-[15px] font-semibold text-white truncate mt-0.5">{nextExam.nome}</p>
+            <p className="text-xs text-slate-500">{formatDateOnlyHuman(nextExam.examDate)}</p>
+          </div>
         </div>
-        <span className={`text-[10px] font-mono px-3 py-1.5 rounded-full ${meta.color} ${meta.chipBg} ${meta.glow}`}>
-          {meta.label}
-        </span>
+        <span className={meta.badge}>{meta.label}</span>
       </div>
 
       {cd.expired ? (
-        <p className="relative text-3xl font-bold text-primary font-mono">T-0 — ESAME IN CORSO</p>
+        <p className="text-2xl font-bold text-primary">Esame in corso</p>
       ) : (
-        <div className="relative grid grid-cols-4 gap-1.5 sm:gap-2.5 af-mono-nums">
+        <div className="grid grid-cols-4 gap-2 ds-num">
           {[
-            { v: cd.days, l: 'GG' },
-            { v: cd.hours, l: 'HH' },
-            { v: cd.minutes, l: 'MM' },
-            { v: cd.seconds, l: 'SS' }
+            { v: cd.days, l: 'giorni' },
+            { v: cd.hours, l: 'ore' },
+            { v: cd.minutes, l: 'minuti' },
+            { v: cd.seconds, l: 'secondi' }
           ].map((u) => (
-            <div key={u.l} className="bg-surface/80 border border-secondary/20 rounded-xl py-2.5 sm:py-3.5 text-center px-1">
-              <p className={`text-xl sm:text-3xl font-bold font-mono ${meta.color}`}>{String(u.v).padStart(2, '0')}</p>
-              <p className="text-[9px] sm:text-[10px] text-slate-500 mt-1 tracking-widest">{u.l}</p>
+            <div key={u.l} className="ds-well py-2.5 text-center">
+              <p className={`text-2xl sm:text-[28px] leading-none font-bold font-mono ${meta.num}`}>{String(u.v).padStart(2, '0')}</p>
+              <p className="text-[11px] text-slate-500 mt-1.5">{u.l}</p>
             </div>
           ))}
         </div>
-        )}
+      )}
     </div>
   );
 }

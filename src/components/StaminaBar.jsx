@@ -19,83 +19,68 @@ import { FATIGUE_STAMINA_THRESHOLD } from '../utils/xpEngine.js';
  */
 
 const READINESS_META = {
-  OTTIMALE: { label: 'Ottimale', tone: 'text-emerald-300', bar: 'from-emerald-400 to-emerald-600' },
-  ATTENZIONE: { label: 'Attenzione', tone: 'text-accent', bar: 'from-accent to-accent/70' },
-  CRITICO: { label: 'Critico', tone: 'text-primary', bar: 'from-primary to-primary-dark' }
+  OTTIMALE: { label: 'Ottimale', tone: 'text-emerald-300', bar: 'bg-emerald-400' },
+  ATTENZIONE: { label: 'Attenzione', tone: 'text-accent', bar: 'bg-accent' },
+  CRITICO: { label: 'Critico', tone: 'text-primary', bar: 'bg-primary' }
 };
 
 export default function StaminaBar({ stamina, readinessScore = null, readinessBand = null, compact = false }) {
   const safeStamina = Math.max(0, Math.min(100, Number(stamina) || 0));
   const fatigued = safeStamina < FATIGUE_STAMINA_THRESHOLD;
-  const barGradient = fatigued
-    ? 'bg-gradient-to-r from-accent to-primary'
-    : safeStamina > 60
-    ? 'bg-gradient-to-r from-secondary to-secondary-dark'
-    : 'bg-gradient-to-r from-accent to-accent/70';
+  const barColor = fatigued ? 'bg-primary' : safeStamina > 60 ? 'bg-secondary' : 'bg-accent';
 
   const showReadiness = readinessScore != null && readinessScore !== '' && Number.isFinite(Number(readinessScore));
   const rMeta = READINESS_META[readinessBand] || READINESS_META.OTTIMALE;
   const rScore = Math.max(0, Math.min(100, Number(readinessScore) || 0));
 
   return (
-    <div className="space-y-3.5">
+    <div className="space-y-4">
       <div>
-        <div className="flex items-center justify-between mb-2 gap-2">
-          <span
-            className={`flex items-center gap-1.5 text-base font-semibold tracking-wide ${
-              fatigued ? 'text-accent' : 'text-secondary'
-            }`}
-          >
-            <Icon name="drop" className="w-5 h-5" />
-            STAMINA MENTALE
+        <div className="flex items-center justify-between mb-2.5 gap-2">
+          <span className="flex items-center gap-2.5">
+            <span className={`ds-icon-tile ${fatigued ? 'text-primary' : 'text-secondary'}`}>
+              <Icon name="drop" className="w-[18px] h-[18px]" />
+            </span>
+            <span>
+              <span className="block ds-eyebrow">Stamina mentale</span>
+              <span className={`block text-sm font-semibold ${fatigued ? 'text-primary' : 'text-slate-100'}`}>
+                {fatigued ? 'Fatigue attiva' : safeStamina > 60 ? 'In forma' : 'In calo'}
+              </span>
+            </span>
           </span>
-          <span className="text-base font-mono af-mono-nums text-slate-100">{Math.round(safeStamina)}%</span>
+          <span className="text-2xl font-bold ds-num text-white">{Math.round(safeStamina)}%</span>
         </div>
-        <div
-          className={`w-full rounded-full bg-surface/80 border border-secondary/20 overflow-hidden ${
-            compact ? 'h-2.5' : 'h-3.5'
-          }`}
-        >
-          <div
-            className={`h-full ${barGradient} transition-all duration-500 ${
-              fatigued ? 'shadow-accent-glow' : 'shadow-secondary-glow'
-            }`}
-            style={{ width: `${safeStamina}%` }}
-          />
+        <div className={`ds-progress ${compact ? '' : '!h-2'}`}>
+          <span className={barColor} style={{ width: `${safeStamina}%` }} />
         </div>
         {fatigued ? (
-          <p className="text-[11px] text-accent mt-1.5 tracking-wide leading-relaxed">
-            FATIGUE ATTIVA — XP dimezzati finché la Stamina resta sotto {FATIGUE_STAMINA_THRESHOLD}%. Attiva un Daily
-            Protocol per recuperarla.
+          <p className="text-xs text-primary mt-2 leading-relaxed">
+            XP dimezzati finché la Stamina resta sotto il {FATIGUE_STAMINA_THRESHOLD}%. Un Daily Protocol la ricarica.
           </p>
         ) : (
-          <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
-            Si consuma con le sessioni di Focus e si ricarica alle 03:00 e con i Daily Protocol. Sotto{' '}
+          <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+            Scende con le sessioni di Focus, si ricarica alle 03:00 e con i Daily Protocol. Sotto il{' '}
             {FATIGUE_STAMINA_THRESHOLD}% gli XP vengono dimezzati.
           </p>
         )}
       </div>
 
       {showReadiness && (
-        <div className="pt-3 border-t border-white/10">
+        <div className="pt-4 border-t border-line">
           <div className="flex items-center justify-between mb-2 gap-2">
-            <span className={`flex items-center gap-1.5 text-sm font-semibold tracking-wide ${rMeta.tone}`}>
+            <span className={`flex items-center gap-1.5 text-[13px] font-semibold ${rMeta.tone}`}>
               <Icon name="heart" className="w-4 h-4" />
-              READINESS BIOMETRICA
+              Readiness biometrica
             </span>
-            <span className="text-sm font-mono af-mono-nums text-slate-300">
+            <span className="text-sm ds-num text-slate-200">
               {Math.round(rScore)} <span className="text-slate-500">· {rMeta.label}</span>
             </span>
           </div>
-          <div className="w-full h-2 rounded-full bg-surface/80 border border-white/10 overflow-hidden">
-            <div
-              className={`h-full bg-gradient-to-r ${rMeta.bar} transition-all duration-500`}
-              style={{ width: `${rScore}%` }}
-            />
+          <div className="ds-progress">
+            <span className={rMeta.bar} style={{ width: `${rScore}%` }} />
           </div>
-          <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
-            Sonno, cardio e Recovery Survey di oggi. Non tocca gli XP: guida i consigli di K.A.R.E.N. e il preset del
-            timer.
+          <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+            Sonno, cuore e Recovery Survey di oggi. Non tocca gli XP: guida i consigli di K.A.R.E.N. e il preset del timer.
           </p>
         </div>
       )}

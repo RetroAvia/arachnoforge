@@ -2,26 +2,52 @@ import React from 'react';
 import { Icon } from './Icons.jsx';
 
 /**
- * V26.0 — Schermata di boot condivisa, usata in due momenti distinti:
- * 1. AuthContext in bootstrap (`getSession()` non ancora risolto) — App.jsx.
- * 2. ArachnoForgeProvider in fetch dei dati Cloud (Pillar 3) — dopo login,
- *    prima che il Web-Matrix sia pronto da mostrare.
- * Stesso linguaggio visivo del resto dell'app (nebulosa radiale, glow,
- * font mono), mai un semplice spinner bianco su sfondo nero.
+ * Schermata di avvio condivisa: controllo della sessione (App.jsx) e
+ * caricamento dei dati del profilo (ArachnoForgeProvider).
+ *
+ * V41 — può anche raccontare un avvio NON riuscito (`error`), con i
+ * pulsanti per riprovare o per proseguire con la copia salvata su questo
+ * dispositivo. Prima un avvio fallito mostrava un profilo vuoto come se
+ * fosse vero, e il lavoro fatto lì dentro non veniva salvato da nessuna
+ * parte.
  */
-export default function BootScreen({ message = 'Connessione ai satelliti Stark in corso...' }) {
+export default function BootScreen({ message = 'Connessione ai satelliti Stark in corso…', error = null, onRetry = null, onOffline = null, offlineLabel = null }) {
   return (
-    <div className="fixed inset-0 z-[200] flex flex-col items-center justify-center bg-af-bg bg-[radial-gradient(ellipse_at_center,rgb(29_131_240/0.08),transparent_55%)]">
-      <div className="relative w-20 h-20 mb-6">
-        <div className="absolute inset-0 rounded-full border-2 border-secondary/20" />
-        <div className="absolute inset-0 rounded-full border-2 border-t-secondary border-r-secondary/60 border-b-transparent border-l-transparent animate-spin" />
-        <div className="absolute inset-3 rounded-full border border-primary/30 border-t-primary animate-[spin_1.4s_linear_infinite_reverse]" />
-        <div className="absolute inset-0 flex items-center justify-center text-secondary">
-          <Icon name="target" className="w-7 h-7" />
+    <div className="fixed inset-0 z-[200] flex flex-col items-center justify-center px-6 bg-app">
+      <div className="absolute inset-0 bg-[radial-gradient(700px_380px_at_50%_35%,rgb(var(--af-refuel-rgb)/0.07),transparent_70%)] pointer-events-none" />
+      <div className="relative flex flex-col items-center text-center max-w-md">
+        <div className="w-12 h-12 rounded-xl bg-[rgb(var(--af-attack-solid-rgb))] flex items-center justify-center text-white shadow-primary-glow mb-6">
+          <Icon name="web" className="w-6 h-6" strokeWidth={1.9} />
         </div>
+        {error ? (
+          <>
+            <p className="text-lg font-semibold text-white">Non riesco a caricare il tuo profilo</p>
+            <p className="text-sm text-slate-400 mt-2 leading-relaxed">{error}</p>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
+              {onRetry && (
+                <button type="button" onClick={onRetry} className="ds-btn ds-btn-primary">
+                  <Icon name="refresh" className="w-4 h-4" />
+                  Riprova
+                </button>
+              )}
+              {onOffline && (
+                <button type="button" onClick={onOffline} className="ds-btn ds-btn-ghost">
+                  <Icon name="wifiOff" className="w-4 h-4" />
+                  {offlineLabel || 'Continua offline'}
+                </button>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="w-40 h-1 rounded-full bg-white/10 overflow-hidden">
+              <div className="h-full w-1/3 rounded-full bg-secondary animate-[af-boot-bar_1.1s_ease-in-out_infinite]" />
+            </div>
+            <p className="text-sm text-slate-400 mt-4">{message}</p>
+          </>
+        )}
+        <p className="text-[11px] tracking-wide text-slate-600 mt-8">ArachnoForge · K.A.R.E.N. OS</p>
       </div>
-      <p className="text-sm font-mono tracking-[0.2em] text-secondary animate-pulse-slow">{message}</p>
-      <p className="text-[11px] font-mono tracking-widest text-slate-600 mt-2">KAREN OS // NEXUS GATE v26.0</p>
     </div>
   );
 }

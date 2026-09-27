@@ -2,53 +2,89 @@ import React, { useState, useMemo, useCallback } from 'react';
 import Modal from './Modal.jsx';
 import { Icon } from './Icons.jsx';
 import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
-import { parseAiIndexTree, AI_INDEX_EXAMPLE } from '../utils/aiIndexParser.js';
+import { parseAiIndexTree, AI_INDEX_EXAMPLE, buildAiIndexPrompt } from '../utils/aiIndexParser.js';
 import { DIFFICULTY_META } from '../utils/xpEngine.js';
-import { BTN_PRIMARY, BTN_GHOST, BADGE } from '../utils/designSystem.js';
+import { formatInt } from '../utils/format.js';
+import { BTN_PRIMARY, BTN_GHOST, BADGE, LABEL } from '../utils/designSystem.js';
 
-/** Renderizza ricorsivamente l'anteprima dell'albero — profondità limitata
- * visivamente via rientro, mai un render pesante (i nodi sono già
- * validati/limitati a MAX_AI_INDEX_NODES dal parser prima di arrivare qui). */
+const DIFFICULTY_DOT = { EASY: 'bg-emerald-400', MEDIUM: 'bg-secondary', HARD: 'bg-primary' };
+
+/** Anteprima ricorsiva dell'albero (i nodi sono già limitati dal parser). */
 function PreviewNode({ node, depth }) {
   const diffMeta = DIFFICULTY_META[node.difficulty] || DIFFICULTY_META.MEDIUM;
+  const root = depth === 0;
   return (
-    <div style={{ marginLeft: depth > 0 ? 16 : 0 }} className={depth > 0 ? 'border-l border-secondary/20 pl-3 mt-1.5' : 'mt-1.5'}>
-      <div className="flex items-center gap-2 flex-wrap py-0.5">
-        <Icon name={depth === 0 ? 'grid' : 'target'} className={`w-3.5 h-3.5 shrink-0 ${depth === 0 ? 'text-secondary' : 'text-slate-500'}`} />
-        <span className={`text-sm truncate ${depth === 0 ? 'font-semibold text-slate-100' : 'text-slate-300'}`}>{node.nome}</span>
-        <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full border shrink-0 ${diffMeta.border} ${diffMeta.color}`}>
+    <li className={root ? 'pt-2 first:pt-0' : 'pl-4 border-l border-line ml-1.5'}>
+      <div className="flex items-center gap-2 py-1 min-w-0">
+        {root && <Icon name="layers" className="w-3.5 h-3.5 shrink-0 text-secondary" />}
+        <span className={`text-sm truncate ${root ? 'font-semibold text-slate-100' : 'text-slate-300'}`}>{node.nome}</span>
+        <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-slate-500 shrink-0">
+          <span className={`w-1.5 h-1.5 rounded-full ${DIFFICULTY_DOT[node.difficulty] || DIFFICULTY_DOT.MEDIUM}`} aria-hidden="true" />
           {diffMeta.label}
+          {node.oreStimate ? <span className="ds-num">· {node.oreStimate} h</span> : null}
         </span>
       </div>
-      {node.children.map((child, i) => (
-        <PreviewNode key={i} node={child} depth={depth + 1} />
-      ))}
-    </div>
+      {node.children.length > 0 && (
+        <ul>
+          {node.children.map((child, i) => (
+            <PreviewNode key={i} node={child} depth={depth + 1} />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function Step({ n, children }) {
+  return (
+    <li className="flex gap-3">
+      <span className="w-6 h-6 rounded-full bg-panel-3 border border-line-strong text-xs font-semibold text-slate-200 flex items-center justify-center shrink-0 ds-num">
+        {n}
+      </span>
+      <div className="min-w-0 flex-1 text-sm text-slate-300 leading-relaxed pt-0.5">{children}</div>
+    </li>
   );
 }
 
 /**
- * V27.0 — Pillar 2: "AI Index Matrix" — modale di importazione bulk per lo
- * Skill Tree. Flusso: l'utente scatta una foto all'indice di un libro,
- * la incolla in un prompt esterno (ChatGPT/Claude/Gemini...) chiedendo
- * l'output JSON nel formato documentato qui sotto, poi incolla il
- * risultato in questo textarea. Validazione + anteprima live, mai un
- * import "alla cieca": l'utente vede ESATTAMENTE cosa sta per essere
- * scritto nel Web-Matrix prima di confermare.
+ * V27.0 — "AI Index Matrix": importazione in blocco dello Skill Tree.
+ * Si fotografa l'indice del libro, lo si passa a un'IA esterna con il
+ * prompt qui sotto e si incolla la risposta: validazione e anteprima dal
+ * vivo, mai un import "alla cieca".
+ *
+ * V41 — prompt pronto da copiare, risposta accettata anche con testo o
+ * blocchi di codice intorno al JSON, e l'import si può annullare dal
+ * toast.
  */
 export default function AiIndexMatrixModal({ open, onClose, materiaId, materiaNome }) {
-  const { actions } = useArachnoForge();
+  const { state, actions, pushToast } = useArachnoForge();
   const [rawText, setRawText] = useState('');
-  const [showFormat, setShowFormat] = useState(false);
+  const [showPrompt, setShowPrompt] = useState(false);
 
+  const prompt = useMemo(() => buildAiIndexPrompt(materiaNome), [materiaNome]);
   const parsed = useMemo(() => (rawText.trim() ? parseAiIndexTree(rawText) : null), [rawText]);
+  const existingCount = useMemo(() => {
+    const materie = Array.isArray(state.materie) ? state.materie : [];
+    const m = materie.find((x) => x && x.id === materiaId);
+    return Array.isArray(m?.sfide) ? m.sfide.length : 0;
+  }, [state.materie, materiaId]);
+  const parentCount = parsed && parsed.valid ? parsed.tree.length : 0;
 
   const handleClose = useCallback(() => {
     setRawText('');
+    setShowPrompt(false);
     onClose();
   }, [onClose]);
 
-  const handleLoadExample = useCallback(() => setRawText(AI_INDEX_EXAMPLE), []);
+  const copyPrompt = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(prompt);
+      pushToast('Prompt copiato: incollalo nell’IA insieme alla foto dell’indice.', 'success');
+    } catch {
+      setShowPrompt(true);
+      pushToast('Copia automatica non riuscita: seleziona il prompt qui sotto e copialo a mano.', 'warning');
+    }
+  }, [prompt, pushToast]);
 
   const handleImport = useCallback(() => {
     if (!parsed || !parsed.valid || !materiaId) return;
@@ -57,95 +93,102 @@ export default function AiIndexMatrixModal({ open, onClose, materiaId, materiaNo
   }, [parsed, materiaId, actions, handleClose]);
 
   return (
-    <Modal open={open} onClose={handleClose} title="AI Index Matrix — Importazione Skill Tree" maxWidth="max-w-2xl">
-      <div className="space-y-4">
-        <div className="flex items-start gap-3 bg-secondary/10 border border-secondary/30 rounded-xl px-4 py-3.5">
-          <Icon name="chip" className="w-5 h-5 text-secondary shrink-0 mt-0.5" />
-          <div className="text-sm text-slate-300 leading-relaxed">
-            Scatta una foto all'indice di un libro/materia, incollala in un prompt IA esterno chiedendo l'output in JSON
-            (Nodo Padre = capitolo, Nodi Figli = sottoargomenti), poi incolla qui il risultato.
-            {materiaNome && (
-              <>
-                {' '}
-                I nodi verranno aggiunti a <span className="font-semibold text-secondary">{materiaNome}</span>.
-              </>
-            )}
-          </div>
-        </div>
+    <Modal open={open} onClose={handleClose} title="AI Index Matrix" maxWidth="max-w-2xl">
+      <div className="space-y-5">
+        <p className="text-sm text-slate-400 leading-relaxed">
+          Crea lo Skill Tree dall’indice del libro in un minuto
+          {materiaNome ? (
+            <>
+              {' '}
+              per <span className="text-slate-100 font-medium">{materiaNome}</span>
+            </>
+          ) : null}
+          : capitoli come argomenti principali, paragrafi come sottoargomenti.
+        </p>
 
-        <button
-          type="button"
-          onClick={() => setShowFormat((v) => !v)}
-          className="text-xs text-slate-400 hover:text-secondary transition-all duration-300 flex items-center gap-1.5"
-        >
-          <Icon name="chevronDown" className={`w-3.5 h-3.5 transition-transform duration-300 ${showFormat ? 'rotate-180' : ''}`} />
-          {showFormat ? 'Nascondi formato atteso' : 'Mostra formato atteso'}
-        </button>
-        {showFormat && (
-          <pre className="text-[11px] font-mono text-slate-400 bg-surface/90 border border-white/10 rounded-xl p-3.5 overflow-x-auto af-scroll leading-relaxed">
-{`[
-  { "nome": "Capitolo 1", "sottoargomenti": [
-    "Sottoargomento A",
-    { "nome": "Sottoargomento B", "difficolta": "HARD", "ore": 8 }
-  ]},
-  { "nome": "Capitolo 2", "sottoargomenti": ["..."] }
-]`}
-          </pre>
-        )}
+        <ol className="space-y-3">
+          <Step n={1}>Fotografa l’indice del libro (o delle dispense).</Step>
+          <Step n={2}>
+            <span>Carica la foto su ChatGPT, Claude o Gemini insieme a questo prompt.</span>
+            <div className="flex flex-wrap items-center gap-2 mt-2">
+              <button type="button" onClick={copyPrompt} className={`${BTN_GHOST} ds-btn-sm`}>
+                <Icon name="note" className="w-3.5 h-3.5" />
+                Copia il prompt
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowPrompt((v) => !v)}
+                aria-expanded={showPrompt}
+                className="ds-btn ds-btn-quiet ds-btn-sm"
+              >
+                <Icon name="chevronDown" className={`w-3.5 h-3.5 transition-transform ${showPrompt ? 'rotate-180' : ''}`} />
+                {showPrompt ? 'Nascondi' : 'Leggi il prompt'}
+              </button>
+            </div>
+            {showPrompt && (
+              <pre className="mt-2 ds-well p-3 text-[12px] text-slate-400 whitespace-pre-wrap break-words leading-relaxed select-all font-mono">
+                {prompt}
+              </pre>
+            )}
+          </Step>
+          <Step n={3}>Incolla qui sotto la risposta: va bene anche con il testo o il blocco di codice intorno al JSON.</Step>
+        </ol>
 
         <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <label className="text-sm text-slate-400">Struttura JSON</label>
-            <button type="button" onClick={handleLoadExample} className="text-xs text-secondary hover:text-white transition-all duration-300">
-              Carica Esempio
+          <div className="flex items-center justify-between gap-2">
+            <label htmlFor="ai-index-json" className={LABEL}>
+              Risposta dell’IA
+            </label>
+            <button type="button" onClick={() => setRawText(AI_INDEX_EXAMPLE)} className="text-xs text-slate-400 hover:text-white transition-colors mb-1.5">
+              Carica un esempio
             </button>
           </div>
           <textarea
+            id="ai-index-json"
             value={rawText}
             onChange={(e) => setRawText(e.target.value)}
             rows={7}
             spellCheck={false}
-            className="w-full bg-surface/80 border border-secondary/30 rounded-xl px-4 py-3 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors font-mono text-xs resize-y"
-            placeholder='[ { "nome": "Capitolo 1", "sottoargomenti": ["Argomento A", "Argomento B"] } ]'
+            className="ds-input font-mono !text-xs resize-y min-h-[9rem]"
+            placeholder='[ { "nome": "Capitolo 1", "sottoargomenti": ["Paragrafo A", "Paragrafo B"] } ]'
           />
         </div>
 
         {parsed && !parsed.valid && (
-          <div className="flex items-start gap-3 bg-primary/10 border border-primary/40 rounded-xl px-4 py-3.5">
-            <Icon name="alertTriangle" className="w-5 h-5 text-primary shrink-0 mt-0.5" />
-            <p className="text-sm text-primary">{parsed.error}</p>
-          </div>
+          <p role="alert" className="flex items-start gap-2.5 rounded-xl border border-primary/30 bg-primary/[0.07] px-3.5 py-3 text-[13px] text-primary leading-relaxed">
+            <Icon name="alertTriangle" className="w-4 h-4 shrink-0 mt-0.5" />
+            {parsed.error}
+          </p>
         )}
 
         {parsed && parsed.valid && (
           <div className="space-y-2">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className={BADGE.green}>
                 <Icon name="check" className="w-3.5 h-3.5" />
-                Struttura valida
+                Pronto da importare
               </span>
-              <span className={BADGE.slate}>{parsed.totalCount} nodi totali</span>
+              <span className="text-xs text-slate-500">
+                {formatInt(parentCount)} {parentCount === 1 ? 'capitolo' : 'capitoli'} · {formatInt(parsed.totalCount)}{' '}
+                {parsed.totalCount === 1 ? 'argomento' : 'argomenti'} in tutto
+                {existingCount > 0 ? ` · si aggiungono ai ${formatInt(existingCount)} già presenti` : ''}
+              </span>
             </div>
-            <div className="max-h-64 overflow-y-auto af-scroll bg-surface/60 border border-secondary/15 rounded-xl p-3.5">
+            <ul className="max-h-64 overflow-y-auto af-scroll ds-well p-3.5">
               {parsed.tree.map((node, i) => (
                 <PreviewNode key={i} node={node} depth={0} />
               ))}
-            </div>
+            </ul>
           </div>
         )}
 
-        <div className="flex items-center gap-3">
-          <button type="button" onClick={handleClose} className={`flex-1 ${BTN_GHOST}`}>
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-1">
+          <button type="button" onClick={handleClose} className={BTN_GHOST}>
             Annulla
           </button>
-          <button
-            type="button"
-            disabled={!parsed || !parsed.valid || !materiaId}
-            onClick={handleImport}
-            className={`flex-1 ${BTN_PRIMARY}`}
-          >
-            <Icon name="download" className="w-5 h-5" />
-            Importa {parsed && parsed.valid ? `${parsed.totalCount} Nodi` : 'Nodi'}
+          <button type="button" disabled={!parsed || !parsed.valid || !materiaId} onClick={handleImport} className={BTN_PRIMARY}>
+            <Icon name="download" className="w-4 h-4" />
+            {parsed && parsed.valid ? `Importa ${formatInt(parsed.totalCount)} ${parsed.totalCount === 1 ? 'argomento' : 'argomenti'}` : 'Importa'}
           </button>
         </div>
       </div>

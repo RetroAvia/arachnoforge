@@ -15,22 +15,30 @@ import { getRankTitle, getRankMeta, computeTotalBankedXp, xpRequiredForLevel } f
  * Estratto dal ArachnoForgeContext (Fase 2 — Custom Hooks & State Split)
  * per tenere in un solo posto tutta la logica "di carriera" del giocatore.
  */
-export function useProgression(profile, pushToast, audio) {
+export function useProgression(profile, pushToast, audio, hydrationEpoch = 0) {
   const prevLevelRef = useRef(profile.level);
+  const epochRef = useRef(hydrationEpoch);
 
   useEffect(() => {
+    // V41 — un'idratazione (avvio, dati da un altro dispositivo, import)
+    // porta il livello "vero": non è un Level Up e non va festeggiato.
+    if (epochRef.current !== hydrationEpoch) {
+      epochRef.current = hydrationEpoch;
+      prevLevelRef.current = profile.level;
+      return;
+    }
     if (profile.level > prevLevelRef.current) {
       const prevTier = getRankMeta(prevLevelRef.current);
       const nextTier = getRankMeta(profile.level);
       if (nextTier.title !== prevTier.title) {
-        pushToast(`NUOVO RANGO — ${nextTier.title} (Lv.${profile.level})`, 'levelup');
+        pushToast(`Nuovo rango: ${nextTier.title} · livello ${profile.level}`, 'levelup');
         if (audio && typeof audio.playTrophyFanfare === 'function') audio.playTrophyFanfare();
       } else {
-        pushToast(`LIVELLO SUPERATO — ${nextTier.title} (Lv.${profile.level})`, 'levelup');
+        pushToast(`Livello ${profile.level} raggiunto · ${nextTier.title}`, 'levelup');
       }
     }
     prevLevelRef.current = profile.level;
-  }, [profile.level, pushToast, audio]);
+  }, [profile.level, pushToast, audio, hydrationEpoch]);
 
   return useMemo(() => {
     const xpNeeded = xpRequiredForLevel(profile.level);

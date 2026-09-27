@@ -51,6 +51,9 @@ export default function ParticleWeb({ className = '' }) {
     // lascia runningRef a false (StrictMode monta due volte in sviluppo)
     // e il loop non ripartiva più.
     runningRef.current = !document.hidden;
+    // V41 — Con "riduci movimento" attivo nel sistema operativo la rete
+    // resta ferma: un solo fotogramma, ridisegnato solo al resize.
+    const reduceMotion = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     let width = 0;
     let height = 0;
     let dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -63,26 +66,22 @@ export default function ParticleWeb({ className = '' }) {
       canvas.height = Math.max(1, Math.floor(height * dpr));
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       particlesRef.current = Array.from({ length: PARTICLE_COUNT }, () => createParticle(width, height));
+      if (reduceMotion) draw();
     };
 
-    resize();
-    window.addEventListener('resize', resize);
-
     const handleVisibility = () => {
+      if (reduceMotion) return;
       runningRef.current = !document.hidden;
       if (runningRef.current && rafRef.current == null) {
         rafRef.current = requestAnimationFrame(tick);
       }
     };
-    document.addEventListener('visibilitychange', handleVisibility);
 
     function tick() {
       if (!runningRef.current) {
         rafRef.current = null;
         return;
       }
-      ctx.clearRect(0, 0, width, height);
-
       const particles = particlesRef.current;
       // Aggiorna posizioni, rimbalzo elastico sui bordi.
       for (let i = 0; i < particles.length; i += 1) {
@@ -94,6 +93,13 @@ export default function ParticleWeb({ className = '' }) {
         p.x = Math.min(Math.max(p.x, 0), width);
         p.y = Math.min(Math.max(p.y, 0), height);
       }
+      draw();
+      rafRef.current = requestAnimationFrame(tick);
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, width, height);
+      const particles = particlesRef.current;
 
       // Connessioni fra particelle vicine — alpha proporzionale alla distanza.
       for (let i = 0; i < particles.length; i += 1) {
@@ -127,11 +133,12 @@ export default function ParticleWeb({ className = '' }) {
         ctx.fill();
       });
       ctx.shadowBlur = 0;
-
-      rafRef.current = requestAnimationFrame(tick);
     }
 
-    rafRef.current = requestAnimationFrame(tick);
+    resize();
+    window.addEventListener('resize', resize);
+    document.addEventListener('visibilitychange', handleVisibility);
+    if (!reduceMotion) rafRef.current = requestAnimationFrame(tick);
 
     return () => {
       runningRef.current = false;

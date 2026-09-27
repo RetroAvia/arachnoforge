@@ -149,12 +149,14 @@ export function useOverlayLayer({ open, onClose, panelRef, initialFocusRef, prio
   }, [open]);
 }
 
-export default function Modal({ open, onClose, title, children, maxWidth = 'max-w-md', role = 'dialog' }) {
+export default function Modal({ open, onClose, title, children, maxWidth = 'max-w-md', role = 'dialog', initialFocusRef = null }) {
   const closeBtnRef = useRef(null);
   const panelRef = useRef(null);
   const titleId = useId();
 
-  useOverlayLayer({ open, onClose, panelRef, initialFocusRef: closeBtnRef });
+  // V41 — `initialFocusRef` facoltativo: in un modulo (per esempio il
+  // cambio password) il focus va sul primo campo, non sulla X.
+  useOverlayLayer({ open, onClose, panelRef, initialFocusRef: initialFocusRef || closeBtnRef });
 
   if (!open || typeof document === 'undefined') return null;
 
@@ -165,31 +167,20 @@ export default function Modal({ open, onClose, title, children, maxWidth = 'max-
       aria-modal="true"
       aria-labelledby={titleId}
     >
-      <div className="absolute inset-0 bg-surface/80 backdrop-blur-md" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-[3px]" onClick={onClose} />
       <div
         ref={panelRef}
-        className={`relative w-full ${maxWidth} ${CARD_NOPAD} shadow-2xl flex flex-col max-h-[calc(100dvh-2rem)] sm:max-h-[88vh]`}
+        className={`relative w-full ${maxWidth} ${CARD_NOPAD} !border-line-strong !shadow-pop flex flex-col max-h-[calc(100dvh-2rem)] sm:max-h-[88vh] af-dropdown-in`}
       >
-        {/* Bagliore atmosferico d'ambiente dietro l'header. */}
-        <div className="absolute -top-20 -right-20 w-64 h-64 rounded-full bg-secondary/10 blur-3xl pointer-events-none" />
-        <div className="relative z-10 shrink-0 flex items-center justify-between gap-3 px-4 sm:px-6 py-4 border-b border-secondary/20 bg-surface/95">
-          <h3
-            id={titleId}
-            className="font-bold tracking-wide text-base leading-snug bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400 line-clamp-2 break-words min-w-0"
-          >
+        <div className="relative z-10 shrink-0 flex items-center justify-between gap-3 pl-5 sm:pl-6 pr-3 py-3.5 border-b border-line">
+          <h3 id={titleId} className="ds-h2 line-clamp-2 break-words min-w-0">
             {title}
           </h3>
-          <button
-            ref={closeBtnRef}
-            type="button"
-            onClick={onClose}
-            className="-mr-2 w-10 h-10 flex items-center justify-center rounded-xl text-slate-500 hover:text-primary hover:bg-white/[0.04] transition-all duration-300 shrink-0"
-            aria-label="Chiudi"
-          >
-            <Icon name="close" className="w-6 h-6" />
+          <button ref={closeBtnRef} type="button" onClick={onClose} className="ds-icon-btn shrink-0" aria-label="Chiudi">
+            <Icon name="close" className="w-5 h-5" />
           </button>
         </div>
-        <div className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain af-scroll p-4 sm:p-6">{children}</div>
+        <div className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain af-scroll p-5 sm:p-6">{children}</div>
       </div>
     </div>,
     document.body

@@ -21,13 +21,13 @@ export default function ConfirmDialog({ open, onClose, onConfirm, title, message
     // decisione immediata dell'utente — annuncio piu' preciso per chi usa
     // uno screen reader, zero cambio di comportamento visivo.
     <Modal open={open} onClose={onClose} title={title} maxWidth="max-w-sm" role="alertdialog">
-      <div className="flex items-start gap-3 mb-6">
-        <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${danger ? 'bg-primary/10 text-primary' : 'bg-secondary/10 text-secondary'}`}>
-          <Icon name="alertTriangle" className="w-6 h-6" />
+      <div className="flex items-start gap-3.5 mb-6">
+        <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${danger ? 'bg-primary/12 text-primary' : 'bg-secondary/12 text-secondary'}`}>
+          <Icon name={danger ? 'alertTriangle' : 'info'} className="w-5 h-5" />
         </div>
-        <p className="text-base text-slate-300 leading-relaxed pt-1.5">{message}</p>
+        <p className="text-[15px] text-slate-300 leading-relaxed pt-1.5">{message}</p>
       </div>
-      <div className="flex justify-end gap-3">
+      <div className="flex justify-end gap-2.5">
         <button type="button" onClick={onClose} className={BTN_GHOST}>
           Annulla
         </button>
