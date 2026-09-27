@@ -17,7 +17,11 @@
 //  - asset con hash di build (/assets/*): cache-first, sono immutabili;
 //  - tutto il resto (API, cross-origin): nessuna intercettazione.
 // =====================================================================
-const VERSION = 'af-v36-1';
+// V41 — nome nuovo = cache nuova: all'attivazione le cache con un altro
+// nome vengono cancellate. Gli asset con hash si accumulavano deploy dopo
+// deploy nella stessa cache della V36; cambiarlo a ogni versione maggiore
+// la riporta pulita.
+const VERSION = 'af-v41-1';
 const SHELL_CACHE = `${VERSION}-shell`;
 const ASSET_CACHE = `${VERSION}-assets`;
 

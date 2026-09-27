@@ -31,6 +31,39 @@ try {
   // Plugin non installato: si procede con le sole regole di base.
 }
 
+/**
+ * V41 — Regola locale `jsx-uses-vars`: senza eslint-plugin-react, la
+ * regola di base `no-unused-vars` non vede l'uso di un componente dentro
+ * il JSX e segnalava come "mai usati" Icon, Dropdown, EmptyState e decine
+ * di altri: 150 falsi allarmi che nascondevano quelli veri. Stessa logica
+ * della regola omonima di eslint-plugin-react, in poche righe e senza
+ * una dipendenza in più.
+ */
+const localJsxPlugin = {
+  rules: {
+    'jsx-uses-vars': {
+      meta: { type: 'problem', schema: [] },
+      create(context) {
+        const sourceCode = context.sourceCode ?? context.getSourceCode();
+        return {
+          JSXOpeningElement(node) {
+            let name = node.name;
+            if (!name || name.type === 'JSXNamespacedName') return;
+            if (name.type === 'JSXMemberExpression') {
+              while (name.type === 'JSXMemberExpression') name = name.object;
+              if (name.type === 'JSXIdentifier') sourceCode.markVariableAsUsed(name.name, node);
+              return;
+            }
+            if (name.type === 'JSXIdentifier' && /^[A-Z]/.test(name.name)) {
+              sourceCode.markVariableAsUsed(name.name, node);
+            }
+          }
+        };
+      }
+    }
+  }
+};
+
 export default [
   {
     ignores: ['dist/**', 'node_modules/**', 'supabase/functions/**', '_to_delete/**']
@@ -50,8 +83,9 @@ export default [
       }
     },
     settings: { react: { version: '18.2' } },
-    plugins: reactHooks ? { 'react-hooks': reactHooks } : {},
+    plugins: reactHooks ? { 'react-hooks': reactHooks, local: localJsxPlugin } : { local: localJsxPlugin },
     rules: {
+      'local/jsx-uses-vars': 'error',
       // --- Le regole che contano davvero per questo progetto ---------
       // `no-undef` è quella che avrebbe trovato setAwaitingPostFocus.
       'no-undef': 'error',
