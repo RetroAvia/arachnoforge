@@ -25,7 +25,8 @@ import {
   DEFAULT_SINTESI_PAGES_PER_HOUR,
   DEFAULT_RESA_SINTESI
 } from './sintesiEngine.js';
-import { todayDateOnlyKey, dateOnlyToUtcMs } from './dateUtils.js';
+import { todayDateOnlyKey, addDaysToDateOnly, isoWeekdayOfDateKey } from './dateUtils.js';
+import { detectPhase } from './campusEngine.js';
 import { DEFAULT_PAGES_PER_HOUR } from './planningConstants.js';
 import { PERSISTED_STATUS } from './skillTree.js';
 
@@ -36,12 +37,27 @@ export const CAPACITY_MIN_DAYS = 7;
 /** Limiti di sicurezza: nessuna capacità sotto 1h o sopra 10h/giorno. */
 export const CAPACITY_MIN_HOURS = 1;
 export const CAPACITY_MAX_HOURS = 10;
+/** V42 — Giorni osservati necessari per fidarsi del profilo settimanale. */
+export const WEEKDAY_MIN_DAYS = 14;
+/** V42 — Peso del "valore neutro 1" nel fattore di un giorno della settimana. */
+const WEEKDAY_SMOOTHING = 2;
+/** V42 — Giorni di una fase (lezioni/sessione) per misurarne la capacità. */
+export const PHASE_MIN_DAYS = 7;
+/** V42 — Nei giorni di lezione, ogni ora in aula toglie mezz'ora di studio al default. */
+export const LECTURE_HOUR_COST = 0.5;
+export const LECTURE_DAY_MIN_HOURS = 1.5;
 
 /** Nodi completati necessari prima di fidarsi del fattore di calibrazione. */
 export const BIAS_MIN_SAMPLES = 5;
 /** Limiti di sicurezza sul fattore (mai oltre il triplo, mai sotto la metà). */
 export const BIAS_MIN = 0.5;
 export const BIAS_MAX = 3;
+
+/** V42 — Durata di un ripasso di un argomento, finché non è misurata. */
+export const DEFAULT_REVIEW_MINUTES = 15;
+export const REVIEW_MINUTES_MIN = 5;
+export const REVIEW_MINUTES_MAX = 60;
+export const REVIEW_MIN_SAMPLES = 3;
 
 function median(values) {
   if (!values.length) return null;
@@ -54,58 +70,173 @@ function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
+function round1(n) {
+  return Math.round(n * 10) / 10;
+}
+
 /**
  * Capacità giornaliera SOSTENIBILE, in ore.
  *
- * Deliberatamente calcolata come media sui giorni di CALENDARIO della
- * finestra (non sui soli giorni attivi): i giorni di riposo esistono e
- * devono entrare nella proiezione, altrimenti ogni "Fine Prevista"
- * presuppone che tu studi anche la domenica. È lo stesso motivo per cui
- * non serve una logica feriale/weekend separata — i weekend sono già
- * dentro il denominatore, pesati per come li vivi davvero.
+ * Media sui giorni di CALENDARIO della finestra (non sui soli giorni
+ * attivi): i giorni di riposo esistono e devono entrare nella proiezione,
+ * altrimenti ogni "Fine Prevista" presuppone che tu studi anche la
+ * domenica. La finestra parte dal primo giorno realmente registrato.
  *
- * La finestra parte dal primo giorno realmente registrato, così un
- * profilo attivo da 10 giorni non viene diluito su 30.
+ * V42 — tre correzioni verificate:
+ *  1. SOLO GIORNI CONCLUSI. Oggi non entra mai: la mattina, dopo la prima
+ *     sessione, la giornata contava già come intera e la capacità
+ *     scendeva (4,5 -> 4,1 dopo 25 minuti), cambiando stati e date a metà
+ *     giornata.
+ *  2. MISCELA COL DEFAULT. Prima la capacità misurata si usava anche con
+ *     un solo giorno alle spalle: una sessione da 25 minuti il primo
+ *     giorno dava 1 h/giorno e un esame OTTIMALE diventava CRITICO. Ora il
+ *     peso della misura cresce con i giorni osservati (piena a 7).
+ *  3. PROFILO SETTIMANALE E PER FASE. Con almeno due settimane di storico
+ *     ogni giorno della settimana ha il suo fattore (la domenica di
+ *     riposo pesa zero, il martedì pieno di più) e, con almeno 7 giorni
+ *     per fase, lezioni e sessione hanno ciascuna la propria media.
  *
  * @param {Array} starLog `state.starLog`
- * @returns {{hoursPerDay:number, confident:boolean, observedDays:number, totalHours:number}}
+ * @param {{todayKey?:string, phaseOf?:(dateKey:string)=>string|null}} [opts]
  */
-export function computeDailyCapacity(starLog) {
-  const entries = (Array.isArray(starLog) ? starLog : []).filter(
-    (e) => e && e.type === 'FOCUS_MINUTES' && typeof e.dateKey === 'string' && Number(e.minutes) > 0
-  );
-  if (entries.length === 0) {
-    return { hoursPerDay: HOURS_PER_NODE_DAY, confident: false, observedDays: 0, totalHours: 0 };
+export function computeDailyCapacity(starLog, { todayKey = todayDateOnlyKey(), phaseOf = null } = {}) {
+  const neutral = {
+    hoursPerDay: HOURS_PER_NODE_DAY,
+    measuredHoursPerDay: null,
+    weight: 0,
+    confident: false,
+    observedDays: 0,
+    totalHours: 0,
+    weekdayFactors: [null, 1, 1, 1, 1, 1, 1, 1],
+    weekdayConfident: false,
+    phaseHours: {}
+  };
+  const perGiorno = new Map();
+  (Array.isArray(starLog) ? starLog : []).forEach((e) => {
+    if (!e || e.type !== 'FOCUS_MINUTES' || typeof e.dateKey !== 'string' || !(Number(e.minutes) > 0)) return;
+    if (e.dateKey >= todayKey) return; // solo giorni conclusi
+    perGiorno.set(e.dateKey, (perGiorno.get(e.dateKey) || 0) + Number(e.minutes) / 60);
+  });
+  if (perGiorno.size === 0) return neutral;
+
+  const ieri = addDaysToDateOnly(todayKey, -1);
+  const inizioFinestra = addDaysToDateOnly(todayKey, -CAPACITY_WINDOW_DAYS);
+  const primo = [...perGiorno.keys()].sort()[0];
+  const start = primo > inizioFinestra ? primo : inizioFinestra;
+  if (start > ieri) return neutral;
+
+  const giorni = [];
+  for (let d = start; d <= ieri; d = addDaysToDateOnly(d, 1)) giorni.push(d);
+  const observedDays = giorni.length;
+  const ore = giorni.map((d) => perGiorno.get(d) || 0);
+  const totalHours = ore.reduce((a, b) => a + b, 0);
+  if (totalHours <= 0) return { ...neutral, observedDays };
+  const measured = totalHours / observedDays;
+  const weight = Math.min(1, observedDays / CAPACITY_MIN_DAYS);
+  const blended = weight * measured + (1 - weight) * HOURS_PER_NODE_DAY;
+
+  // --- profilo per giorno della settimana ------------------------------
+  const weekdayConfident = observedDays >= WEEKDAY_MIN_DAYS;
+  let weekdayFactors = [null, 1, 1, 1, 1, 1, 1, 1];
+  if (weekdayConfident) {
+    const somma = [0, 0, 0, 0, 0, 0, 0, 0];
+    const conta = [0, 0, 0, 0, 0, 0, 0, 0];
+    giorni.forEach((d, i) => {
+      const w = isoWeekdayOfDateKey(d);
+      somma[w] += ore[i];
+      conta[w] += 1;
+    });
+    const grezzi = [null];
+    for (let w = 1; w <= 7; w += 1) {
+      const media = conta[w] > 0 ? somma[w] / conta[w] : measured;
+      grezzi.push(clamp((conta[w] * (media / measured) + WEEKDAY_SMOOTHING) / (conta[w] + WEEKDAY_SMOOTHING), 0, 2.5));
+    }
+    // Normalizzati a media 1: il totale settimanale resta quello misurato.
+    const mediaFattori = grezzi.slice(1).reduce((a, b) => a + b, 0) / 7;
+    weekdayFactors = mediaFattori > 0 ? grezzi.map((f, i) => (i === 0 ? null : Math.round((f / mediaFattori) * 100) / 100)) : weekdayFactors;
   }
 
-  const todayMs = dateOnlyToUtcMs(todayDateOnlyKey());
-  const windowStartMs = todayMs - (CAPACITY_WINDOW_DAYS - 1) * 86400000;
-  const inWindow = entries.filter((e) => dateOnlyToUtcMs(e.dateKey) >= windowStartMs);
-  if (inWindow.length === 0) {
-    return { hoursPerDay: HOURS_PER_NODE_DAY, confident: false, observedDays: 0, totalHours: 0 };
+  // --- media per fase (lezioni / sessione) -----------------------------
+  const phaseHours = {};
+  if (typeof phaseOf === 'function') {
+    const acc = {};
+    giorni.forEach((d, i) => {
+      const f = phaseOf(d);
+      if (!f) return;
+      if (!acc[f]) acc[f] = { ore: 0, giorni: 0 };
+      acc[f].ore += ore[i];
+      acc[f].giorni += 1;
+    });
+    Object.entries(acc).forEach(([f, v]) => {
+      if (v.giorni >= PHASE_MIN_DAYS) phaseHours[f] = round1(v.ore / v.giorni);
+    });
   }
-
-  // V39.0 — finché oggi non hai ancora studiato, la giornata in corso
-  // NON entra nel denominatore. Prima veniva contata come un giorno
-  // intero a zero ore: ogni mattina la capacità risultava più bassa
-  // (-12% con 8 giorni osservati) proprio mentre l'app ti diceva quanto
-  // studiare oggi. I giorni di riposo passati restano dentro, come
-  // devono: sono giorni conclusi, e sono reali.
-  const todayKey = todayDateOnlyKey();
-  const hasToday = inWindow.some((e) => e.dateKey === todayKey);
-  const endMs = hasToday ? todayMs : todayMs - 86400000;
-  const firstMs = Math.min(...inWindow.map((e) => dateOnlyToUtcMs(e.dateKey)));
-  // +1 perché la finestra è inclusiva su entrambi gli estremi.
-  const observedDays = Math.max(1, Math.round((endMs - firstMs) / 86400000) + 1);
-  const totalHours = inWindow.reduce((sum, e) => sum + Number(e.minutes) / 60, 0);
-  const raw = totalHours / observedDays;
 
   return {
-    hoursPerDay: clamp(Math.round(raw * 10) / 10, CAPACITY_MIN_HOURS, CAPACITY_MAX_HOURS),
+    hoursPerDay: clamp(round1(blended), CAPACITY_MIN_HOURS, CAPACITY_MAX_HOURS),
+    measuredHoursPerDay: round1(measured),
+    weight: Math.round(weight * 100) / 100,
     confident: observedDays >= CAPACITY_MIN_DAYS,
     observedDays,
-    totalHours: Math.round(totalHours * 10) / 10
+    totalHours: round1(totalHours),
+    weekdayFactors,
+    weekdayConfident,
+    phaseHours
   };
+}
+
+/**
+ * V42 — Le ore di studio disponibili in UN giorno preciso (passato o
+ * futuro): è ciò che il planner usa giorno per giorno.
+ *
+ *  - giorno di riposo dichiarato -> 0;
+ *  - capacità manuale impostata -> quella, e basta;
+ *  - altrimenti: media della fase di quel giorno se misurata, oppure la
+ *    capacità miscelata; la parte NON ancora misurata (il default) cala
+ *    nei giorni con lezioni in aula; infine il fattore del giorno della
+ *    settimana.
+ *
+ * @param {string} dateKey
+ * @param {object} calibration pacchetto di computeCalibration
+ * @param {{phaseOf?:Function, lectureHoursOf?:Function}} [ctx]
+ */
+export function capacityForDate(dateKey, calibration, { phaseOf = null, lectureHoursOf = null } = {}) {
+  const cal = calibration || NEUTRAL_CALIBRATION;
+  const w = isoWeekdayOfDateKey(dateKey);
+  const riposo = Array.isArray(cal.restDays) ? cal.restDays : [];
+  if (riposo.includes(w)) return 0;
+  const manual = Number(cal.manualHours);
+  if (manual > 0) return manual;
+  if (!Number.isFinite(Number(cal.capacityWeight))) {
+    // Pacchetto parziale (test, chiamanti storici): conta solo la media.
+    return Number(cal.hoursPerDay) > 0 ? Number(cal.hoursPerDay) : HOURS_PER_NODE_DAY;
+  }
+
+  const peso = clamp(Number(cal.capacityWeight), 0, 1);
+  const lezioni = typeof lectureHoursOf === 'function' ? Math.max(0, Number(lectureHoursOf(dateKey)) || 0) : 0;
+  const defaultGiorno = lezioni > 0 ? Math.max(LECTURE_DAY_MIN_HOURS, HOURS_PER_NODE_DAY - LECTURE_HOUR_COST * lezioni) : HOURS_PER_NODE_DAY;
+  const fase = typeof phaseOf === 'function' ? phaseOf(dateKey) : null;
+  const misurataFase = fase && cal.phaseHours && Number(cal.phaseHours[fase]) > 0 ? Number(cal.phaseHours[fase]) : null;
+  const misurata = misurataFase ?? (Number(cal.measuredHoursPerDay) > 0 ? Number(cal.measuredHoursPerDay) : null);
+  const profilo = cal.weekdayConfident && Array.isArray(cal.weekdayFactors);
+  // La media misurata comprende i giorni di riposo a zero: senza profilo
+  // settimanale va spalmata sui soli giorni di studio (col profilo lo fa
+  // già il fattore del giorno).
+  const studioSuSette = !profilo && riposo.length > 0 && riposo.length < 7 ? 7 / (7 - riposo.length) : 1;
+  const base = misurata != null ? peso * misurata * studioSuSette + (1 - peso) * defaultGiorno : defaultGiorno;
+  const f = profilo && Number.isFinite(cal.weekdayFactors[w]) ? cal.weekdayFactors[w] : 1;
+  return clamp(Math.round(base * f * 100) / 100, 0, 12);
+}
+
+/**
+ * V42 — Durata tipica di un ripasso: mediana delle sessioni di RIPASSO.
+ */
+export function computeReviewMinutes(starLog) {
+  const valori = (Array.isArray(starLog) ? starLog : [])
+    .filter((e) => e && e.type === 'FOCUS_SESSION' && e.workMode === 'RIPASSO' && Number(e.minutes) >= 3)
+    .map((e) => Number(e.minutes) / Math.max(1, Number(e.argomentiRipassati) || 1));
+  if (valori.length < REVIEW_MIN_SAMPLES) return { minutes: DEFAULT_REVIEW_MINUTES, confident: false, sampleSize: valori.length };
+  return { minutes: clamp(Math.round(median(valori)), REVIEW_MINUTES_MIN, REVIEW_MINUTES_MAX), confident: true, sampleSize: valori.length };
 }
 
 /**
@@ -277,20 +408,46 @@ export function calibratedNodeHours(sfida, biasFactorOrCalibration = 1) {
 
 /** Il pacchetto completo, calcolato una volta sola a livello di Provider
  * e passato a valle: nessun consumatore ricalcola per conto proprio. */
-export function computeCalibration(state) {
-  const capacity = computeDailyCapacity(state?.starLog);
+export function computeCalibration(state, { todayKey = todayDateOnlyKey() } = {}) {
+  const campus = state?.campus;
+  const phaseOf = campus && Array.isArray(campus.semestri) && campus.semestri.length > 0 ? (k) => detectPhase(campus, k).fase : null;
+  const capacity = computeDailyCapacity(state?.starLog, { todayKey, phaseOf });
   const bias = computeEstimateBias(state?.materie);
   const pages = computePagesPerHour(state?.materie);
   // V38.0 — "La Forgia degli Appunti": due ritmi, non uno. Snellire 20
   // pagine di libro e studiare 20 pagine dei propri appunti sono due
-  // lavori con velocità diverse, e misurarli insieme produceva un
-  // numero medio che non descriveva nessuno dei due.
+  // lavori con velocità diverse. V42 — e la sintesi, per tipo di fonte.
   const sintesi = computeSintesiPagesPerHour(state?.starLog);
   const resa = computeResaSintesi(state?.materie);
+  const review = computeReviewMinutes(state?.starLog);
+  // V42 — impostazioni che il piano deve rispettare: capacità decisa a
+  // mano (vince sulla misura) e giorni di riposo fissi.
+  const manual = Number(state?.settings?.capacitaManuale);
+  const manualHours = Number.isFinite(manual) && manual > 0 ? clamp(manual, 0.5, 12) : null;
+  const restDays = (Array.isArray(state?.settings?.giorniRiposo) ? state.settings.giorniRiposo : [])
+    .map(Number)
+    .filter((n, i, arr) => Number.isInteger(n) && n >= 1 && n <= 7 && arr.indexOf(n) === i);
+  const perTipoRitmo = {};
+  const perTipoResa = {};
+  Object.keys(sintesi.perTipo || {}).forEach((t) => {
+    perTipoRitmo[t] = sintesi.perTipo[t].confident ? sintesi.perTipo[t].pagesPerHour : null;
+  });
+  Object.keys(resa.perTipo || {}).forEach((t) => {
+    perTipoResa[t] = resa.perTipo[t].confident ? resa.perTipo[t].resa : null;
+  });
+  const capacitySource = manualHours ? 'MANUALE' : capacity.weight >= 1 ? 'MISURATA' : capacity.weight > 0 ? 'MISTA' : 'DEFAULT';
   return {
-    hoursPerDay: capacity.hoursPerDay,
-    capacityConfident: capacity.confident,
+    hoursPerDay: manualHours || capacity.hoursPerDay,
+    capacityConfident: !!manualHours || capacity.confident,
+    capacitySource,
+    capacityWeight: manualHours ? 1 : capacity.weight,
+    measuredHoursPerDay: capacity.measuredHoursPerDay,
     observedDays: capacity.observedDays,
+    weekdayFactors: capacity.weekdayFactors,
+    weekdayConfident: capacity.weekdayConfident,
+    phaseHours: capacity.phaseHours,
+    manualHours,
+    restDays,
     biasFactor: bias.factor,
     biasConfident: bias.confident,
     biasSampleSize: bias.sampleSize,
@@ -300,21 +457,22 @@ export function computeCalibration(state) {
     pagesPerHourRaw: pages.pagesPerHour,
     pagesConfident: pages.confident,
     pagesSampleSize: pages.sampleSize,
-    // V38.0 — ritmo di SINTESI (pagine di fonte snellite all'ora) e resa
-    // (quante pagine tue escono da una pagina di fonte). A differenza
-    // del ritmo di studio questi due hanno un fallback anche da non
-    // misurati, perché senza di loro il lavoro di snellimento
-    // sparirebbe del tutto dal piano invece di comparirci come stima —
-    // e il punto di tutta la funzione è che quel lavoro esista nei
-    // conti. `*Confident` dice alla UI quale dei due casi è.
+    // V38.0 — ritmo di SINTESI e resa: hanno un fallback anche da non
+    // misurati, perché senza di loro il lavoro di snellimento sparirebbe
+    // dal piano. `*Confident` dice alla UI quale dei due casi è.
     sintesiPagesPerHour: sintesi.confident ? sintesi.pagesPerHour : null,
     sintesiPagesPerHourRaw: sintesi.pagesPerHour,
     sintesiConfident: sintesi.confident,
     sintesiSampleSize: sintesi.sampleSize,
+    sintesiRitmoPerTipo: perTipoRitmo,
     resaSintesi: resa.confident ? resa.resa : null,
     resaSintesiRaw: resa.resa,
     resaConfident: resa.confident,
-    resaSampleSize: resa.sampleSize
+    resaSampleSize: resa.sampleSize,
+    resaPerTipo: perTipoResa,
+    // V42 — durata di un ripasso, per mettere i ripassi nel piano.
+    reviewMinutes: review.minutes,
+    reviewMinutesConfident: review.confident
   };
 }
 
@@ -325,7 +483,15 @@ export function computeCalibration(state) {
 export const NEUTRAL_CALIBRATION = {
   hoursPerDay: HOURS_PER_NODE_DAY,
   capacityConfident: false,
+  capacitySource: 'DEFAULT',
+  capacityWeight: 0,
+  measuredHoursPerDay: null,
   observedDays: 0,
+  weekdayFactors: [null, 1, 1, 1, 1, 1, 1, 1],
+  weekdayConfident: false,
+  phaseHours: {},
+  manualHours: null,
+  restDays: [],
   biasFactor: 1,
   biasConfident: false,
   biasSampleSize: 0,
@@ -336,15 +502,16 @@ export const NEUTRAL_CALIBRATION = {
   pagesPerHourRaw: DEFAULT_PAGES_PER_HOUR,
   pagesConfident: false,
   pagesSampleSize: 0,
-  // V38.0 — stessa logica in due varianti: il ritmo di studio resta
-  // `null` (esiste un'alternativa, le ore dichiarate), il ritmo di
-  // sintesi e la resa hanno un default perché un'alternativa non c'è.
   sintesiPagesPerHour: null,
   sintesiPagesPerHourRaw: DEFAULT_SINTESI_PAGES_PER_HOUR,
   sintesiConfident: false,
   sintesiSampleSize: 0,
+  sintesiRitmoPerTipo: {},
   resaSintesi: null,
   resaSintesiRaw: DEFAULT_RESA_SINTESI,
   resaConfident: false,
-  resaSampleSize: 0
+  resaSampleSize: 0,
+  resaPerTipo: {},
+  reviewMinutes: DEFAULT_REVIEW_MINUTES,
+  reviewMinutesConfident: false
 };

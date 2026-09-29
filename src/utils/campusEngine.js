@@ -32,7 +32,13 @@
 // Nessuna funzione qui dentro legge l'orologio da sola quando serve
 // l'ora: `now` viene sempre passato, così ogni caso è testabile.
 // =====================================================================
-import { getDateKey, addDaysToDateOnly, dateOnlyToUtcMs, daysUntilDateOnly } from './dateUtils.js';
+import {
+  getDateKey,
+  addDaysToDateOnly,
+  dateOnlyToUtcMs,
+  daysUntilDateOnly,
+  isValidDateKey as isValidDateKeyStrict
+} from './dateUtils.js';
 import { nodeSources } from './sintesiEngine.js';
 
 export const FASE = {
@@ -85,6 +91,15 @@ export const RAPPORTO_MAX = 3;
 /** Finestra della coda post-lezione: copre anche il fine settimana
  * (lezione del venerdì pomeriggio, sistemata il lunedì mattina). */
 export const CODA_FINESTRA_ORE = 72;
+/**
+ * V42 — Oltre le 72 ore una lezione non sistemata NON sparisce più: resta
+ * in coda come ARRETRATA per due settimane. Prima usciva in silenzio dalla
+ * coda e dalla riserva del piano, e un arretrato di lezioni si "azzerava"
+ * da solo proprio quando cresceva.
+ */
+export const CODA_ARRETRATI_GIORNI = 14;
+/** V42 — Minuti di lavoro attribuiti a una pagina di appunti scritta a mano. */
+export const MINUTI_PER_PAGINA_APPUNTI = 15;
 
 /**
  * V40.0 — Esito di una singola lezione (un'occorrenza: lezione + giorno),
@@ -108,7 +123,8 @@ const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
  * ------------------------------------------------------------------ */
 
 export function isValidDateKey(v) {
-  return typeof v === 'string' && DATE_RE.test(v) && Number.isFinite(dateOnlyToUtcMs(v));
+  // V42 — stessa definizione di dateUtils (anche il round-trip: niente 31 febbraio).
+  return typeof v === 'string' && DATE_RE.test(v) && isValidDateKeyStrict(v);
 }
 
 export function isValidTime(v) {
@@ -455,10 +471,26 @@ export function sintesiMateria(materia) {
  * della sua sintesi e le sue sessioni Sintesi (in ordine di tempo), più
  * i minuti di Sintesi da `daMs` in poi. Un solo passaggio sullo Star Log.
  */
-export function contestoSintesi(campus, materieById, starLog, daMs = -Infinity) {
+export function contestoSintesi(campus, materieById, starLog, daMs = -Infinity, { ritmoSintesi = 12 } = {}) {
   const perMateria = new Map();
+  const ritmo = Number(ritmoSintesi) > 0 ? Number(ritmoSintesi) : 12;
   materieById.forEach((m, id) => {
-    perMateria.set(id, { ...sintesiMateria(m), sessioni: [], ultimaSessioneMs: -Infinity, minutiDa: 0 });
+    // V42 — la sintesi registrata A MANO sui nodi (`sintesiManuale`) vale
+    // come sessioni "virtuali" di durata proporzionale al lavoro dichiarato
+    // (pagine di fonte al tuo ritmo, pagine di appunti a 15 minuti l'una).
+    // Prima un solo aggiornamento di una pagina sistemava tutte le lezioni
+    // precedenti con credito pieno.
+    const manuali = [];
+    (Array.isArray(m?.sfide) ? m.sfide : []).forEach((sf) => {
+      (Array.isArray(sf?.sintesiManuale) ? sf.sintesiManuale : []).forEach((e) => {
+        const t = Date.parse(e?.at);
+        if (!Number.isFinite(t)) return;
+        const min = Math.round((Math.max(0, Number(e.pagine) || 0) / ritmo) * 60 + Math.max(0, Number(e.appunti) || 0) * MINUTI_PER_PAGINA_APPUNTI);
+        if (min > 0) manuali.push({ t, min });
+      });
+    });
+    manuali.sort((x, y) => x.t - y.t);
+    perMateria.set(id, { ...sintesiMateria(m), sessioni: [], manuali, ultimaSessioneMs: -Infinity, minutiDa: 0 });
   });
   (Array.isArray(starLog) ? starLog : []).forEach((e) => {
     if (!e || e.type !== 'FOCUS_SESSION' || e.workMode !== 'SINTESI') return;
@@ -472,7 +504,7 @@ export function contestoSintesi(campus, materieById, starLog, daMs = -Infinity) 
     if (t >= daMs) c.minutiDa += min;
   });
   perMateria.forEach((c) => c.sessioni.sort((x, y) => x.t - y.t));
-  return { perMateria, esiti: campus?.esiti && typeof campus.esiti === 'object' ? campus.esiti : {}, daMs, starLog };
+  return { perMateria, esiti: campus?.esiti && typeof campus.esiti === 'object' ? campus.esiti : {}, daMs, starLog, ritmoSintesi: ritmo };
 }
 
 function rapportoDi(campus) {
@@ -507,7 +539,7 @@ export function valutaLezioni(occorrenze, ctx, rapporto = DEFAULT_RAPPORTO_SINTE
     const esito = ctx.esiti[key];
     const c = ctx.perMateria.get(l.materiaId);
     const tracciata = !!c && c.haFonti && l.fineMs >= c.tracciataDalMs;
-    return { l, key, esito, c, tracciata, dovuto: tracciata ? Math.round(l.minuti * rapporto) : 0, coperti: 0 };
+    return { l, key, esito, c, tracciata, dovuto: tracciata ? Math.round(l.minuti * rapporto) : 0, coperti: 0, copertiManuali: 0 };
   });
 
   // Spesa dei minuti, materia per materia: prima le lezioni senza
@@ -518,26 +550,32 @@ export function valutaLezioni(occorrenze, ctx, rapporto = DEFAULT_RAPPORTO_SINTE
     perMateria.get(x.l.materiaId).push(x);
   });
   perMateria.forEach((voci, materiaId) => {
-    const sessioni = (ctx.perMateria.get(materiaId)?.sessioni || []).map((x) => ({ t: x.t, restante: x.min }));
-    const spendi = (candidate) => {
-      sessioni.forEach((sess) => {
+    const cm = ctx.perMateria.get(materiaId);
+    const sessioni = (cm?.sessioni || []).map((x) => ({ t: x.t, restante: x.min }));
+    const manuali = (cm?.manuali || []).map((x) => ({ t: x.t, restante: x.min }));
+    const spendi = (lista, candidate, campo) => {
+      lista.forEach((sess) => {
         candidate
-          .filter((x) => x.l.fineMs <= sess.t && x.coperti < x.dovuto)
+          .filter((x) => x.l.fineMs <= sess.t && x.coperti + x.copertiManuali < x.dovuto)
           .sort((p, q) => q.l.fineMs - p.l.fineMs)
           .forEach((x) => {
             if (sess.restante <= 0) return;
-            const preso = Math.min(sess.restante, x.dovuto - x.coperti);
+            const preso = Math.min(sess.restante, x.dovuto - x.coperti - x.copertiManuali);
             sess.restante -= preso;
-            x.coperti += preso;
+            x[campo] += preso;
           });
       });
     };
-    spendi(voci.filter((x) => x.tracciata && !x.esito));
-    spendi(voci.filter((x) => x.tracciata && x.esito === ESITO_LEZIONE.FATTA));
+    const senzaRisposta = voci.filter((x) => x.tracciata && !x.esito);
+    const dichiarateFatte = voci.filter((x) => x.tracciata && x.esito === ESITO_LEZIONE.FATTA);
+    spendi(sessioni, senzaRisposta, 'coperti');
+    spendi(sessioni, dichiarateFatte, 'coperti');
+    spendi(manuali, senzaRisposta, 'copertiManuali');
+    spendi(manuali, dichiarateFatte, 'copertiManuali');
   });
 
   info.forEach((x) => {
-    const { l, key, esito, c, tracciata, dovuto, coperti } = x;
+    const { key, esito, c, tracciata, dovuto, coperti, copertiManuali } = x;
     let stato;
     let motivo = null;
     let credito = 0;
@@ -550,9 +588,9 @@ export function valutaLezioni(occorrenze, ctx, rapporto = DEFAULT_RAPPORTO_SINTE
       motivo = c && c.haFonti ? 'PRIMA_DELLE_FONTI' : 'NESSUNA_FONTE';
     } else if (dovuto > 0 && coperti >= dovuto * COPERTURA_MINIMA) {
       stato = STATO_LEZIONE.FATTA_APP;
-    } else if (c.ultimoAggiornamentoMs >= l.fineMs) {
+    } else if (dovuto > 0 && coperti + copertiManuali >= dovuto * COPERTURA_MINIMA) {
       stato = STATO_LEZIONE.FATTA_NODI;
-      credito = dovuto - coperti;
+      credito = copertiManuali;
     } else if (!c.aperta) {
       stato = STATO_LEZIONE.NIENTE;
       motivo = 'FONTI_CHIUSE';
@@ -564,7 +602,7 @@ export function valutaLezioni(occorrenze, ctx, rapporto = DEFAULT_RAPPORTO_SINTE
       stato,
       motivo,
       dovutoMin: nienteDaFare ? 0 : dovuto,
-      copertiMin: nienteDaFare ? 0 : coperti,
+      copertiMin: nienteDaFare ? 0 : coperti + (stato === STATO_LEZIONE.DA_FARE ? copertiManuali : 0),
       creditoMin: Math.max(0, credito)
     });
   });
@@ -589,7 +627,7 @@ function ctxOrBuild(campus, materieById, ctxOrStarLog, daMs) {
   if (ctxOrStarLog && ctxOrStarLog.perMateria) {
     return daMs == null || ctxOrStarLog.daMs === daMs
       ? ctxOrStarLog
-      : contestoSintesi(campus, materieById, ctxOrStarLog.starLog, daMs);
+      : contestoSintesi(campus, materieById, ctxOrStarLog.starLog, daMs, { ritmoSintesi: ctxOrStarLog.ritmoSintesi });
   }
   return contestoSintesi(campus, materieById, ctxOrStarLog, daMs ?? -Infinity);
 }
@@ -599,11 +637,12 @@ export function statoLezione(l, fineMs, ctx, rapporto = DEFAULT_RAPPORTO_SINTESI
   return valutaLezioni([{ ...l, fineMs }], ctx, rapporto).get(esitoKey(l.id, l.dateKey)).stato;
 }
 
-/** La finestra comune a coda e passo: da lunedì (o da 3 giorni fa, se prima). */
+/** La finestra comune a coda e passo: da lunedì, o dall'inizio della
+ * finestra degli arretrati se viene prima (V42: due settimane). */
 function inizioFinestra(oggi) {
   const lunedi = startOfWeek(oggi);
-  const treGiorniFa = addDaysToDateOnly(oggi, -3);
-  return lunedi < treGiorniFa ? lunedi : treGiorniFa;
+  const arretrati = addDaysToDateOnly(oggi, -CODA_ARRETRATI_GIORNI);
+  return lunedi < arretrati ? lunedi : arretrati;
 }
 
 /**
@@ -622,24 +661,31 @@ export function postLectureQueue(campus, now, materieById, ctxOrStarLog, valutaz
   const occ = lezioniFinite(campus, materieById, inizioFinestra(oggi), now);
   const val = valutazioni || valutaLezioni(occ, ctxOrBuild(campus, materieById, ctxOrStarLog), rapporto);
   const perMateria = new Map();
+  const limiteArretrati = addDaysToDateOnly(oggi, -CODA_ARRETRATI_GIORNI);
   occ
-    .filter((l) => nowMs - l.fineMs <= finestraMs)
+    .filter((l) => l.dateKey >= limiteArretrati)
     .forEach((l) => {
       const v = val.get(esitoKey(l.id, l.dateKey));
       if (!v || v.stato !== STATO_LEZIONE.DA_FARE) return;
       const prev = perMateria.get(l.materiaId);
-      const occorrenza = { id: l.id, dateKey: l.dateKey, inizio: l.inizio, fine: l.fine, minuti: l.minuti };
+      const arretrata = nowMs - l.fineMs > finestraMs;
+      const occorrenza = { id: l.id, dateKey: l.dateKey, inizio: l.inizio, fine: l.fine, minuti: l.minuti, arretrata };
       perMateria.set(l.materiaId, {
         ...l,
+        // La voce della materia porta i dati della lezione PIÙ RECENTE in
+        // coda (è quella da sistemare per prima, finché è fresca).
+        ...(prev && prev.fineMs > l.fineMs ? { ...prev } : {}),
         lezioni: [...(prev?.lezioni || []), occorrenza],
         lezioniDaSistemare: (prev?.lezioniDaSistemare || 0) + 1,
+        lezioniArretrate: (prev?.lezioniArretrate || 0) + (arretrata ? 1 : 0),
         minutiDaSistemare: (prev?.minutiDaSistemare || 0) + l.minuti,
         // Sintesi che manca davvero: dovuto meno quanto già coperto.
         sintesiMancanteMin: (prev?.sintesiMancanteMin || 0) + Math.max(0, v.dovutoMin - v.copertiMin),
-        oreFa: Math.max(0, Math.round((nowMs - l.fineMs) / 3600000))
+        oreFa: Math.max(0, Math.round((nowMs - Math.max(l.fineMs, prev?.fineMs ?? -Infinity)) / 3600000)),
+        oreFaPrima: Math.max(prev?.oreFaPrima || 0, Math.round((nowMs - l.fineMs) / 3600000))
       });
     });
-  return [...perMateria.values()].sort((a, b) => a.fineMs - b.fineMs);
+  return [...perMateria.values()].sort((a, b) => (a.lezioniArretrate > 0) - (b.lezioniArretrate > 0) || a.fineMs - b.fineMs);
 }
 
 /**
@@ -812,7 +858,7 @@ export function validateLezione(lezione, altre = []) {
  * post-lezione, passo settimanale, e i minuti di sintesi da riservare
  * oggi nel piano di Karen.
  */
-export function computeCampusSnapshot(campus, now, materie, starLog) {
+export function computeCampusSnapshot(campus, now, materie, starLog, { ritmoSintesi = 12 } = {}) {
   const materieById = new Map((Array.isArray(materie) ? materie : []).map((m) => [m.id, m]));
   const oggi = getDateKey(now);
   const phase = detectPhase(campus, oggi);
@@ -821,7 +867,7 @@ export function computeCampusSnapshot(campus, now, materie, starLog) {
   const lezioni = phase.fase === FASE.LEZIONI;
   const lunediMs = localDateTime(startOfWeek(oggi), '00:00').getTime();
   const rapporto = rapportoDi(campus);
-  const ctx = contestoSintesi(campus, materieById, starLog, lunediMs);
+  const ctx = contestoSintesi(campus, materieById, starLog, lunediMs, { ritmoSintesi });
   // Una sola valutazione per coda, passo e chip delle lezioni di oggi.
   const valutazioni = valutaLezioni(lezioniFinite(campus, materieById, inizioFinestra(oggi), now), ctx, rapporto);
   const coda = lezioni ? postLectureQueue(campus, now, materieById, ctx, valutazioni) : [];
@@ -864,7 +910,36 @@ export function computeCampusSnapshot(campus, now, materie, starLog) {
     // Minuti di sintesi davvero mancanti per le lezioni in coda.
     sintesiDovutaMin: coda.reduce((sum, l) => sum + l.sintesiMancanteMin, 0),
     lezioniInCoda: coda.reduce((sum, l) => sum + l.lezioniDaSistemare, 0),
+    lezioniArretrate: coda.reduce((sum, l) => sum + (l.lezioniArretrate || 0), 0),
     haOrario: (campus?.semestri || []).some((s) => s.lezioni.length > 0),
     rapportoSintesi: campus?.rapportoSintesi ?? DEFAULT_RAPPORTO_SINTESI
+  };
+}
+
+/**
+ * V42 — Il calendario accademico visto dal planner: per ogni giorno la
+ * fase (lezioni/sessione) e le ore di lezione in aula. Memoizzato per
+ * data: il planner lo interroga giorno per giorno per mesi in avanti.
+ */
+export function buildCampusCalendar(campus, materie) {
+  const materieById = new Map((Array.isArray(materie) ? materie : []).map((m) => [m.id, m]));
+  const haSemestri = Array.isArray(campus?.semestri) && campus.semestri.length > 0;
+  const fasi = new Map();
+  const ore = new Map();
+  return {
+    haSemestri,
+    phaseOf(dateKey) {
+      if (!haSemestri) return null;
+      if (!fasi.has(dateKey)) fasi.set(dateKey, detectPhase(campus, dateKey).fase);
+      return fasi.get(dateKey);
+    },
+    lectureHoursOf(dateKey) {
+      if (!haSemestri) return 0;
+      if (!ore.has(dateKey)) {
+        const min = lessonsOn(campus, dateKey, materieById).reduce((sum, l) => sum + (l.minuti || 0), 0);
+        ore.set(dateKey, Math.round((min / 60) * 100) / 100);
+      }
+      return ore.get(dateKey);
+    }
   };
 }

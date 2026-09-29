@@ -187,11 +187,14 @@ export function FontiEditor({
   onAppuntiCompletiChange,
   calibration,
   oreStimate,
-  compact = false
+  compact = false,
+  pagineAppuntiPreviste = '',
+  onPagineAppuntiPrevisteChange = null
 }) {
   const lista = useMemo(() => (Array.isArray(fonti) ? fonti : []), [fonti]);
   const appuntiId = useId();
   const completiId = useId();
+  const previsteId = useId();
 
   // Nodo "finto" costruito sui valori del form: fa vedere in diretta il
   // risultato di quello che si sta scrivendo, con la stessa identica
@@ -202,13 +205,14 @@ export function FontiEditor({
         {
           fonti: lista,
           pagineAppunti: Number(pagineAppunti) || 0,
+          pagineAppuntiPreviste: Number(pagineAppuntiPreviste) || 0,
           appuntiCompleti: !!appuntiCompleti,
           oreStimate: Number(oreStimate) || 0,
           status: 'PENDING'
         },
         calibration
       ),
-    [lista, pagineAppunti, appuntiCompleti, oreStimate, calibration]
+    [lista, pagineAppunti, pagineAppuntiPreviste, appuntiCompleti, oreStimate, calibration]
   );
 
   const aggiorna = (id, patch) => onFontiChange(lista.map((f) => (f.id === id ? { ...f, ...patch } : f)));
@@ -284,6 +288,31 @@ export function FontiEditor({
             Quelle già scritte. Crescono da sole a ogni sessione di sintesi.
           </p>
         </div>
+
+        {/* V42 — quante pagine verranno i tuoi appunti, se lo sai già
+            (es. 300 slide e 1000 pagine di libro -> 35 pagine tue). */}
+        {lista.length > 0 && onPagineAppuntiPrevisteChange && (
+          <div>
+            <label htmlFor={previsteId} className="ds-label flex items-center gap-1.5">
+              <Icon name="target" className="w-3.5 h-3.5 text-secondary" />
+              Pagine di appunti previste <span className="text-slate-500 font-normal">(facoltativo)</span>
+            </label>
+            <input
+              id={previsteId}
+              type="number"
+              inputMode="numeric"
+              min={0}
+              step={1}
+              value={pagineAppuntiPreviste}
+              onChange={(e) => onPagineAppuntiPrevisteChange(e.target.value)}
+              placeholder="Es. 35"
+              className={`${INPUT} ds-num`}
+            />
+            <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+              Se sai già quanto verranno lunghi i tuoi appunti finali, scrivilo: il piano userà questo numero invece della resa stimata.
+            </p>
+          </div>
+        )}
 
         {/* La spunta ha senso solo se c'è una sintesi da chiudere. */}
         {lista.length > 0 && (

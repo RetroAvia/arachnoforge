@@ -35,6 +35,7 @@ const SECTIONS = [
   { id: 'cfg-profilo', label: 'Profilo e accesso', icon: 'user' },
   { id: 'cfg-aspetto', label: 'Aspetto', icon: 'shield' },
   { id: 'cfg-timer', label: 'Timer', icon: 'clock' },
+  { id: 'cfg-piano', label: 'Piano di studio', icon: 'calendar' },
   { id: 'cfg-avvisi', label: 'Suoni e notifiche', icon: 'speaker' },
   { id: 'cfg-calibrazione', label: 'Calibrazione', icon: 'gauge' },
   { id: 'cfg-backup', label: 'Backup e dati', icon: 'archive' },
@@ -138,6 +139,156 @@ function Section({ id, title, subtitle, children, tone }) {
 
 function Panel({ children, className = '' }) {
   return <div className={`${CARD_NOPAD} divide-y divide-white/[0.06] ${className}`}>{children}</div>;
+}
+
+const GIORNI_SETTIMANA = [
+  { v: 1, l: 'Lun' },
+  { v: 2, l: 'Mar' },
+  { v: 3, l: 'Mer' },
+  { v: 4, l: 'Gio' },
+  { v: 5, l: 'Ven' },
+  { v: 6, l: 'Sab' },
+  { v: 7, l: 'Dom' }
+];
+
+/**
+ * V42 — "PIANO DI STUDIO": le regole con cui il planner costruisce le tue
+ * giornate. Tutto ha un default sensato; qui lo cambi quando la tua
+ * settimana non è quella media (un lavoro, un giorno fisso libero).
+ */
+function PianoSettings({ settings, calibration, onChange }) {
+  const riposo = Array.isArray(settings.giorniRiposo) ? settings.giorniRiposo : [];
+  const manuale = Number(settings.capacitaManuale) > 0 ? Number(settings.capacitaManuale) : null;
+  const [capInput, setCapInput] = useState(manuale ? String(manuale) : '');
+  const [annoInput, setAnnoInput] = useState(settings.annoImmatricolazione ? String(settings.annoImmatricolazione) : '');
+  useEffect(() => setCapInput(manuale ? String(manuale) : ''), [manuale]);
+  useEffect(() => setAnnoInput(settings.annoImmatricolazione ? String(settings.annoImmatricolazione) : ''), [settings.annoImmatricolazione]);
+
+  const toggleGiorno = (v) => {
+    const next = riposo.includes(v) ? riposo.filter((g) => g !== v) : [...riposo, v].slice(-3);
+    onChange({ giorniRiposo: next.sort((a, b) => a - b) });
+  };
+  const commitCap = () => {
+    const n = Number(String(capInput).replace(',', '.'));
+    onChange({ capacitaManuale: Number.isFinite(n) && n >= 0.5 && n <= 12 ? n : null });
+  };
+  const commitAnno = () => {
+    const n = Number(annoInput);
+    onChange({ annoImmatricolazione: Number.isInteger(n) && n >= 2000 && n <= 2100 ? n : null });
+  };
+
+  return (
+    <Panel>
+      <SettingRow
+        title="Ore di studio al giorno"
+        description={
+          manuale
+            ? `Decise da te: ${formatHoursMinutes(manuale)} al giorno. Il planner non usa la media misurata.`
+            : `Misurate sul tuo storico: ${formatHoursMinutes(Number(calibration.measuredHoursPerDay ?? calibration.hoursPerDay) || 0)} al giorno${
+                calibration.capacityConfident ? '' : ' (ancora in parte stimate)'
+              }. Scrivi un numero solo se la tua settimana cambierà davvero (per esempio in sessione).`
+        }
+      >
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            inputMode="decimal"
+            min={0.5}
+            max={12}
+            step={0.25}
+            value={capInput}
+            onChange={(e) => setCapInput(e.target.value)}
+            onBlur={commitCap}
+            onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+            placeholder="auto"
+            aria-label="Ore di studio al giorno (vuoto = misurate)"
+            className={`${INPUT} ds-input-sm ds-num !w-24`}
+          />
+          {manuale && (
+            <button type="button" onClick={() => onChange({ capacitaManuale: null })} className="ds-btn ds-btn-quiet ds-btn-sm">
+              Misurate
+            </button>
+          )}
+        </div>
+      </SettingRow>
+      <div className="px-5 py-4 space-y-2.5">
+        <div>
+          <p className="text-sm font-medium text-slate-100">Giorni di riposo fissi</p>
+          <p className="text-[13px] text-slate-400 mt-0.5 leading-relaxed">
+            In questi giorni il piano non mette studio (al massimo tre). Il resto della settimana assorbe il lavoro: meglio dichiararli che saltarli.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Giorni di riposo">
+          {GIORNI_SETTIMANA.map((g) => {
+            const on = riposo.includes(g.v);
+            return (
+              <button
+                key={g.v}
+                type="button"
+                aria-pressed={on}
+                onClick={() => toggleGiorno(g.v)}
+                className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                  on ? 'border-secondary/60 bg-secondary/15 text-white' : 'border-line bg-surface text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {g.l}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <SettingRow
+        title="Riposi concessi dalla serie"
+        description="Giorni a settimana senza studio che NON spezzano la serie di studio. Un giorno conta per la serie da 25 minuti di Focus."
+      >
+        <div className="ds-segmented" role="radiogroup" aria-label="Riposi a settimana">
+          {[0, 1, 2, 3].map((n) => (
+            <button key={n} type="button" role="radio" aria-checked={Number(settings.streakRiposiSettimana) === n} onClick={() => onChange({ streakRiposiSettimana: n })} className="ds-num">
+              {n}
+            </button>
+          ))}
+        </div>
+      </SettingRow>
+      <SettingRow
+        title="Chiudi la giornata"
+        description="Da che ora Mission Control ti propone di chiudere la giornata e fissare il primo blocco di domani."
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500">dalle</span>
+          <input
+            type="number"
+            min={15}
+            max={23}
+            value={settings.chiusuraOra ?? 19}
+            onChange={(e) => onChange({ chiusuraOra: Number(e.target.value) })}
+            aria-label="Ora da cui proporre la chiusura della giornata"
+            className={`${INPUT} ds-input-sm ds-num !w-20`}
+          />
+          <span className="text-xs text-slate-500">:00</span>
+        </div>
+      </SettingRow>
+      <SettingRow
+        title="Anno di immatricolazione"
+        description="Serve alla stima del voto di laurea (regolamento del corso): il punteggio per la durata degli studi dipende dagli anni in corso."
+      >
+        <input
+          type="number"
+          min={2000}
+          max={2100}
+          value={annoInput}
+          onChange={(e) => setAnnoInput(e.target.value)}
+          onBlur={commitAnno}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+          placeholder="Es. 2024"
+          aria-label="Anno di immatricolazione"
+          className={`${INPUT} ds-input-sm ds-num !w-28`}
+        />
+      </SettingRow>
+      <SettingRow title="Esperienza Erasmus" description="Un periodo all'estero riconosciuto vale un punto in più nel voto di laurea.">
+        <Switch checked={settings.erasmus === true} onChange={() => onChange({ erasmus: settings.erasmus !== true })} ariaLabel="Esperienza Erasmus" />
+      </SettingRow>
+    </Panel>
+  );
 }
 
 /** Punti di ripristino locali (IndexedDB), vedi utils/localBackups.js. */
@@ -769,6 +920,11 @@ export default function CoreConfig() {
             </Panel>
           </Section>
 
+          {/* ------------------------------------------------ PIANO */}
+          <Section id="cfg-piano" title="Piano di studio" subtitle="Le regole con cui il planner costruisce le tue giornate.">
+            <PianoSettings settings={state.settings} calibration={cal} onChange={(patch) => actions.updateSettings(patch)} />
+          </Section>
+
           {/* ------------------------------------------------ AVVISI */}
           <Section id="cfg-avvisi" title="Suoni e notifiche">
             <Panel>
@@ -834,9 +990,19 @@ export default function CoreConfig() {
                   label: 'Capacità giornaliera',
                   value: formatHoursMinutes(Number(cal.hoursPerDay) || 0),
                   confident: cal.capacityConfident,
-                  text: cal.capacityConfident
-                    ? `Media reale delle ultime ${cal.observedDays} giornate, riposi inclusi. È la base di ogni proiezione.`
-                    : 'Valore di partenza: servono almeno 7 giorni di sessioni perché diventi il tuo.'
+                  text: cal.manualHours
+                    ? 'Decisa da te (Piano di studio): il planner usa questo numero invece della media misurata.'
+                    : cal.capacityConfident
+                    ? `Media reale delle ultime ${cal.observedDays} giornate concluse, riposi inclusi${cal.weekdayConfident ? ', con il tuo ritmo giorno per giorno della settimana' : ''}.`
+                    : `Valore di partenza, già in parte tuo (${cal.observedDays} giornate misurate): dopo 7 giorni diventa del tutto la tua media.`
+                },
+                {
+                  label: 'Durata di un ripasso',
+                  value: `${Math.round(Number(cal.reviewMinutes) || 0)} min`,
+                  confident: cal.reviewMinutesConfident,
+                  text: cal.reviewMinutesConfident
+                    ? 'Misurata sulle tue sessioni di Ripasso: è il tempo che il piano riserva a ogni ripasso dovuto.'
+                    : 'Valore di partenza: si misura da solo con qualche sessione in modo Ripasso.'
                 },
                 {
                   label: 'Precisione delle tue stime',

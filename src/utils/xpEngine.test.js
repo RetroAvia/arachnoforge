@@ -21,7 +21,15 @@ import {
   getRankTitle,
   DIFFICULTY,
   FOCUS_QUALITY,
-  MAX_CARNAGE_MULTIPLIER
+  MAX_CARNAGE_MULTIPLIER,
+  // V42
+  xpRequiredForLevelV1,
+  convertProfileToCurveV2,
+  computeNodeCompletionXp,
+  computeBreakStaminaRestore,
+  SURGE_MIN_MINUTES,
+  NODE_COMPLETION_MIN_MINUTES,
+  XP_CURVE_VERSION
 } from './xpEngine.js';
 
 describe('xpRequiredForLevel', () => {
@@ -142,33 +150,55 @@ describe('computeCfuMultiplier', () => {
 });
 
 describe('computeFocusStaminaCost', () => {
-  test('Maximum Carnage Mode azzera sempre il costo', () => {
-    assert.equal(computeFocusStaminaCost(25, DIFFICULTY.HARD, 1, true), 0);
+  test('V42: Maximum Carnage non azzera più il costo', () => {
+    assert.equal(computeFocusStaminaCost(25, DIFFICULTY.HARD, 1, true), computeFocusStaminaCost(25, DIFFICULTY.HARD, 1, false));
   });
-  test('costo base per 25 minuti a difficoltà Media', () => {
-    assert.equal(computeFocusStaminaCost(25, DIFFICULTY.MEDIUM), 15);
+  test('V42: tarato sulla capacità — la giornata tipo consuma circa tre quarti della Stamina', () => {
+    // 4,5 ore di studio a difficoltà media: 77 punti, la stanchezza (sotto 20)
+    // arriva solo oltre la giornata tipo. Prima: 15 ogni 25 minuti, fatica
+    // dopo 150 minuti, cioè sotto il piano che l'app stessa chiedeva.
+    assert.equal(computeFocusStaminaCost(25, DIFFICULTY.MEDIUM), 8);
+    const giornata = computeFocusStaminaCost(270, DIFFICULTY.MEDIUM, 1, false, 4.5);
+    assert.ok(giornata >= 70 && giornata <= 80, `giornata tipo: ${giornata}`);
+  });
+  test('V42: con più capacità ogni minuto costa meno', () => {
+    assert.ok(computeFocusStaminaCost(50, DIFFICULTY.MEDIUM, 1, false, 6) < computeFocusStaminaCost(50, DIFFICULTY.MEDIUM, 1, false, 3));
   });
   test('difficoltà Easy riduce il costo, Hard lo aumenta', () => {
-    const easy = computeFocusStaminaCost(25, DIFFICULTY.EASY);
-    const hard = computeFocusStaminaCost(25, DIFFICULTY.HARD);
-    assert.ok(easy < 15);
-    assert.ok(hard > 15);
+    const medium = computeFocusStaminaCost(25, DIFFICULTY.MEDIUM);
+    assert.ok(computeFocusStaminaCost(25, DIFFICULTY.EASY) < medium);
+    assert.ok(computeFocusStaminaCost(25, DIFFICULTY.HARD) > medium);
   });
   test('il costo non scende mai sotto 1', () => {
     assert.ok(computeFocusStaminaCost(1, DIFFICULTY.EASY, 0.1) >= 1);
   });
 });
 
+describe('computeBreakStaminaRestore', () => {
+  test('V42: le pause ricaricano in proporzione ai minuti, con un tetto', () => {
+    assert.equal(computeBreakStaminaRestore(5), 3);
+    assert.equal(computeBreakStaminaRestore(15), 9);
+    assert.equal(computeBreakStaminaRestore(500), computeBreakStaminaRestore(60));
+    assert.equal(computeBreakStaminaRestore(10, 0.5), 9);
+    assert.equal(computeBreakStaminaRestore(NaN), 0);
+  });
+});
+
 describe('computeSpiderSenseSurgeXp', () => {
-  test('difficoltà neutra (3) -> bonus base esatto', () => {
-    assert.equal(computeSpiderSenseSurgeXp(3), 20);
+  test(`V42: sotto i ${SURGE_MIN_MINUTES} minuti nessun bonus`, () => {
+    assert.equal(computeSpiderSenseSurgeXp(3, SURGE_MIN_MINUTES - 1), 0);
+    assert.equal(computeSpiderSenseSurgeXp(3, SURGE_MIN_MINUTES), 8);
+  });
+  test('V42: a difficoltà neutra 0,4 XP al minuto — spezzettare non conviene più', () => {
+    assert.equal(computeSpiderSenseSurgeXp(3, 25), 10);
+    assert.equal(computeSpiderSenseSurgeXp(3, 50), 20);
   });
   test('scala linearmente con la difficoltà percepita', () => {
-    assert.equal(computeSpiderSenseSurgeXp(5), Math.round(20 * (5 / 3)));
+    assert.equal(computeSpiderSenseSurgeXp(5, 25), Math.round(25 * 0.4 * (5 / 3)));
   });
   test('valori fuori range (0-5) ricadono sulla difficoltà neutra', () => {
-    assert.equal(computeSpiderSenseSurgeXp(99), 20);
-    assert.equal(computeSpiderSenseSurgeXp(undefined), 20);
+    assert.equal(computeSpiderSenseSurgeXp(99, 25), 10);
+    assert.equal(computeSpiderSenseSurgeXp(undefined, 25), 10);
   });
 });
 
@@ -192,12 +222,61 @@ describe('computeFocusXp', () => {
     const carnage = computeFocusXp({ focusMinutes: 25, isOverdrive: false, isFatigued: false, isMaxCarnage: true });
     assert.equal(carnage, base * MAX_CARNAGE_MULTIPLIER);
   });
-  test('qualità FLOW premia, DISTRACTED penalizza rispetto a NORMAL', () => {
+  test('V42: la qualità dichiarata è un dato, non un premio — l\'XP non cambia', () => {
     const normal = computeFocusXp({ focusMinutes: 25, isOverdrive: false, isFatigued: false, quality: FOCUS_QUALITY.NORMAL });
     const flow = computeFocusXp({ focusMinutes: 25, isOverdrive: false, isFatigued: false, quality: FOCUS_QUALITY.FLOW });
     const distracted = computeFocusXp({ focusMinutes: 25, isOverdrive: false, isFatigued: false, quality: FOCUS_QUALITY.DISTRACTED });
-    assert.ok(flow > normal);
-    assert.ok(distracted < normal);
+    assert.equal(flow, normal);
+    assert.equal(distracted, normal);
+  });
+  test('V42: l\'Overdrive moltiplica solo il blocco extra oltre quello pianificato', () => {
+    const catena = computeFocusXp({ focusMinutes: 50, baseMinutes: 25, isOverdrive: true, isFatigued: false });
+    assert.equal(catena, (25 + 25 * 1.5) * 2);
+    const senzaExtra = computeFocusXp({ focusMinutes: 25, baseMinutes: 25, isOverdrive: true, isFatigued: false });
+    assert.equal(senzaExtra, computeFocusXp({ focusMinutes: 25, isOverdrive: false, isFatigued: false }));
+  });
+});
+
+describe('V42 — curva dei livelli e conversione dei profili', () => {
+  test('il livello 50 richiede circa 760.000 XP cumulativi', () => {
+    let totale = 0;
+    for (let L = 1; L < 50; L += 1) totale += xpRequiredForLevel(L);
+    assert.ok(totale > 700000 && totale < 800000, `cumulativo al 50: ${totale}`);
+  });
+  test('la conversione conserva gli XP totali, ricalcola il livello e dà un token per ogni livello nuovo', () => {
+    let totaleV1 = 500;
+    for (let L = 1; L < 10; L += 1) totaleV1 += xpRequiredForLevelV1(L);
+    const { profile, fromLevel, toLevel, tokens } = convertProfileToCurveV2({ level: 10, currentXp: 500, techTokens: 3, maxLevelReached: 10 });
+    assert.equal(computeTotalBankedXp(profile), totaleV1, 'stesso potere d’acquisto');
+    assert.equal(fromLevel, 10);
+    assert.ok(toLevel >= fromLevel);
+    assert.equal(tokens, toLevel - 10);
+    assert.equal(profile.techTokens, 3 + tokens);
+    assert.equal(profile.maxLevelReached, toLevel);
+    assert.equal(profile.xpCurveVersion, XP_CURVE_VERSION);
+  });
+  test('la conversione è idempotente', () => {
+    const una = convertProfileToCurveV2({ level: 10, currentXp: 500, techTokens: 3 }).profile;
+    const due = convertProfileToCurveV2(una);
+    assert.equal(due.tokens, 0);
+    assert.deepEqual(due.profile, una);
+  });
+  test('i Tech Token si guadagnano solo oltre il livello massimo mai raggiunto', () => {
+    const risalita = applyXpDeltaWithTokens({ level: 3, currentXp: 10, techTokens: 5, maxLevelReached: 5 }, xpRequiredForLevel(3));
+    assert.equal(risalita.level, 4);
+    assert.equal(risalita.techTokens, 5, 'livello già raggiunto in passato: nessun token');
+    assert.equal(risalita.maxLevelReached, 5);
+  });
+});
+
+describe('computeNodeCompletionXp', () => {
+  test(`V42: senza ${NODE_COMPLETION_MIN_MINUTES} minuti tracciati il completamento vale 10 XP`, () => {
+    assert.equal(computeNodeCompletionXp({ trackedMinutes: NODE_COMPLETION_MIN_MINUTES - 1 }), 10);
+  });
+  test('V42: premio di traguardo fisso, pesato per difficoltà (i minuti li pagano già le sessioni)', () => {
+    assert.equal(computeNodeCompletionXp({ trackedMinutes: 30 }), 40);
+    assert.equal(computeNodeCompletionXp({ trackedMinutes: 600 }), 40);
+    assert.equal(computeNodeCompletionXp({ trackedMinutes: 30, difficulty: DIFFICULTY.HARD }), 52);
   });
 });
 

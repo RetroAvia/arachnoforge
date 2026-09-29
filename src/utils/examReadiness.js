@@ -1,41 +1,42 @@
 // =====================================================================
-// ArachnoForge — src/utils/examReadiness.js (V36.0)
-// EXAM READINESS INDEX — il verdetto esplicito che mancava.
+// ArachnoForge — src/utils/examReadiness.js (V42)
+// EXAM READINESS INDEX — "mi presento o rimando?"
 //
-// Fino alla V35 l'app sapeva dire "sei in pari / in ritardo" (stato di
-// passo della Quota Odierna) e "finirai il programma il giorno X" (Fine
-// Prevista), ma non rispondeva MAI alla domanda che conta davvero il
-// giorno in cui apri le prenotazioni: **mi presento o rimando?**
+// V42 — riscritto sulle misure vere. La V41 misurava lo sforzo e i click,
+// non la preparazione (verificato con i numeri):
+//  - sole sintesi, niente studio: 78 "SOSTIENI" (le ore di sintesi
+//    contavano come copertura);
+//  - 8 argomenti su 10 spuntati "completati" e mai ripassati: 75;
+//  - 150 giorni senza toccare la materia: ancora 66 "al limite";
+//  - una confidenza bassa non cambiava mai il verdetto.
 //
-// L'indice combina le quattro cose che decidono l'esito, ognuna già
-// tracciata dall'app e finora mai messa insieme:
+// Ora quattro pilastri, ciascuno su un dato che l'app misura davvero:
 //
-//   Copertura   45%  quanto programma hai davvero chiuso, pesato per ORE
-//                    (non per numero di nodi: 12 nodi da 30' non valgono
-//                    3 nodi da 6 ore)
-//   Stabilità   30%  quanto quel programma ti resta in testa — è il
-//                    memoryRadar dello Spider-Sense, cioè la percentuale
-//                    di nodi il cui ultimo giudizio non è "Difficile" e
-//                    che non sono in allerta ripasso
-//   Fattibilità 15%  la Fine Prevista calibrata arriva prima dell'esame?
-//   Attrito     10%  quanto ti costano i nodi che rivedi (Friction
-//                    Analytics: % di giudizi "Difficile" sul totale)
+//   Copertura   40%  quanto programma hai STUDIATO (solo ore di studio,
+//                    pesate per ore: la sintesi prepara il materiale, non
+//                    lo mette in testa);
+//   Memoria     30%  quanto ne RICORDI oggi: la probabilità di ricordo
+//                    stimata dal modello FSRS (utils/spiderSense.js) sui
+//                    nodi completati. Scende da sola col tempo;
+//   Pratica     15%  esercizi, simulazioni d'esame e interrogazioni: la
+//                    parte che decide uno scritto;
+//   Fattibilità 15%  il piano globale (utils/studyPlanner.js) chiude il
+//                    lavoro prima dell'esame, contando le altre materie?
 //
-// Nessun numero inventato: se mancano i dati per un pilastro (zero nodi
-// tracciati, nessun ripasso ancora fatto) quel pilastro vale un neutro
-// dichiarato e `confidence` scende — l'indice dice apertamente che sta
-// tirando a indovinare invece di mostrare un 82% autorevole e falso.
+// Un pilastro senza dati è IGNOTO: esce dal punteggio e abbassa la
+// confidenza. SOSTIENI solo con copertura ≥ 90%, memoria ≥ 75%,
+// confidenza ≥ 75% e — se c'è uno scritto — pratica misurata.
 // =====================================================================
-import { daysUntilDateOnly, dateOnlyToUtcMs } from './dateUtils.js';
-import { computeEstimatedCompletion, nodeBudgetHours, nodeRemainingBudgetHours } from './materiaMeta.js';
-import { PERSISTED_STATUS } from './skillTree.js';
-import { computeFriction } from './friction.js';
+import { daysBetweenDateKeys, todayDateOnlyKey, addDaysToDateOnly } from './dateUtils.js';
+import { nodeWorkBreakdown } from './sintesiEngine.js';
+import { nodeRetrievability, retrievabilityAt } from './spiderSense.js';
+import { haProvaScritta, formatoMeta } from './appelli.js';
 
 export const WEIGHTS = {
-  coverage: 0.45,
-  stability: 0.3,
-  feasibility: 0.15,
-  friction: 0.1
+  coverage: 0.4,
+  memory: 0.3,
+  practice: 0.15,
+  feasibility: 0.15
 };
 
 export const VERDICT = {
@@ -74,130 +75,199 @@ export const VERDICT_META = {
 
 export const READY_THRESHOLD = 75;
 export const BORDERLINE_THRESHOLD = 55;
-
-/** Neutro dichiarato per un pilastro senza dati: né premio né condanna. */
-const NEUTRAL = 0.6;
+export const READY_MIN_COVERAGE = 0.9;
+export const READY_MIN_MEMORY = 0.75;
+export const READY_MIN_CONFIDENCE = 0.75;
+/** Finestra degli esercizi e delle interrogazioni che contano. */
+export const PRACTICE_WINDOW_DAYS = 45;
+/** Le simulazioni d'esame valgono più a lungo. */
+export const SIMULATION_WINDOW_DAYS = 90;
+/** Una copertura parziale su un argomento aperto non vale mai come chiuso. */
+const OPEN_NODE_MAX_COVERAGE = 0.8;
 
 function pct(n) {
   return Math.round(n * 100);
 }
 
+function clamp01(n) {
+  return Math.max(0, Math.min(1, n));
+}
+
 /**
- * @param {object} materia una voce di `state.materie`
- * @param {object|null} radar `derived.memoryRadar.byMateria` della materia
- * @param {object|null} calibration pacchetto di utils/calibration.js
+ * Pratica misurata su esercizi, simulazioni e interrogazioni recenti.
+ * @returns {{value:number|null, esercizi:{fatti:number,corretti:number}|null, simulazioni:number[], quiz:{sapevo:number,totale:number}|null}}
  */
-export function computeExamReadiness(materia, radar = null, calibration = null) {
+export function computePractice(materia, todayKey = todayDateOnlyKey()) {
   const sfide = Array.isArray(materia?.sfide) ? materia.sfide : [];
-  const rawDays = materia?.examDate ? daysUntilDateOnly(materia.examDate) : null;
-  // V39.0 — appello nel passato: la domanda "posso presentarmi?" non ha
-  // più senso finché non imposti il prossimo. Si valuta come se la data
-  // non ci fosse, e lo si dice nel motivo.
+  const limiteEs = addDaysToDateOnly(todayKey, -PRACTICE_WINDOW_DAYS);
+  const limiteSim = addDaysToDateOnly(todayKey, -SIMULATION_WINDOW_DAYS);
+  let fatti = 0;
+  let corretti = 0;
+  let sapevo = 0;
+  let parziale = 0;
+  let totaleQuiz = 0;
+  sfide.forEach((s) => {
+    (Array.isArray(s?.esercizi) ? s.esercizi : []).forEach((e) => {
+      if (!e || String(e.at || '').slice(0, 10) < limiteEs) return;
+      const f = Math.max(0, Number(e.fatti) || 0);
+      fatti += f;
+      corretti += Math.min(f, Math.max(0, Number(e.corretti) || 0));
+    });
+    (Array.isArray(s?.quizEsiti) ? s.quizEsiti : []).forEach((q) => {
+      if (!q || String(q.at || '').slice(0, 10) < limiteEs) return;
+      sapevo += Math.max(0, Number(q.sapevo) || 0);
+      parziale += Math.max(0, Number(q.parziale) || 0);
+      totaleQuiz += Math.max(0, Number(q.sapevo) || 0) + Math.max(0, Number(q.parziale) || 0) + Math.max(0, Number(q.no) || 0);
+    });
+  });
+  const simulazioni = (Array.isArray(materia?.simulazioni) ? materia.simulazioni : [])
+    .filter((x) => x && String(x.at || '').slice(0, 10) >= limiteSim && Number.isFinite(Number(x.punteggioPct)))
+    .sort((a, b) => String(b.at).localeCompare(String(a.at)))
+    .slice(0, 3)
+    .map((x) => clamp01(Number(x.punteggioPct) / 100));
+
+  const parti = [];
+  if (simulazioni.length > 0) parti.push({ w: 0.5, v: simulazioni.reduce((a, b) => a + b, 0) / simulazioni.length });
+  if (fatti >= 3) parti.push({ w: 0.3, v: corretti / fatti });
+  if (totaleQuiz >= 3) parti.push({ w: 0.2, v: (sapevo + parziale * 0.5) / totaleQuiz });
+  const pesoTot = parti.reduce((a, p) => a + p.w, 0);
+  return {
+    value: pesoTot > 0 ? parti.reduce((a, p) => a + p.w * p.v, 0) / pesoTot : null,
+    esercizi: fatti > 0 ? { fatti, corretti } : null,
+    simulazioni,
+    quiz: totaleQuiz > 0 ? { sapevo, parziale, totale: totaleQuiz } : null
+  };
+}
+
+/**
+ * @param {object} materia una voce di `state.materie` (con la data di pianificazione)
+ * @param {object|null} _radar (non più usato: la memoria si calcola dai nodi)
+ * @param {object|null} calibration pacchetto di utils/calibration.js
+ * @param {{planQuota?:object|null, todayKey?:string}} [opts] la "quota" del planner globale
+ */
+export function computeExamReadiness(materia, _radar = null, calibration = null, { planQuota = null, todayKey = todayDateOnlyKey() } = {}) {
+  const sfide = Array.isArray(materia?.sfide) ? materia.sfide.filter(Boolean) : [];
+  // Stesso `todayKey` di memoria e pratica: un solo "oggi" per tutto il verdetto.
+  const rawDays = materia?.examDate ? daysBetweenDateKeys(todayKey, materia.examDate) : null;
   const dataScaduta = rawDays != null && rawDays < 0;
   const daysRemaining = dataScaduta ? null : rawDays;
   const examDateValida = !!materia?.examDate && !dataScaduta;
-
-  // --- Copertura, pesata per ore ---------------------------------------
-  // V39.0 — Pesata sulle STESSE ore di tutto il resto dell'app
-  // (nodeBudgetHours: bias personale, pagine, ore di sintesi). Prima
-  // sommava le "Ore previste" grezze: un nodo con 300 pagine di libro da
-  // snellire pesava come uno da 2 ore, e la copertura risultava 67%
-  // quando era il 13% — il verdetto diceva "al limite" su una materia da
-  // rimandare. E conta anche il lavoro GIÀ fatto dentro i nodi non
-  // ancora chiusi (sintesi fatta, ore di studio spese): è copertura vera.
-  const totalHours = sfide.reduce((sum, s) => sum + nodeBudgetHours(s, calibration), 0);
-  const doneHours = sfide.reduce((sum, s) => {
-    const budget = nodeBudgetHours(s, calibration);
-    if (s.status === PERSISTED_STATUS.COMPLETED) return sum + budget;
-    return sum + Math.max(0, budget - nodeRemainingBudgetHours(s, calibration));
-  }, 0);
   const hasNodes = sfide.length > 0;
-  const coverage = hasNodes && totalHours > 0 ? Math.min(1, doneHours / totalHours) : 0;
+  const scritto = haProvaScritta(materia);
 
-  // --- Stabilità mnemonica (Spider-Sense) --------------------------------
-  const hasStability = !!radar && radar.stabilityPct != null;
-  const stability = hasStability ? radar.stabilityPct / 100 : NEUTRAL;
-
-  // --- Fattibilità temporale --------------------------------------------
-  const estimate = computeEstimatedCompletion(materia, calibration);
-  let feasibility;
-  if (!examDateValida) {
-    feasibility = NEUTRAL;
-  } else if (estimate.done) {
-    feasibility = 1;
-  } else {
-    const finishMs = dateOnlyToUtcMs(estimate.dateKey);
-    const examMs = dateOnlyToUtcMs(materia.examDate);
-    if (finishMs <= examMs) {
-      feasibility = 1;
+  // --- Copertura: solo studio, pesata per ore di studio ------------------
+  let oreTot = 0;
+  let oreFatte = 0;
+  let completati = 0;
+  const pesoNodo = new Map();
+  sfide.forEach((s) => {
+    const b = nodeWorkBreakdown(s, calibration);
+    const peso = Math.max(0.5, b.oreStudioTotali);
+    pesoNodo.set(s.id, peso);
+    oreTot += peso;
+    if (s.status === 'COMPLETED') {
+      oreFatte += peso;
+      completati += 1;
     } else {
-      // Quanta parte del lavoro residuo ci sta comunque nel tempo rimasto.
-      const daysAvailable = Math.max(0, daysRemaining ?? 0);
-      feasibility = estimate.totalDaysNeeded > 0 ? Math.max(0, Math.min(1, daysAvailable / estimate.totalDaysNeeded)) : 0;
+      oreFatte += peso * Math.min(OPEN_NODE_MAX_COVERAGE, b.oreStudioTracciate / peso);
     }
+  });
+  const coverage = hasNodes && oreTot > 0 ? clamp01(oreFatte / oreTot) : 0;
+
+  // --- Memoria: ricordo stimato oggi dei nodi completati ------------------
+  let memPeso = 0;
+  let memSomma = 0;
+  let memEsameSomma = 0;
+  let deboli = 0;
+  sfide.forEach((s) => {
+    if (s.status !== 'COMPLETED') return;
+    const r = nodeRetrievability(s, todayKey);
+    if (r == null) return;
+    const w = pesoNodo.get(s.id) || 1;
+    memPeso += w;
+    memSomma += w * r;
+    const re = examDateValida ? retrievabilityAt(s, materia.examDate) : r;
+    memEsameSomma += w * (re ?? r);
+    if (r < 0.7) deboli += 1;
+  });
+  const hasMemory = memPeso > 0;
+  const memory = hasMemory ? clamp01(memSomma / memPeso) : null;
+  const memoryAtExam = hasMemory ? clamp01(memEsameSomma / memPeso) : null;
+
+  // --- Pratica -------------------------------------------------------------
+  const practiceData = computePractice(materia, todayKey);
+  const hasPractice = practiceData.value != null;
+  const practice = hasPractice ? clamp01(practiceData.value) : null;
+
+  // --- Fattibilità: il piano globale ----------------------------------------
+  let feasibility = null;
+  if (examDateValida && planQuota) {
+    const tot = Math.max(0.5, (Number(planQuota.hoursRemaining) || 0) + (Number(planQuota.finalReviewHours) || 0));
+    const late = Math.max(0, Number(planQuota.lateHours) || 0);
+    feasibility = planQuota.hoursRemaining <= 0 ? 1 : clamp01(1 - late / tot);
+  } else if (examDateValida && !planQuota) {
+    feasibility = null;
   }
+  const hasFeasibility = feasibility != null;
 
-  // --- Attrito (Friction Analytics) --------------------------------------
-  const attempted = sfide.filter((s) => (s.tentativiSuccessi || 0) + (s.tentativiFalliti || 0) > 0);
-  const hasFriction = attempted.length > 0;
-  const avgFriction = hasFriction
-    ? attempted.reduce((sum, s) => sum + computeFriction(s.tentativiSuccessi, s.tentativiFalliti), 0) / attempted.length
-    : null;
-  const frictionScore = hasFriction ? Math.max(0, 1 - avgFriction / 100) : NEUTRAL;
+  // --- Punteggio sui pilastri noti ----------------------------------------
+  const pillars = [
+    { key: 'coverage', w: WEIGHTS.coverage, v: coverage, known: hasNodes },
+    { key: 'memory', w: WEIGHTS.memory, v: memory, known: hasMemory },
+    // Per un esame solo orale la pratica non è obbligatoria: se manca non
+    // abbassa la confidenza (le interrogazioni contano solo se ci sono).
+    { key: 'practice', w: WEIGHTS.practice, v: practice, known: hasPractice, optional: !scritto },
+    { key: 'feasibility', w: WEIGHTS.feasibility, v: feasibility, known: hasFeasibility }
+  ];
+  const noti = pillars.filter((p) => p.known);
+  const pesoNoti = noti.reduce((a, p) => a + p.w, 0);
+  const score = pesoNoti > 0 ? Math.round((100 * noti.reduce((a, p) => a + p.w * p.v, 0)) / pesoNoti) : 0;
+  const pesoApplicabile = pillars.filter((p) => !(p.optional && !p.known)).reduce((a, p) => a + p.w, 0);
+  const confidence = pesoApplicabile > 0 ? Math.round((pesoNoti / pesoApplicabile) * 100) / 100 : 0;
 
-  const score = Math.round(
-    100 *
-      (WEIGHTS.coverage * coverage +
-        WEIGHTS.stability * stability +
-        WEIGHTS.feasibility * feasibility +
-        WEIGHTS.friction * frictionScore)
-  );
-
-  // --- Confidenza: su quanti pilastri abbiamo dati veri? -----------------
-  const known = [hasNodes, hasStability, examDateValida, hasFriction].filter(Boolean).length;
-  const confidence = known / 4;
-
+  // --- Verdetto con le soglie oneste --------------------------------------
   let verdict;
-  if (!hasNodes || dataScaduta) {
-    verdict = VERDICT.UNKNOWN;
-  } else if (score >= READY_THRESHOLD) {
-    verdict = VERDICT.READY;
-  } else if (score >= BORDERLINE_THRESHOLD) {
-    verdict = VERDICT.BORDERLINE;
-  } else {
-    verdict = VERDICT.POSTPONE;
+  const gates = [];
+  if (!hasNodes || dataScaduta) verdict = VERDICT.UNKNOWN;
+  else {
+    if (coverage < READY_MIN_COVERAGE) gates.push('coverage');
+    if (!hasMemory || memory < READY_MIN_MEMORY) gates.push('memory');
+    if (confidence < READY_MIN_CONFIDENCE) gates.push('confidence');
+    if (scritto && !hasPractice) gates.push('practice');
+    if (score >= READY_THRESHOLD && gates.length === 0) verdict = VERDICT.READY;
+    else if (score >= BORDERLINE_THRESHOLD) verdict = VERDICT.BORDERLINE;
+    else verdict = VERDICT.POSTPONE;
   }
 
   // --- Il motivo dominante, in una frase ---------------------------------
-  const gaps = [
-    { key: 'coverage', deficit: (1 - coverage) * WEIGHTS.coverage, enabled: hasNodes },
-    { key: 'stability', deficit: (1 - stability) * WEIGHTS.stability, enabled: hasStability },
-    { key: 'feasibility', deficit: (1 - feasibility) * WEIGHTS.feasibility, enabled: examDateValida },
-    { key: 'friction', deficit: (1 - frictionScore) * WEIGHTS.friction, enabled: hasFriction }
-  ]
-    .filter((g) => g.enabled)
-    .sort((a, b) => b.deficit - a.deficit);
-  const dominantGap = gaps.length && gaps[0].deficit > 0.02 ? gaps[0].key : null;
-
-  const remainingHoursLabel = Math.round(estimate.totalHoursNeeded || 0);
-  const unstableNodes = radar ? radar.attention || 0 : 0;
+  const deficit = noti
+    .map((p) => ({ key: p.key, d: (1 - p.v) * p.w }))
+    .sort((a, b) => b.d - a.d);
+  const dominantGap = deficit.length && deficit[0].d > 0.02 ? deficit[0].key : null;
+  const oreDaStudiare = Math.round(Math.max(0, oreTot - oreFatte));
+  const nonCompletati = sfide.length - completati;
 
   let rationale;
   if (dataScaduta) {
-    rationale =
-      'L\u2019appello impostato è già passato: se l\u2019hai sostenuto, segna l\u2019esito; altrimenti imposta il prossimo appello per riattivare il verdetto.';
+    rationale = "L'appello impostato è già passato: registra l'esito, oppure scegli il prossimo appello per riattivare il verdetto.";
   } else if (!hasNodes) {
-    rationale = 'Nessun nodo tracciato per questa materia: senza programma mappato non c\'è niente da misurare.';
-  } else if (dominantGap === 'coverage') {
-    rationale = `Programma coperto al ${pct(coverage)}%: restano circa ${remainingHoursLabel}h di lavoro mai affrontato.`;
-  } else if (dominantGap === 'stability') {
-    rationale = `Il programma c'è (${pct(coverage)}% coperto) ma non tiene: ${unstableNodes} nodi in allerta Spider-Sense o giudicati Difficili all'ultimo ripasso.`;
+    rationale = "Nessun argomento tracciato: senza programma mappato non c'è niente da misurare. Importa l'indice del corso per iniziare.";
+  } else if (verdict === VERDICT.READY) {
+    rationale = `Programma studiato al ${pct(coverage)}%, ricordo stimato al ${pct(memory)}%${hasPractice ? `, pratica al ${pct(practice)}%` : ''}: puoi presentarti.`;
+  } else if (gates.includes('coverage') && (dominantGap === 'coverage' || coverage < 0.6)) {
+    rationale = `Studiato il ${pct(coverage)}% del programma: ${nonCompletati} argomenti ancora aperti, circa ${oreDaStudiare}h di studio.`;
+  } else if (dominantGap === 'memory' || (gates.includes('memory') && hasMemory)) {
+    rationale = `Il programma c'è ma non tiene: ricordo stimato al ${pct(memory ?? 0)}%${deboli > 0 ? `, ${deboli} argomenti sotto il 70%` : ''}. Servono ripassi, non argomenti nuovi.`;
+  } else if (gates.includes('practice')) {
+    rationale = `Nessun esercizio o simulazione registrati: per uno ${formatoMeta(materia).haOrale ? 'scritto' : 'esame scritto'} la teoria non basta. Registra esercizi e fai almeno una simulazione.`;
+  } else if (dominantGap === 'practice') {
+    rationale = `Pratica al ${pct(practice)}%: gli esercizi ti costano ancora troppo. Allenati sulle tracce d'esame.`;
   } else if (dominantGap === 'feasibility') {
-    rationale = `Al tuo ritmo reale servono ancora ${estimate.totalDaysNeeded} giorni, ne restano ${daysRemaining ?? '—'}: la traiettoria non chiude in tempo.`;
-  } else if (dominantGap === 'friction') {
-    rationale = `Attrito alto (${Math.round(avgFriction)}% di ripassi giudicati Difficili): il programma è coperto ma ti costa ancora troppo.`;
+    rationale = `Col tuo ritmo e le altre materie in calendario il lavoro non chiude prima dell'esame (mancano ~${Math.round(planQuota?.lateHours || 0)}h).`;
+  } else if (gates.includes('confidence')) {
+    rationale = `Dati ancora parziali (confidenza ${pct(confidence)}%): il verdetto resta prudente finché non ci sono ripassi ed esercizi registrati.`;
   } else {
-    rationale = `Programma coperto al ${pct(coverage)}% e stabile al ${pct(stability)}%: la traiettoria chiude in tempo.`;
+    rationale = `Programma studiato al ${pct(coverage)}% e ricordo al ${pct(memory ?? 0)}%.`;
   }
 
   return {
@@ -208,14 +278,29 @@ export function computeExamReadiness(materia, radar = null, calibration = null) 
     daysRemaining,
     parts: {
       coverage,
-      stability,
+      memory,
+      practice,
       feasibility,
-      friction: frictionScore
+      // Compatibilità con chi leggeva i vecchi nomi.
+      stability: memory,
+      friction: practice
     },
-    known: { hasNodes, hasStability, hasExamDate: examDateValida, hasFriction },
+    known: {
+      hasNodes,
+      hasMemory,
+      hasPractice,
+      hasFeasibility,
+      practiceOptional: !scritto,
+      hasStability: hasMemory,
+      hasExamDate: examDateValida,
+      hasFriction: hasPractice
+    },
+    gates,
+    memoryAtExam,
+    practiceData,
     dataScaduta,
-    remainingHours: remainingHoursLabel,
-    unstableNodes
+    remainingHours: oreDaStudiare,
+    unstableNodes: deboli
   };
 }
 

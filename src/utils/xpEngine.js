@@ -14,11 +14,10 @@ export const REVIEW_FLAT_XP = 10;
 
 /**
  * V27.0 — Pillar 3 "Maximum Carnage Mode": moltiplicatore XP simbionte,
- * applicato DOPO tutti gli altri fattori (CFU, Overdrive, Qualità, Streak,
- * Notturno, Skill Tree) — un vero raddoppio finale, mai un bonus piatto
- * che si perderebbe nell'arrotondamento. Il costo Stamina viene invece
- * azzerato del tutto (vedi computeFocusStaminaCost) per l'intera finestra
- * di 2 ore: "furia dopaminica" totale, nessun compromesso energetico.
+ * applicato DOPO tutti gli altri fattori. V42 — la Stamina NON è più
+ * gratis durante la finestra (due ore di XP doppi senza fatica erano un
+ * invito a studiare oltre il limite) e la finestra si attiva a mano, di
+ * giorno, con una carica guadagnata (vedi utils/maxCarnage.js).
  */
 export const MAX_CARNAGE_MULTIPLIER = 2;
 
@@ -35,13 +34,23 @@ export const MAX_CARNAGE_MULTIPLIER = 2;
  */
 export const SPIDER_SENSE_BASE_XP = 20;
 export const SPIDER_SENSE_NEUTRAL_DIFFICULTY = 3;
+/**
+ * V42 — Il bonus premia una sessione VERA: sotto i 20 minuti non c'è, e
+ * sopra cresce coi minuti (0,4 XP al minuto a difficoltà media). Prima era
+ * un premio fisso a sessione: un minuto di Focus valeva 36 XP, cinquanta
+ * minuti 3,6 XP al minuto — conveniva spezzettare.
+ */
+export const SURGE_MIN_MINUTES = 20;
+export const SURGE_XP_PER_MINUTE = 0.4;
 
-export function computeSpiderSenseSurgeXp(perceivedDifficulty) {
+export function computeSpiderSenseSurgeXp(perceivedDifficulty, focusMinutes = 25) {
+  const minuti = Math.max(0, Number(focusMinutes) || 0);
+  if (minuti < SURGE_MIN_MINUTES) return 0;
   const safeDifficulty =
     Number.isFinite(perceivedDifficulty) && perceivedDifficulty >= 1 && perceivedDifficulty <= 5
       ? perceivedDifficulty
       : SPIDER_SENSE_NEUTRAL_DIFFICULTY;
-  return Math.round(SPIDER_SENSE_BASE_XP * (safeDifficulty / SPIDER_SENSE_NEUTRAL_DIFFICULTY));
+  return Math.round(minuti * SURGE_XP_PER_MINUTE * (safeDifficulty / SPIDER_SENSE_NEUTRAL_DIFFICULTY));
 }
 
 /** Costo Stamina base per un Focus "standard" da 25 minuti a difficoltà Media. */
@@ -82,8 +91,10 @@ export const FOCUS_QUALITY_META = {
     label: 'Spider-Sense / Flow State',
     shortLabel: 'Flow State',
     hint: 'Concentrazione totale, quasi nessuna distrazione.',
-    xpMultiplier: 1.15,
-    badge: '+15% XP',
+    // V42 — il giudizio è un dato per te (Star Log, K.A.R.E.N.), non un
+    // premio: con +15%/-10% conveniva dichiararsi sempre in Flow.
+    xpMultiplier: 1,
+    badge: 'Flow',
     icon: 'bolt',
     color: 'text-af-attack',
     border: 'border-af-attack/50',
@@ -94,9 +105,9 @@ export const FOCUS_QUALITY_META = {
     id: 'NORMAL',
     label: 'Produttiva / Normale',
     shortLabel: 'Normale',
-    hint: 'Ritmo di lavoro solido, nessun bonus o penalità.',
+    hint: 'Ritmo di lavoro solido.',
     xpMultiplier: 1,
-    badge: 'XP Standard',
+    badge: 'Normale',
     icon: 'check',
     color: 'text-af-refuel',
     border: 'border-af-refuel/50',
@@ -107,9 +118,9 @@ export const FOCUS_QUALITY_META = {
     id: 'DISTRACTED',
     label: 'Distratta / Faticosa',
     shortLabel: 'Distratta',
-    hint: 'Sessione difficile: attiva un Daily Protocol per recuperare.',
-    xpMultiplier: 0.9,
-    badge: '-10% XP',
+    hint: 'Sessione difficile: dirlo aiuta Karen a tarare timer e carico.',
+    xpMultiplier: 1,
+    badge: 'Faticosa',
     icon: 'alertTriangle',
     color: 'text-af-decay',
     border: 'border-af-decay/50',
@@ -214,44 +225,75 @@ export function computeCfuMultiplier(cfu = 0) {
 }
 
 /**
- * V25.0 — Curva di Progressione Esponenziale ("The Endgame"). Sostituisce
- * la vecchia progressione lineare (level * 1000) con una cubica calibrata
- * per accelerare drasticamente nel lungo periodo, restando comunque
- * raggiungibile: Lv.1 = 1.000 XP, Lv.10 ≈ 15.000 XP, Lv.30 ≈ 100.000 XP,
- * Lv.50 ≈ 308.000 XP ("Difensore del Multiverso" — un vero traguardo di
- * fine gioco). I tre coefficienti sono la soluzione esatta del sistema
- * lineare a 3 incognite che passa per (1, 1000), (10, 15000), (30, 100000):
- * un polinomio cubico cresce più che quadraticamente e dà quella sensazione
- * di "grind esponenziale" senza mai sfondare in valori astronomici
- * ingiocabili (una vera progressione geometrica a questi tassi renderebbe
- * il Lv.30 dell'ordine dei milioni di XP). Il risultato è arrotondato al
- * multiplo di 50 più vicino per numeri sempre "puliti" in UI.
+ * V42 — CURVA DEI LIVELLI ribilanciata.
+ *
+ * La curva cubica della V25 era tarata per LIVELLO (Lv.10 = 15.000 XP,
+ * Lv.30 = 100.000, Lv.50 = 308.000 per salire di un livello), e il
+ * commento la leggeva come totale: in realtà il Lv.50 costava 4,73 milioni
+ * di XP cumulati, circa 12-16 anni di studio onesto, e dal Lv.20 in su un
+ * livello chiedeva mesi. I Tech Token, che arrivano dai livelli, si
+ * fermavano proprio quando lo Skill Tree diventava interessante.
+ *
+ * Ora il costo cresce in modo quadratico dolce:
+ *   xp(n) = 1000 + 150·(n-1) + 14·(n-1)²   (arrotondato a 50)
+ * Lv.10 = 3.500 per livello, Lv.30 = 17.100, Lv.49 = 40.450; il Lv.50
+ * richiede circa 758.000 XP totali: con ~4 ore di studio al giorno, due
+ * anni e mezzo — un traguardo da laurea, raggiungibile.
+ *
+ * I profili esistenti si convertono UNA volta sugli XP TOTALI (vedi
+ * convertProfileToCurveV2): nessun XP perso, livello ricalcolato.
  */
+export const XP_CURVE_VERSION = 2;
+
+export function xpRequiredForLevel(level) {
+  const n = Math.max(1, Math.floor(Number(level) || 1));
+  const raw = 1000 + 150 * (n - 1) + 14 * (n - 1) * (n - 1);
+  return Math.max(1000, Math.round(raw / 50) * 50);
+}
+
+/** La curva della V25-V41, solo per convertire i profili salvati. */
 const XP_CURVE_A = 956.8965517;
 const XP_CURVE_B = 41.85775862;
 const XP_CURVE_C = 1.245689655;
-
-export function xpRequiredForLevel(level) {
+export function xpRequiredForLevelV1(level) {
   const n = Math.max(1, level);
   const raw = XP_CURVE_A * n + XP_CURVE_B * n * n + XP_CURVE_C * n * n * n;
   return Math.max(1000, Math.round(raw / 50) * 50);
 }
 
 /**
- * Costo Stamina di una sessione di Focus, proporzionale alla durata reale
- * (non più un costo fisso), e scalato dalla difficoltà del nodo bersaglio.
- * Formula base: ceil((minuti / 25) * 15), poi moltiplicata per il peso
- * di difficoltà (Easy -0.8x, Medium 1x, Hard 1.3x).
- * @param {number} [staminaCostMultiplier] - moltiplicatore aggiuntivo dallo
- *   Skill Tree ("Resistenza Simbionte": la Stamina scende più lentamente).
+ * Costo Stamina di una sessione di Focus.
+ *
+ * V42 — tarato sulla TUA capacità giornaliera: una giornata di studio
+ * piena (la capacità misurata) consuma circa tre quarti della Stamina, e
+ * la stanchezza (sotto 20) arriva solo oltre la giornata tipo. Prima il
+ * costo era fisso (15 ogni 25 minuti): la stanchezza scattava dopo 150
+ * minuti, sotto il piano di 4,5 ore che l'app stessa chiedeva, e dimezzava
+ * gli XP proprio a chi lo seguiva. Maximum Carnage non azzera più il costo.
+ *
+ * @param {number} focusMinutes
+ * @param {string} [difficulty]
+ * @param {number} [staminaCostMultiplier] dallo Skill Tree
+ * @param {boolean} [_isMaxCarnage] ignorato (compatibilità)
+ * @param {number} [capacityHours] capacità giornaliera (calibrazione)
  */
-export function computeFocusStaminaCost(focusMinutes, difficulty = DIFFICULTY.MEDIUM, staminaCostMultiplier = 1, isMaxCarnage = false) {
-  // Maximum Carnage Mode: "consumo di Stamina azzerato" — nessun calcolo
-  // parziale, il costo è letteralmente 0 per tutta la finestra attiva.
-  if (isMaxCarnage) return 0;
+export const STAMINA_DAY_FACTOR = 1.3;
+export function computeFocusStaminaCost(focusMinutes, difficulty = DIFFICULTY.MEDIUM, staminaCostMultiplier = 1, _isMaxCarnage = false, capacityHours = 4.5) {
   const meta = DIFFICULTY_META[difficulty] || DIFFICULTY_META.MEDIUM;
-  const base = Math.ceil((focusMinutes / BASE_FOCUS_MINUTES) * BASE_STAMINA_PER_25MIN);
+  const cap = Number(capacityHours) > 0 ? Math.min(10, Math.max(1, Number(capacityHours))) : 4.5;
+  const minutiGiornata = cap * 60 * STAMINA_DAY_FACTOR;
+  const base = (Math.max(0, Number(focusMinutes) || 0) / minutiGiornata) * 100;
   return Math.max(1, Math.ceil(base * meta.staminaMultiplier * staminaCostMultiplier));
+}
+
+/**
+ * V42 — Le PAUSE ricaricano: 0,6 Stamina per minuto di pausa (5 minuti ->
+ * 3, pausa lunga da 15 -> 9), di più con "Simbiosi Rigenerante".
+ */
+export const BREAK_STAMINA_PER_MINUTE = 0.6;
+export function computeBreakStaminaRestore(breakMinutes, bonus = 0) {
+  const m = Math.max(0, Math.min(60, Number(breakMinutes) || 0));
+  return Math.round(m * BREAK_STAMINA_PER_MINUTE * (1 + Math.max(0, Number(bonus) || 0)));
 }
 
 /**
@@ -267,13 +309,13 @@ export function computeFocusStaminaCost(focusMinutes, difficulty = DIFFICULTY.ME
  * @param {number} [params.streak] - streak corrente, applica il moltiplicatore streak
  * @param {string} [params.quality] - FOCUS_QUALITY del Tactical Debriefing (default NORMAL)
  * @param {number} [params.xpBonusPct] - bonus percentuale piatto dallo Skill Tree ("Focus Migliorato")
- * @param {boolean} [params.nightBonus] - sessione nelle ore 00:00-04:00, Skill Tree ("Simbiosi Notturna")
  * @param {number} [params.overdriveMultiplier] - moltiplicatore Overdrive effettivo (default costante globale,
  *   potenziato dallo Skill Tree "Adrenalina da Combattimento")
  * @param {number} [params.streakThresholdBonus] - vedi computeStreakMultiplier
  */
 export function computeFocusXp({
   focusMinutes,
+  baseMinutes = null,
   cfu = 0,
   isOverdrive,
   isFatigued,
@@ -281,20 +323,23 @@ export function computeFocusXp({
   streak = 0,
   quality = DEFAULT_FOCUS_QUALITY,
   xpBonusPct = 0,
-  nightBonus = false,
   overdriveMultiplier = OVERDRIVE_MULTIPLIER,
   streakThresholdBonus = 0,
   isMaxCarnage = false
 }) {
   const diffMeta = DIFFICULTY_META[difficulty] || DIFFICULTY_META.MEDIUM;
   const qualityMeta = FOCUS_QUALITY_META[quality] || FOCUS_QUALITY_META[DEFAULT_FOCUS_QUALITY];
-  let xp = focusMinutes * XP_PER_FOCUS_MINUTE;
+  const minuti = Math.max(0, Number(focusMinutes) || 0);
+  // V42 — l'Overdrive moltiplica SOLO il blocco extra oltre quello
+  // pianificato. Prima moltiplicava tutta la catena: 25+25 minuti
+  // concatenati valevano il 28% in più di 25 + pausa + 25.
+  const base = isOverdrive && Number.isFinite(Number(baseMinutes)) ? Math.min(minuti, Math.max(0, Number(baseMinutes))) : minuti;
+  const extra = isOverdrive ? Math.max(0, minuti - base) : 0;
+  let xp = (base + extra * overdriveMultiplier) * XP_PER_FOCUS_MINUTE;
   xp *= diffMeta.xpMultiplier;
   xp *= computeCfuMultiplier(cfu);
-  if (isOverdrive) xp *= overdriveMultiplier;
   xp *= qualityMeta.xpMultiplier;
   xp *= computeStreakMultiplier(streak, streakThresholdBonus);
-  if (nightBonus) xp *= 1.1;
   if (xpBonusPct) xp *= 1 + xpBonusPct;
   if (isFatigued) xp *= FATIGUE_MULTIPLIER;
   // Maximum Carnage Mode (V27.0, Pillar 3): raddoppio finale, applicato per
@@ -338,22 +383,75 @@ export function applyXpDelta(profile, delta) {
 }
 
 /**
- * V25.0 — Pillar 3 (Tech Tokens): wrapper attorno ad applyXpDelta che
- * rileva quanti livelli sono stati guadagnati in questo singolo delta
- * (anche più di uno, in caso di XP-bomb) e accredita 1 Tech Token per
- * ogni livello superato, sulla STESSA transizione di stato — nessun
- * secondo dispatch, nessuna finestra in cui il token "non esiste ancora".
- * Mai applicato ai delta negativi (Blood Pact, Reward Shop, Last Stand):
- * applyXpDelta può far *scendere* di livello in quei casi, ma i Tech
- * Token già assegnati restano acquisiti per sempre (mai retrocessi).
+ * Tech Token: 1 per ogni livello raggiunto PER LA PRIMA VOLTA.
+ *
+ * V42 — il conto si fa sul livello massimo mai raggiunto
+ * (`maxLevelReached`): perdere un livello (Blood Pact, Reward Shop, Last
+ * Stand) e riguadagnarlo non paga di nuovo — prima tre cicli di Blood Pact
+ * davano tre token. E vale per TUTTI gli XP (quest, protocolli, forziere):
+ * prima un level-up arrivato da una quest non dava il token.
  */
 export function applyXpDeltaWithTokens(profile, delta) {
-  const before = Number.isFinite(profile.level) ? profile.level : 1;
+  const before = Number.isFinite(profile?.level) ? profile.level : 1;
+  const maxPrima = Math.max(before, Number.isFinite(profile?.maxLevelReached) ? profile.maxLevelReached : before);
   const updated = applyXpDelta(profile, delta);
-  const levelsGained = Math.max(0, updated.level - before);
-  if (levelsGained === 0) return updated;
-  const techTokens = (Number.isFinite(profile.techTokens) ? profile.techTokens : 0) + levelsGained;
-  return { ...updated, techTokens };
+  if (updated.level <= maxPrima) return { ...updated, maxLevelReached: maxPrima };
+  const guadagnati = updated.level - maxPrima;
+  const techTokens = (Number.isFinite(profile?.techTokens) ? profile.techTokens : 0) + guadagnati;
+  return { ...updated, techTokens, maxLevelReached: updated.level };
+}
+
+/**
+ * V42 — Conversione una tantum alla nuova curva, sugli XP TOTALI: stesso
+ * potere d'acquisto nel Reward Shop, livello ricalcolato, un Tech Token
+ * per ogni livello nuovo oltre il massimo raggiunto.
+ * @returns {{profile:object, fromLevel:number, toLevel:number, tokens:number}}
+ */
+export function convertProfileToCurveV2(profile) {
+  if (!profile || profile.xpCurveVersion === XP_CURVE_VERSION) return { profile, fromLevel: profile?.level ?? 1, toLevel: profile?.level ?? 1, tokens: 0 };
+  const level = Number.isFinite(profile.level) && profile.level >= 1 ? Math.floor(profile.level) : 1;
+  let totale = Number.isFinite(profile.currentXp) && profile.currentXp > 0 ? profile.currentXp : 0;
+  for (let L = 1; L < level; L += 1) totale += xpRequiredForLevelV1(L);
+  let nuovo = 1;
+  let resto = totale;
+  while (resto >= xpRequiredForLevel(nuovo) && nuovo < 999) {
+    resto -= xpRequiredForLevel(nuovo);
+    nuovo += 1;
+  }
+  const maxPrima = Math.max(level, Number.isFinite(profile.maxLevelReached) ? profile.maxLevelReached : level);
+  const tokens = Math.max(0, nuovo - maxPrima);
+  return {
+    profile: {
+      ...profile,
+      level: nuovo,
+      currentXp: resto,
+      maxLevelReached: Math.max(maxPrima, nuovo),
+      techTokens: (Number.isFinite(profile.techTokens) ? profile.techTokens : 0) + tokens,
+      xpCurveVersion: XP_CURVE_VERSION
+    },
+    fromLevel: level,
+    toLevel: nuovo,
+    tokens
+  };
+}
+
+/**
+ * V42 — XP del COMPLETAMENTO di un argomento: un premio di traguardo
+ * (40 XP pesati per difficoltà, CFU e streak), pagato una volta sola.
+ * Il tempo di studio è già pagato dalle sessioni di Focus: prima il
+ * completamento regalava i minuti di `focusTime` (fino a 180) a ogni click,
+ * e completa/riapri a ripetizione produceva migliaia di XP.
+ * Senza almeno 15 minuti tracciati sull'argomento vale 10 XP.
+ */
+export const NODE_COMPLETION_BASE_XP = 40;
+export const NODE_COMPLETION_MIN_MINUTES = 15;
+export function computeNodeCompletionXp({ difficulty = DIFFICULTY.MEDIUM, cfu = 0, trackedMinutes = 0, streak = 0, streakThresholdBonus = 0, xpBonusPct = 0, isMaxCarnage = false }) {
+  if (!(Number(trackedMinutes) >= NODE_COMPLETION_MIN_MINUTES)) return 10;
+  const diffMeta = DIFFICULTY_META[difficulty] || DIFFICULTY_META.MEDIUM;
+  let xp = NODE_COMPLETION_BASE_XP * diffMeta.xpMultiplier * computeCfuMultiplier(cfu) * computeStreakMultiplier(streak, streakThresholdBonus);
+  if (xpBonusPct) xp *= 1 + xpBonusPct;
+  if (isMaxCarnage) xp *= MAX_CARNAGE_MULTIPLIER;
+  return Math.round(xp);
 }
 
 /** Penalità Blood Pact effettiva, ridotta dallo Skill Tree ("Nervi d'Acciaio"). */

@@ -58,8 +58,25 @@ function todayDateOnlyKey() {
   return `${year}-${month}-${day}`;
 }
 
+/**
+ * V42 — La readiness è "misurata" solo con abbastanza dati: almeno 2 delle
+ * 7 voci del punteggio (stessa soglia del server, MIN_READINESS_COMPLETENESS
+ * in karen-oracle/_logic.ts). Sotto, il numero esiste ma non significa
+ * niente: si mostra "non misurata" e le direttive restano neutre. Il server
+ * lo scrive in `score_breakdown.known`; per i briefing salvati prima della
+ * V42 si ricava dalla completezza.
+ */
+export const MIN_READINESS_COMPLETENESS = 0.28;
+
+export function isBriefingReadinessKnown(briefing) {
+  const b = briefing?.score_breakdown;
+  if (!b || typeof b !== 'object') return false;
+  if (b.known === true || b.known === false) return b.known;
+  return Number(b.dataCompleteness ?? 0) >= MIN_READINESS_COMPLETENESS;
+}
+
 /** Stesso vocabolario/soglie di QUOTA_STATUS (useKarenAutoRouter.js) e
- * della funzione gemella in supabase/functions/karen-oracle/index.ts. */
+ * della funzione gemella in supabase/functions/karen-oracle/_logic.ts. */
 export function readinessBand(score) {
   if (score == null || !Number.isFinite(score)) return DEFAULT_READINESS_BAND;
   if (score >= 75) return 'OTTIMALE';
@@ -209,6 +226,11 @@ export function useSuitTelemetry() {
       console.error('useSuitTelemetry: errore nel fetch della telemetria', err);
       if (mountedRef.current) {
         setError(err?.message || 'Errore sconosciuto nel recupero della telemetria della tuta.');
+        // V42 — un fetch fallito per un altro giorno non lascia in vista
+        // i dati di ieri come se fossero di oggi.
+        setBriefing((prev) => (prev && prev.date === targetDate ? prev : null));
+        setBiometrics((prev) => (prev && prev.date === targetDate ? prev : null));
+        setSubjectiveLog((prev) => (prev && prev.date === targetDate ? prev : null));
       }
     } finally {
       if (mountedRef.current) setLoading(false);
@@ -264,10 +286,14 @@ export function useSuitTelemetry() {
       setError(null);
       const force = options.force === true;
       const targetDate = currentDateRef.current || todayDateOnlyKey();
+      // V42 — il piano REALE di oggi (materie, obiettivi, ripassi, lezioni,
+      // fase): K.A.R.E.N. sceglie gli argomenti DENTRO il piano, invece di
+      // tirare a indovinare con la sola data d'esame.
+      const planContext = options.planContext && typeof options.planContext === 'object' ? options.planContext : null;
 
       const invokeOnce = () =>
         supabase.functions.invoke('karen-oracle', {
-          body: { date: targetDate, force }
+          body: { date: targetDate, force, ...(planContext ? { plan_context: planContext } : {}) }
         });
 
       try {
@@ -364,6 +390,81 @@ export function useSuitTelemetry() {
     }
   }, []);
 
+  /**
+   * V42 — Le nuove modalità di K.A.R.E.N. passano tutte dallo stesso
+   * invoker: stessa guardia di sessione, stesso retry dopo il refresh del
+   * token, stessi messaggi d'errore leggibili.
+   */
+  const aiInFlightRef = useRef(new Set());
+  const [aiBusy, setAiBusy] = useState(null);
+  const invokeKaren = useCallback(async (key, body, fallback) => {
+    if (aiInFlightRef.current.has(key)) return { data: null, error: 'Richiesta già in corso.' };
+    aiInFlightRef.current.add(key);
+    if (mountedRef.current) setAiBusy(key);
+    const invokeOnce = () => supabase.functions.invoke('karen-oracle', { body: { ...body, date: currentDateRef.current || todayDateOnlyKey() } });
+    try {
+      let { data, error: invokeError } = await invokeOnce();
+      if (invokeError && isAuthError(invokeError)) {
+        await supabase.auth.refreshSession();
+        ({ data, error: invokeError } = await invokeOnce());
+      }
+      if (invokeError) throw new Error(await resolveInvokeErrorMessage(invokeError, fallback));
+      if (data?.error) throw new Error(data.error);
+      return { data, error: null };
+    } catch (err) {
+      console.error(`useSuitTelemetry: errore in ${key}`, err);
+      return { data: null, error: err?.message || fallback };
+    } finally {
+      aiInFlightRef.current.delete(key);
+      if (mountedRef.current) setAiBusy((k) => (k === key ? null : k));
+    }
+  }, []);
+
+  /** V42 — Interrogazione ORALE simulata su uno o più argomenti di una materia. */
+  const generateOralExam = useCallback(
+    async (materiaId, sfidaIds = []) => {
+      const { data, error: err } = await invokeKaren('oral', { mode: 'oral', materiaId, sfidaIds }, "K.A.R.E.N. non è riuscita a preparare l'interrogazione orale.");
+      if (err) return { oral: null, error: err };
+      if (!data?.oral) return { oral: null, error: 'Risposta senza domande utilizzabili.' };
+      return { oral: data.oral, thinContext: data.thin_context === true, error: null };
+    },
+    [invokeKaren]
+  );
+
+  /** V42 — Valutazione di una risposta scritta a una domanda dell'orale. */
+  const evaluateOralAnswer = useCallback(
+    async ({ materiaId, sfidaId, domanda, puntiChiave, risposta }) => {
+      const { data, error: err } = await invokeKaren(
+        'oral_eval',
+        { mode: 'oral_eval', materiaId, sfidaId, domanda, punti_chiave: puntiChiave, risposta },
+        'K.A.R.E.N. non è riuscita a valutare la risposta.'
+      );
+      if (err) return { valutazione: null, error: err };
+      return { valutazione: data?.valutazione || null, error: data?.valutazione ? null : 'Valutazione non disponibile.' };
+    },
+    [invokeKaren]
+  );
+
+  /** V42 — Bilancio settimanale (una volta a settimana, ripetibile). */
+  const generateWeeklyReview = useCallback(
+    async (weekKey, weekContext, force = false) => {
+      const { data, error: err } = await invokeKaren(
+        'weekly',
+        { mode: 'weekly', week: weekKey, week_context: weekContext, force },
+        'K.A.R.E.N. non è riuscita a preparare il bilancio della settimana.'
+      );
+      if (err) return { weekly: null, error: err };
+      return {
+        weekly: data?.weekly || null,
+        cached: data?.cached === true,
+        generatedAt: typeof data?.generatedAt === 'string' ? data.generatedAt : null,
+        weekClosed: data?.weekClosed === true,
+        error: data?.weekly ? null : 'Bilancio non disponibile.'
+      };
+    },
+    [invokeKaren]
+  );
+
   /** Upsert su cadet_subjective_logs, one-shot per giorno (onConflict
    * user_id+date). Ogni campo passa da clamp/sanitize PRIMA di lasciare
    * il client — difesa in profondità anche se il chiamante (UI) ha già
@@ -430,6 +531,10 @@ export function useSuitTelemetry() {
   // readiness_score (e la banda da esso derivata) è l'unica fonte di verità.
   const readinessScore = briefing?.readiness_score ?? DEFAULT_READINESS_SCORE;
   const readinessBandValue = briefing ? readinessBand(briefing.readiness_score) : DEFAULT_READINESS_BAND;
+  // V42 — con pochi dati il punteggio non è una misura: chi lo mostra lo sa.
+  const readinessKnown = isBriefingReadinessKnown(briefing);
+  // V42 — il briefing di oggi è un piano di ripiego (Claude non raggiungibile)?
+  const briefingFallback = briefing?.directives?.source === 'fallback';
 
   // Data Completeness lato client — 50% oggettivo (4 campi biometrici) +
   // 50% soggettivo (4 campi del Recovery Survey) — reattivo SUBITO dopo
@@ -462,6 +567,8 @@ export function useSuitTelemetry() {
       briefing,
       readinessScore,
       readinessBand: readinessBandValue,
+      readinessKnown,
+      briefingFallback,
       dataCompleteness,
       loading,
       scanning,
@@ -472,6 +579,10 @@ export function useSuitTelemetry() {
       saveSubjectiveLog,
       generateNodeQuiz,
       quizGenerating,
+      generateOralExam,
+      evaluateOralAnswer,
+      generateWeeklyReview,
+      aiBusy,
       refresh
     }),
     [
@@ -481,6 +592,8 @@ export function useSuitTelemetry() {
       briefing,
       readinessScore,
       readinessBandValue,
+      readinessKnown,
+      briefingFallback,
       dataCompleteness,
       loading,
       scanning,
@@ -491,6 +604,10 @@ export function useSuitTelemetry() {
       saveSubjectiveLog,
       generateNodeQuiz,
       quizGenerating,
+      generateOralExam,
+      evaluateOralAnswer,
+      generateWeeklyReview,
+      aiBusy,
       refresh
     ]
   );

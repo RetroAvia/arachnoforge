@@ -28,6 +28,7 @@ import {
   argomentiSintesi
 } from '../utils/campusEngine.js';
 import { pagineLabel } from '../utils/format.js';
+import { colorFor } from '../utils/materiaColors.js';
 
 /**
  * V39.0 — EMPIRE STATE UNIVERSITY.
@@ -47,30 +48,6 @@ import { pagineLabel } from '../utils/format.js';
  * Tutti i numeri vengono da `derived.campus` (utils/campusEngine.js):
  * questa pagina non calcola niente, disegna.
  */
-
-/* ------------------------------------------------------------------ *
- * COLORI DELLE MATERIE
- * Stabili per id (non per posizione in lista): aggiungere o togliere una
- * materia non ricolora le altre. Classi letterali, così Tailwind le
- * include nel CSS.
- * ------------------------------------------------------------------ */
-const PALETTE = [
-  { bar: 'bg-cyan-400', block: 'bg-cyan-400/[0.10] border-cyan-400/35 hover:bg-cyan-400/[0.16]', text: 'text-cyan-50', dot: 'bg-cyan-400' },
-  { bar: 'bg-violet-400', block: 'bg-violet-400/[0.10] border-violet-400/35 hover:bg-violet-400/[0.16]', text: 'text-violet-50', dot: 'bg-violet-400' },
-  { bar: 'bg-amber-400', block: 'bg-amber-400/[0.10] border-amber-400/35 hover:bg-amber-400/[0.16]', text: 'text-amber-50', dot: 'bg-amber-400' },
-  { bar: 'bg-emerald-400', block: 'bg-emerald-400/[0.10] border-emerald-400/35 hover:bg-emerald-400/[0.16]', text: 'text-emerald-50', dot: 'bg-emerald-400' },
-  { bar: 'bg-rose-400', block: 'bg-rose-400/[0.10] border-rose-400/35 hover:bg-rose-400/[0.16]', text: 'text-rose-50', dot: 'bg-rose-400' },
-  { bar: 'bg-sky-400', block: 'bg-sky-400/[0.10] border-sky-400/35 hover:bg-sky-400/[0.16]', text: 'text-sky-50', dot: 'bg-sky-400' },
-  { bar: 'bg-lime-400', block: 'bg-lime-400/[0.10] border-lime-400/35 hover:bg-lime-400/[0.16]', text: 'text-lime-50', dot: 'bg-lime-400' },
-  { bar: 'bg-fuchsia-400', block: 'bg-fuchsia-400/[0.10] border-fuchsia-400/35 hover:bg-fuchsia-400/[0.16]', text: 'text-fuchsia-50', dot: 'bg-fuchsia-400' }
-];
-
-function colorFor(id) {
-  let h = 0;
-  const s = String(id || '');
-  for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return PALETTE[h % PALETTE.length];
-}
 
 const HOUR_PX = 56;
 
@@ -404,6 +381,12 @@ function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
             </span>
           )}
         </div>
+        {snap.coda.some((l) => l.lezioniArretrate > 0) && (
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Una lezione non sistemata resta in coda per due settimane come arretrata, invece di sparire: il piano le riserva tempo solo quando gli esami lo
+            permettono.
+          </p>
+        )}
         {snap.coda.length === 0 ? (
           <p className="text-[13px] text-slate-400 leading-relaxed">
             Niente in sospeso. Una lezione finisce qui solo se la materia ha fonti ancora da snellire nei suoi nodi, ed
@@ -433,8 +416,14 @@ function TodayCard({ snap, materieById, onAvviaSintesi, onEsito }) {
                           ? `${l.lezioniDaSistemare} lezioni (${minutiLabel(l.minutiDaSistemare)})`
                           : `Lezione delle ${l.inizio} di ${l.dateKey === snap.oggi ? 'oggi' : GIORNI[isoWeekday(l.dateKey)].toLowerCase()}`}
                         {' · '}
-                        {l.oreFa < 1 ? 'appena finita' : `${l.oreFa}h fa`}
+                        {l.oreFa < 1 ? 'appena finita' : l.oreFa < 48 ? `${l.oreFa}h fa` : `${Math.round(l.oreFa / 24)} giorni fa`}
                       </p>
+                      {l.lezioniArretrate > 0 && (
+                        <p className="text-xs text-accent mt-1 leading-relaxed">
+                          {l.lezioniArretrate === 1 ? '1 lezione arretrata' : `${l.lezioniArretrate} lezioni arretrate`} (oltre 3 giorni): più aspetti, più costa
+                          ricostruirla. Recuperala, oppure segnala fatta o saltata.
+                        </p>
+                      )}
                     </div>
                   </div>
                   {argomenti.length > 0 && (
@@ -1358,7 +1347,7 @@ export default function Campus() {
             const s = semModal.iniziale;
             setConfirm({
               title: `Eliminare ${s.nome}?`,
-              message: `Spariscono il periodo e le ${s.lezioni.length} lezioni del suo orario. Le sessioni di studio già registrate restano.`,
+              message: `Spariscono il periodo${s.lezioni.length > 0 ? ` e ${s.lezioni.length === 1 ? 'la lezione' : `le ${s.lezioni.length} lezioni`} del suo orario` : ''}. Le sessioni di studio già registrate restano.`,
               onConfirm: () => {
                 actions.campusDeleteSemestre(s.id);
                 setSemModal(null);

@@ -19,7 +19,7 @@ export function canClaimWebSling(profile) {
  * Tabella dei premi — Anti-Exploit (probabilità bilanciate, sommano a 100):
  *   75% — Bonus Standard   (+50 XP)
  *   20% — Bonus Medio      (+150 XP, Stamina rigenerata al 100%)
- *    4% — Bonus Raro       (+300 XP, Stamina rigenerata al 100%) — "altri bonus"
+ *    4% — Bonus Raro       (+300 XP, Stamina rigenerata al 100%, +1 Tech Token)
  *    1% — Forziere di Parker (Rarissimo): +200 XP + 1 Tech Token
  */
 export const WEB_SLING_TIERS = [
@@ -60,7 +60,9 @@ export const WEB_SLING_TIERS = [
     glowClass: 'shadow-accent-glow-lg',
     xp: 300,
     restoreStamina: true,
-    techTokens: 0
+    // V42 — +1 Tech Token: la garanzia "Pity" assicura almeno un Raro, e
+    // un Raro che non dava token rendeva la garanzia un premio vuoto.
+    techTokens: 1
   },
   {
     id: 'PARKER_CHEST',

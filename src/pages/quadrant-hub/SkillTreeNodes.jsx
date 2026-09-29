@@ -90,11 +90,14 @@ function DifficultyTag({ difficulty }) {
  * "Facile" dice +39 gg, su uno appena imparato +16 gg. È ciò che rende
  * visibile — e quindi credibile — la ripetizione dilazionata.
  */
-export function ReviewButtons({ onReview, size = 'normal', sfida = null, examDate = null }) {
-  const previews = previewReviewIntervals(sfida || {}, examDate);
+// V42 — quattro voti FSRS (Non ricordavo, Difficile, Bene, Facile), con la
+// data vera del prossimo ripasso: finestre d'esame e ripassi già in
+// programma nella materia (`load`) compresi.
+export function ReviewButtons({ onReview, size = 'normal', sfida = null, examDate = null, load = null }) {
+  const previews = previewReviewIntervals(sfida || {}, examDate, load ? { load } : undefined);
   const small = size === 'small';
   return (
-    <div className="grid grid-cols-3 gap-2">
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
       {Object.values(REVIEW_RATING).map((rating) => {
         const meta = REVIEW_RATING_META[rating];
         const days = previews[rating];
@@ -110,7 +113,7 @@ export function ReviewButtons({ onReview, size = 'normal', sfida = null, examDat
           >
             <span className={`${meta.color} ${small ? 'text-[13px]' : 'text-sm'} font-semibold leading-tight`}>{meta.label}</span>
             <span className="text-[11px] font-normal text-slate-500 leading-tight mt-0.5 ds-num" title="Prossimo ripasso">
-              tra {days} {days === 1 ? 'giorno' : 'gg'}
+              {days <= 1 ? 'domani' : `fra ${days}\u00a0gg`}
             </span>
           </button>
         );
@@ -434,7 +437,9 @@ export const ParentModuleCard = memo(function ParentModuleCard({
             </span>
             <span className="text-xs text-slate-400 ds-num whitespace-nowrap">
               {doneChildren}/{childCount} completati
-              {status === NODE_STATUS.LOCKED && pendingChildren > 0 && <span className="text-slate-500"> · il Boss si sblocca a 0</span>}
+              {status === NODE_STATUS.LOCKED && pendingChildren > 0 && (
+                <span className="text-slate-500"> · {pendingChildren === 1 ? 'ne manca 1' : `ne mancano ${pendingChildren}`} per il Boss</span>
+              )}
             </span>
             <span className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-slate-400">
               {childrenOpen ? 'Nascondi' : 'Mostra'}

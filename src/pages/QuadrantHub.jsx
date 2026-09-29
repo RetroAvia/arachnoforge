@@ -32,7 +32,7 @@ import { deriveNodeStatus, NODE_STATUS, isDescendant, directChildrenOf } from '.
 import { formatDateOnlyHuman, formatHoursMinutes, todayDateOnlyKey, daysUntilDateOnly } from '../utils/dateUtils.js';
 import { weeklyMinutesByMateria } from '../utils/campusEngine.js';
 import { DIFFICULTY, DIFFICULTY_META } from '../utils/xpEngine.js';
-import { REVIEW_RATING_META } from '../utils/spiderSense.js';
+import { REVIEW_RATING_META, reviewLoadByDate, nodeRetrievability } from '../utils/spiderSense.js';
 import { isGoblinProtocol, computeEstimatedCompletion } from '../utils/materiaMeta.js';
 import {
   CUSTOM_COURSE_ID,
@@ -40,8 +40,12 @@ import {
   getCourseById,
   getMissingPrerequisites,
   computeSpiderScore,
-  DIFFICULTY_SLIDER_LABELS
+  DIFFICULTY_SLIDER_LABELS,
+  isUngradedMateria,
+  TIPO_PIANO,
+  TIPO_PIANO_META
 } from '../data/vanvitelliCourseMap.js';
+import { FORMATO_ESAME, normalizeAppelli, planningExamDate, derivedExamFields } from '../utils/appelli.js';
 import { MIN_VOTO, MAX_VOTO, LODE_VALUE } from '../utils/gpaEngine.js';
 import { CARD, CARD_NOPAD, BTN_PRIMARY, BTN_SECONDARY, BTN_SUCCESS, BTN_GHOST, INPUT, LABEL, BADGE } from '../utils/designSystem.js';
 import { KarenSuggestorPanel, BountyBoardPanel } from './quadrant-hub/KarenPanels.jsx';
@@ -52,7 +56,10 @@ import { STATUS_META, ReviewButtons, ParentModuleCard } from './quadrant-hub/Ski
 import MateriaListPanel from './quadrant-hub/MateriaList.jsx';
 import MateriaHeader from './quadrant-hub/MateriaHeader.jsx';
 import { VERDICT_META } from '../utils/examReadiness.js';
-import { useKarenBrain } from '../context/KarenBrainContext.jsx';
+import ExamReadinessCard from './quadrant-hub/ExamReadiness.jsx';
+import AppelliEditor from './quadrant-hub/AppelliEditor.jsx';
+import OralExamModal from './quadrant-hub/OralExamModal.jsx';
+import { NodeQuizPanel, EserciziLogger, SimulazioneModal, RicostruisciModal } from './quadrant-hub/StudyTools.jsx';
 import { formatNumber, minutiLabel } from '../utils/format.js';
 import { INTENT, useIntent, requestIntent } from '../utils/uiIntents.js';
 import { ROUTES, goTo } from '../hooks/useArachnoForgeRouter.js';
@@ -67,266 +74,6 @@ const YEAR_SECTIONS = [
 
 const DIFFICULTY_OPTIONS = Object.values(DIFFICULTY).map((d) => ({ value: d, label: DIFFICULTY_META[d].label }));
 
-/** "SOSTIENI" -> "Sostieni": il verdetto si legge, non si grida. */
-function sentenceCase(s) {
-  const str = String(s || '');
-  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
-}
-
-/* ================================================================== *
- * PRONTEZZA D'ESAME
- * ================================================================== */
-
-/** Pilastro dell'indice: si vede QUALE dei quattro trascina giù il verdetto; senza dati reali è dichiarato "n/d". */
-function ReadinessPillar({ label, value, known, hint }) {
-  const pctValue = Math.round(value * 100);
-  const tone = pctValue >= 75 ? 'bg-emerald-400' : pctValue >= 50 ? 'bg-accent' : 'bg-primary';
-  return (
-    <div title={hint}>
-      <div className="flex items-center justify-between gap-2 text-xs mb-1.5">
-        <span className="text-slate-400">{label}</span>
-        <span className={`ds-num font-semibold ${known ? 'text-slate-200' : 'text-slate-500'}`}>{known ? `${pctValue}%` : 'n/d'}</span>
-      </div>
-      <div className="ds-progress">
-        <span className={known ? tone : 'bg-slate-600'} style={{ width: `${Math.max(2, pctValue)}%`, opacity: known ? 1 : 0.4 }} />
-      </div>
-    </div>
-  );
-}
-
-/** Anello del punteggio (0–100). */
-function ScoreRing({ score, className = '' }) {
-  const r = 24;
-  const c = 2 * Math.PI * r;
-  const v = Math.max(0, Math.min(100, Number(score) || 0));
-  return (
-    <div className={`relative w-16 h-16 shrink-0 ${className}`}>
-      <svg viewBox="0 0 56 56" className="w-16 h-16 -rotate-90" aria-hidden="true">
-        <circle cx="28" cy="28" r={r} fill="none" stroke="rgb(255 255 255 / 0.08)" strokeWidth="5" />
-        <circle
-          cx="28"
-          cy="28"
-          r={r}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="5"
-          strokeLinecap="round"
-          strokeDasharray={`${(v / 100) * c} ${c}`}
-          style={{ transition: 'stroke-dasharray 0.6s cubic-bezier(0.22, 1, 0.36, 1)' }}
-        />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-lg font-bold leading-none ds-num">{Math.round(v)}</span>
-        <span className="text-[9px] text-slate-500 mt-0.5">su 100</span>
-      </div>
-    </div>
-  );
-}
-
-/**
- * V36.0 — Il verdetto sull'esame: punteggio, i quattro pilastri, il
- * motivo dominante e il burn-down (ore da fare contro giorni rimasti:
- * l'unico grafico che risponde a "ci arrivo o no").
- */
-function ExamReadinessCard({ readiness, materia, estimate }) {
-  const meta = VERDICT_META[readiness.verdict] || VERDICT_META.UNKNOWN;
-  const lowConfidence = readiness.confidence < 0.75;
-  const showBurnDown = materia.examDate && estimate && !estimate.done;
-  const needed = showBurnDown ? estimate.totalDaysNeeded || 0 : 0;
-  const available = showBurnDown ? Math.max(0, readiness.daysRemaining ?? 0) : 0;
-  const scale = Math.max(needed, available, 1);
-  const late = needed > available;
-
-  return (
-    <section className={CARD_NOPAD} aria-label="Prontezza d'esame">
-      <div className="p-4 sm:p-5 flex flex-col lg:flex-row gap-5">
-        <div className="flex items-center gap-4 lg:w-64 shrink-0">
-          <ScoreRing score={readiness.score} className={meta.tone} />
-          <div className="min-w-0">
-            <p className="ds-eyebrow">Prontezza d'esame</p>
-            <p className={`text-lg font-bold tracking-tight ${meta.tone}`}>{sentenceCase(meta.label)}</p>
-            {(readiness.daysRemaining != null || readiness.dataScaduta) && (
-              <p className={`text-xs mt-0.5 ${readiness.dataScaduta ? 'text-accent' : 'text-slate-500'}`}>
-                {readiness.dataScaduta
-                  ? 'Appello già passato'
-                  : readiness.daysRemaining === 0
-                  ? "L'esame è oggi"
-                  : readiness.daysRemaining === 1
-                  ? "Un giorno all'esame"
-                  : `${readiness.daysRemaining} giorni all'esame`}
-              </p>
-            )}
-          </div>
-        </div>
-
-        <div className="flex-1 grid grid-cols-2 gap-x-5 gap-y-3.5 content-center">
-          <ReadinessPillar
-            label="Copertura"
-            value={readiness.parts.coverage}
-            known={readiness.known.hasNodes}
-            hint="Quanta parte del programma hai già chiuso"
-          />
-          <ReadinessPillar
-            label="Stabilità"
-            value={readiness.parts.stability}
-            known={readiness.known.hasStability}
-            hint="Quanto reggono in memoria gli argomenti chiusi (ripassi)"
-          />
-          <ReadinessPillar
-            label="Fattibilità"
-            value={readiness.parts.feasibility}
-            known={readiness.known.hasExamDate}
-            hint="Ore che restano da fare contro il tempo che hai davvero"
-          />
-          <ReadinessPillar
-            label="Attrito"
-            value={readiness.parts.friction}
-            known={readiness.known.hasFriction}
-            hint="Quanto ti costano i ripassi (più alto = meno attrito)"
-          />
-        </div>
-      </div>
-
-      <div className="px-4 sm:px-5 pb-4 sm:pb-5 space-y-3.5">
-        <p className="text-sm text-slate-300 leading-relaxed">{readiness.rationale}</p>
-
-        {showBurnDown && (
-          <div className="ds-well p-3.5 space-y-2.5">
-            <p className="ds-eyebrow">Ci arrivi in tempo?</p>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400 w-20 shrink-0">Servono</span>
-              <div className="ds-progress flex-1 !h-2">
-                <span className={late ? 'bg-primary' : 'bg-emerald-400'} style={{ width: `${(needed / scale) * 100}%` }} />
-              </div>
-              <span className="text-xs ds-num text-slate-200 w-16 text-right shrink-0">{needed} gg</span>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400 w-20 shrink-0">Disponibili</span>
-              <div className="ds-progress flex-1 !h-2">
-                <span className="bg-secondary" style={{ width: `${(available / scale) * 100}%` }} />
-              </div>
-              <span className="text-xs ds-num text-slate-200 w-16 text-right shrink-0">{available} gg</span>
-            </div>
-            <p className={`text-xs ${late ? 'text-primary' : 'text-slate-400'}`}>
-              {formatHoursMinutes(estimate.totalHoursNeeded)} residue, calibrate sul tuo storico
-              {late ? ` — al ritmo attuale mancano ${needed - available} giorni.` : ` — ${available - needed} giorni di margine.`}
-            </p>
-          </div>
-        )}
-
-        {lowConfidence && (
-          <p className="text-xs text-slate-500">
-            Confidenza parziale: alcuni pilastri non hanno ancora dati reali (n/d). Il verdetto si affina man mano che mappi
-            gli argomenti, fissi la data e accumuli ripassi.
-          </p>
-        )}
-      </div>
-    </section>
-  );
-}
-
-/* ================================================================== *
- * INTERROGAZIONE K.A.R.E.N.
- * ================================================================== */
-
-/**
- * V36.0 — Il punto debole della ripetizione dilazionata era
- * l'autovalutazione "a sensazione" subito dopo una rilettura. Qui Karen
- * genera 6-8 domande di richiamo attivo da titolo, obiettivo e appunti del
- * nodo: rispondi a mente, riveli la traccia, e solo allora giudichi.
- * Generata una volta e salvata nel nodo: dal secondo ripasso è già lì,
- * anche offline.
- */
-function NodeQuizPanel({ node, materiaId, onSaveQuiz }) {
-  const karen = useKarenBrain();
-  const [revealed, setRevealed] = useState(() => new Set());
-  const [error, setError] = useState(null);
-  const [thin, setThin] = useState(false);
-  const quiz = node.quiz && Array.isArray(node.quiz.domande) ? node.quiz : null;
-
-  const toggleReveal = (idx) =>
-    setRevealed((prev) => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx);
-      else next.add(idx);
-      return next;
-    });
-
-  const handleGenerate = async () => {
-    setError(null);
-    const result = await karen.generateNodeQuiz(materiaId, node.id);
-    if (result.error) {
-      setError(result.error);
-      return;
-    }
-    setThin(!!result.thinContext);
-    setRevealed(new Set());
-    onSaveQuiz(result.quiz);
-  };
-
-  return (
-    <div className="rounded-xl border border-line bg-surface/70">
-      <div className="flex items-center justify-between gap-2 flex-wrap px-3.5 py-3 border-b border-line">
-        <p className="text-sm font-semibold text-slate-100 flex items-center gap-2">
-          <Icon name="chip" className="w-4 h-4 text-secondary" />
-          Interrogazione K.A.R.E.N.
-          {quiz && <span className="text-xs font-normal text-slate-500 ds-num">· {quiz.domande.length} domande</span>}
-        </p>
-        <button type="button" onClick={handleGenerate} disabled={karen.quizGenerating} className="ds-btn ds-btn-ghost ds-btn-sm">
-          <Icon name={karen.quizGenerating ? 'refresh' : 'sparkles'} className={`w-3.5 h-3.5 ${karen.quizGenerating ? 'animate-spin' : ''}`} />
-          {karen.quizGenerating ? 'In preparazione…' : quiz ? 'Rigenera' : 'Prepara le domande'}
-        </button>
-      </div>
-
-      <div className="p-3.5 space-y-2.5">
-        {error && <p className="text-xs text-primary leading-relaxed">{error}</p>}
-        {thin && (
-          <p className="text-xs text-accent leading-relaxed">
-            Su questo argomento c'è poco materiale scritto: le domande restano sui fondamenti. Aggiungi due righe negli
-            appunti e rigenerala per averle mirate sul tuo contenuto.
-          </p>
-        )}
-
-        {!quiz ? (
-          <p className="text-xs text-slate-400 leading-relaxed">
-            Rispondere a mente prima di rileggere è ciò che fissa la memoria — e rende onesto il giudizio del ripasso.
-            Generata una volta, resta salvata sull'argomento.
-          </p>
-        ) : (
-          <ol className="space-y-2">
-            {quiz.domande.map((d, idx) => (
-              <li key={`${d.domanda}-${idx}`} className="rounded-lg border border-line bg-panel px-3 py-2.5">
-                <div className="flex items-start gap-2.5">
-                  <span className="text-[11px] font-semibold text-secondary ds-num shrink-0 mt-0.5 w-5">{idx + 1}.</span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-slate-100 leading-relaxed">{d.domanda}</p>
-                    <div className="flex items-center gap-3 mt-1 flex-wrap">
-                      {d.tipo && <span className="text-[11px] text-slate-500">{d.tipo}</span>}
-                      {d.traccia && (
-                        <button
-                          type="button"
-                          onClick={() => toggleReveal(idx)}
-                          aria-expanded={revealed.has(idx)}
-                          className="text-[11px] font-semibold text-slate-400 hover:text-secondary transition-colors"
-                        >
-                          {revealed.has(idx) ? 'Nascondi traccia' : 'Mostra traccia'}
-                        </button>
-                      )}
-                    </div>
-                    {revealed.has(idx) && d.traccia && (
-                      <p className="text-xs text-slate-300 mt-2 leading-relaxed border-l-2 border-secondary/40 pl-2.5">{d.traccia}</p>
-                    )}
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ol>
-        )}
-      </div>
-    </div>
-  );
-}
-
 /* ================================================================== *
  * AVVIA FOCUS SU UN ARGOMENTO
  * ================================================================== */
@@ -336,7 +83,7 @@ function NodeQuizPanel({ node, materiaId, onSaveQuiz }) {
  * sé (il contesto del timer cambia ogni secondo: tenerlo qui dentro evita
  * di ridisegnare l'intera pagina a ogni tick).
  */
-function StartFocusButton({ materiaId, sfidaId, onStart, label = 'Avvia Focus', variant = 'solid', className = '' }) {
+function StartFocusButton({ materiaId, sfidaId, onStart, label = 'Avvia Focus', variant = 'solid', className = '', intent = null }) {
   const timer = useFocusTimerContext();
   const busy = timer.status !== TIMER_STATUS.IDLE;
   const onThis = busy && timer.activeFocusSfidaId === sfidaId;
@@ -352,7 +99,7 @@ function StartFocusButton({ materiaId, sfidaId, onStart, label = 'Avvia Focus', 
   return (
     <button
       type="button"
-      onClick={() => onStart({ materiaId, sfidaId })}
+      onClick={() => onStart({ materiaId, sfidaId, ...(intent ? { intent } : {}) })}
       disabled={busy}
       title={
         busy
@@ -395,6 +142,10 @@ export default function QuadrantHub() {
   // accidentale non riapre subito il nodo.
   const [reopenNodeTarget, setReopenNodeTarget] = useState(null);
   const [spiderSenseDrawerOpen, setSpiderSenseDrawerOpen] = useState(false);
+  // V42 — pratica e ricostruzione: simulazione, interrogazione orale, "ricomincio da zero".
+  const [simulazioneOpen, setSimulazioneOpen] = useState(false);
+  const [ricostruisciOpen, setRicostruisciOpen] = useState(false);
+  const [oralTarget, setOralTarget] = useState(null); // { materia, sfide }
 
   // V34.2 — Selezione multipla: un Set (lookup O(1) per riga). Uscire
   // dalla modalità azzera sempre il set.
@@ -418,6 +169,7 @@ export default function QuadrantHub() {
   const [editPagine, setEditPagine] = useState('');
   const [editFonti, setEditFonti] = useState([]);
   const [editAppuntiCompleti, setEditAppuntiCompleti] = useState(false);
+  const [editPreviste, setEditPreviste] = useState('');
   const [editDifficulty, setEditDifficulty] = useState(DIFFICULTY.MEDIUM);
   // V36.0 — Appunti del nodo (formule, passaggi, errori tipici...).
   const [editNote, setEditNote] = useState('');
@@ -429,7 +181,11 @@ export default function QuadrantHub() {
   // (Ingegneria Aerospaziale), oppure "Materia libera".
   const [formCourseId, setFormCourseId] = useState('');
   const [formCustomNome, setFormCustomNome] = useState('');
-  const [formExamDate, setFormExamDate] = useState('');
+  // V42 — gli appelli (scritto/orale, più date) al posto della data unica.
+  const [formAppelli, setFormAppelli] = useState([]);
+  const [formTargetId, setFormTargetId] = useState(null);
+  const [formFormato, setFormFormato] = useState(FORMATO_ESAME.SCRITTO_ORALE);
+  const [formTipoPiano, setFormTipoPiano] = useState(TIPO_PIANO.SCELTA);
   const [formCfu, setFormCfu] = useState(6);
   const [formDifficulty, setFormDifficulty] = useState(3);
   const [formExamPassed, setFormExamPassed] = useState(false);
@@ -439,6 +195,12 @@ export default function QuadrantHub() {
   const [formLode, setFormLode] = useState(false);
   const courseOptions = useMemo(() => getCourseDropdownOptions(), []);
   const selectedCourse = formCourseId && formCourseId !== CUSTOM_COURSE_ID ? getCourseById(formCourseId) : null;
+  // La prossima prova dell'appello scelto nel form (per l'anteprima).
+  const formProssimaData = useMemo(() => {
+    const appelli = normalizeAppelli(formAppelli);
+    return planningExamDate({ ...derivedExamFields({ appelli, appelloTargetId: formTargetId }), formatoEsame: formFormato }) || null;
+  }, [formAppelli, formTargetId, formFormato]);
+  const formSenzaVoto = formFormato === FORMATO_ESAME.IDONEITA || selectedCourse?.ungraded === true;
   const missingPrereqs = useMemo(
     () => (selectedCourse ? getMissingPrerequisites(selectedCourse.id, materie, editingMateria?.id || null) : []),
     [selectedCourse, materie, editingMateria]
@@ -451,13 +213,14 @@ export default function QuadrantHub() {
         {
           perceivedDifficulty: formDifficulty,
           courseId: selectedCourse?.id || null,
-          examDate: formExamDate || null,
+          examDate: formProssimaData,
           cfu: selectedCourse?.cfu || Number(formCfu) || 0,
-          sfide: []
+          // In modifica, gli argomenti veri: l'anteprima coincide col punteggio in testata.
+          sfide: editingMateria?.sfide || []
         },
         derived.calibration
       ),
-    [formDifficulty, selectedCourse, formExamDate, formCfu, derived.calibration]
+    [formDifficulty, selectedCourse, formProssimaData, formCfu, editingMateria, derived.calibration]
   );
 
   const [sfidaNome, setSfidaNome] = useState('');
@@ -468,6 +231,7 @@ export default function QuadrantHub() {
   const [sfidaPagine, setSfidaPagine] = useState('');
   const [sfidaFonti, setSfidaFonti] = useState([]);
   const [sfidaAppuntiCompleti, setSfidaAppuntiCompleti] = useState(false);
+  const [sfidaPreviste, setSfidaPreviste] = useState('');
   const [sfidaParentId, setSfidaParentId] = useState('');
   const [sfidaDifficulty, setSfidaDifficulty] = useState(DIFFICULTY.MEDIUM);
 
@@ -597,6 +361,29 @@ export default function QuadrantHub() {
   );
 
   const readiness = selectedMateria ? derived.examReadinessByMateriaId.get(selectedMateria.id) || null : null;
+  // V42 — la materia con la data di PIANIFICAZIONE (la prossima prova ancora davanti).
+  const selectedMateriaPiano = useMemo(
+    () => (selectedMateria ? derived.materiePiano.find((m) => m.id === selectedMateria.id) || selectedMateria : null),
+    [selectedMateria, derived.materiePiano]
+  );
+  const planningDate = selectedMateriaPiano?.examDate || null;
+
+  /** Interrogazione orale sulla materia: gli argomenti che ricordi meno (fino a 5), o quelli in corso. */
+  const openOralForMateria = useCallback(() => {
+    if (!selectedMateria) return;
+    const fatti = selectedSfide
+      .filter((s) => s.status === 'COMPLETED')
+      .map((s) => ({ s, r: nodeRetrievability(s) ?? 1 }))
+      .sort((a, b) => a.r - b.r)
+      .slice(0, 5)
+      .map((x) => x.s);
+    const scelti = fatti.length > 0 ? fatti : selectedSfide.filter((s) => Number(s.focusMinutes) > 0).slice(0, 5);
+    if (scelti.length === 0) {
+      pushToast('Serve almeno un argomento studiato (o in corso) per l’interrogazione orale.', 'info');
+      return;
+    }
+    setOralTarget({ materia: selectedMateria, sfide: scelti });
+  }, [selectedMateria, selectedSfide, pushToast]);
   const selectedQuota = selectedMateria ? derived.karenQuotaByMateriaId.get(selectedMateria.id) : null;
 
   // Spider-Sense Schedule: tutti gli argomenti tracciati, per materia.
@@ -651,7 +438,10 @@ export default function QuadrantHub() {
     setEditingMateria(null);
     setFormCourseId('');
     setFormCustomNome('');
-    setFormExamDate('');
+    setFormAppelli([]);
+    setFormTargetId(null);
+    setFormFormato(FORMATO_ESAME.SCRITTO_ORALE);
+    setFormTipoPiano(TIPO_PIANO.SCELTA);
     setFormCfu(6);
     setFormDifficulty(3);
     setFormExamPassed(false);
@@ -674,7 +464,10 @@ export default function QuadrantHub() {
     setEditingMateria(materia);
     setFormCourseId(materia.courseId || CUSTOM_COURSE_ID);
     setFormCustomNome(materia.courseId ? '' : materia.nome);
-    setFormExamDate(materia.examDate || '');
+    setFormAppelli(normalizeAppelli(materia.appelli));
+    setFormTargetId(materia.appelloTargetId || null);
+    setFormFormato(materia.formatoEsame || (isUngradedMateria(materia) ? FORMATO_ESAME.IDONEITA : FORMATO_ESAME.SCRITTO_ORALE));
+    setFormTipoPiano(materia.tipoPiano && TIPO_PIANO[materia.tipoPiano] ? materia.tipoPiano : materia.courseId ? TIPO_PIANO.PIANO : TIPO_PIANO.SCELTA);
     setFormCfu(materia.cfu);
     setFormDifficulty(Number.isFinite(materia.perceivedDifficulty) ? materia.perceivedDifficulty : 3);
     setFormExamPassed(!!materia.examPassed);
@@ -688,6 +481,9 @@ export default function QuadrantHub() {
     setFormCourseId(courseId);
     const course = courseId && courseId !== CUSTOM_COURSE_ID ? getCourseById(courseId) : null;
     if (course) setFormCfu(course.cfu);
+    // Un'idoneità del piano (es. Inglese) non ha voto: il formato lo segue.
+    if (course?.ungraded) setFormFormato(FORMATO_ESAME.IDONEITA);
+    else if (formFormato === FORMATO_ESAME.IDONEITA && course) setFormFormato(FORMATO_ESAME.SCRITTO_ORALE);
   };
 
   const submitMateria = () => {
@@ -695,11 +491,19 @@ export default function QuadrantHub() {
     if (!formCourseId || !nome) return;
     // Il voto conta SOLO se l'esame è superato: niente medie sporcate.
     const parsedVoto = Number(formVoto);
-    const voto = formExamPassed && Number.isFinite(parsedVoto) && parsedVoto >= MIN_VOTO && parsedVoto <= MAX_VOTO ? parsedVoto : null;
+    const voto =
+      formExamPassed && !formSenzaVoto && Number.isFinite(parsedVoto) && parsedVoto >= MIN_VOTO && parsedVoto <= MAX_VOTO ? parsedVoto : null;
+    // V42 — gli appelli, normalizzati (date "YYYY-MM-DD" pure, orale mai
+    // prima dello scritto); l'obiettivo resta quello scelto, se esiste.
+    const appelli = normalizeAppelli(formAppelli);
+    const appelloTargetId = appelli.some((a) => a.id === formTargetId) ? formTargetId : null;
     const payload = {
       nome,
       courseId: selectedCourse ? selectedCourse.id : null,
-      examDate: formExamDate || null, // "YYYY-MM-DD" puro: aritmetica sempre in UTC assoluto.
+      appelli,
+      appelloTargetId,
+      formatoEsame: formFormato,
+      tipoPiano: selectedCourse ? (selectedCourse.id === 'sceltaLibera' ? TIPO_PIANO.SCELTA : TIPO_PIANO.PIANO) : formTipoPiano === TIPO_PIANO.EXTRA ? TIPO_PIANO.EXTRA : TIPO_PIANO.SCELTA,
       cfu: selectedCourse ? selectedCourse.cfu : Math.max(1, Number(formCfu) || 6),
       perceivedDifficulty: formDifficulty,
       examPassed: formExamPassed,
@@ -740,6 +544,7 @@ export default function QuadrantHub() {
     setSfidaPagine('');
     setSfidaFonti([]);
     setSfidaAppuntiCompleti(false);
+    setSfidaPreviste('');
     setSfidaParentId('');
     setSfidaDifficulty(DIFFICULTY.MEDIUM);
     setSfidaModalOpen(true);
@@ -754,6 +559,7 @@ export default function QuadrantHub() {
       pagineAppunti: Math.max(0, Number(sfidaPagine) || 0),
       fonti: normalizeFonti(sfidaFonti),
       appuntiCompleti: !!sfidaAppuntiCompleti,
+      pagineAppuntiPreviste: Math.max(0, Math.round(Number(sfidaPreviste) || 0)),
       parentId: sfidaParentId || null,
       difficulty: sfidaDifficulty
     });
@@ -770,6 +576,7 @@ export default function QuadrantHub() {
     setSfidaPagine('');
     setSfidaFonti([]);
     setSfidaAppuntiCompleti(false);
+    setSfidaPreviste('');
     setSfidaModalOpen(true);
     pushToast(`"${nome}" aggiunto. Scrivi il prossimo.`, 'success', { duration: 2500 });
   };
@@ -783,6 +590,7 @@ export default function QuadrantHub() {
     setEditPagine(appunti > 0 ? String(appunti) : '');
     setEditFonti(Array.isArray(node.fonti) ? node.fonti : []);
     setEditAppuntiCompleti(node.appuntiCompleti === true);
+    setEditPreviste(Number(node.pagineAppuntiPreviste) > 0 ? String(node.pagineAppuntiPreviste) : '');
     setEditDifficulty(node.difficulty);
     setEditNote(node.note || '');
     setEditParentId(node.parentId || '');
@@ -812,6 +620,7 @@ export default function QuadrantHub() {
         pagineAppunti: Math.max(0, Number(editPagine) || 0),
         fonti: normalizeFonti(editFonti),
         appuntiCompleti: !!editAppuntiCompleti,
+        pagineAppuntiPreviste: Math.max(0, Math.round(Number(editPreviste) || 0)),
         difficulty: editDifficulty,
         note: editNote,
         parentId: editParentId || null
@@ -826,7 +635,7 @@ export default function QuadrantHub() {
         pushToast('Modifiche salvate su questo dispositivo. Il Cloud non ha risposto: ritento in automatico.', 'warning');
       }
     },
-    [selectedMateria, editNome, editObiettivo, editOreStimate, editPagine, editFonti, editAppuntiCompleti, editDifficulty, editNote, editParentId, nodeSaveState, actions, pushToast]
+    [selectedMateria, editNome, editObiettivo, editOreStimate, editPagine, editFonti, editAppuntiCompleti, editPreviste, editDifficulty, editNote, editParentId, nodeSaveState, actions, pushToast]
   );
 
   /** V36.0 — l'interrogazione si salva DENTRO il nodo, con la stessa azione di ogni altra modifica. */
@@ -970,9 +779,13 @@ export default function QuadrantHub() {
             <>
               <MateriaHeader
                 materia={selectedMateria}
+                planningDate={planningDate}
                 course={selectedCourseOfMateria}
                 quota={selectedQuota}
                 estimate={estimate}
+                onSimulazione={() => setSimulazioneOpen(true)}
+                onOrale={openOralForMateria}
+                onRicostruisci={() => setRicostruisciOpen(true)}
                 readiness={readiness}
                 verdictMeta={VERDICT_META}
                 goblinActive={goblinActive}
@@ -1106,7 +919,7 @@ export default function QuadrantHub() {
                 <div className="space-y-5">
                   {readiness && (
                     <div id="wm-readiness" className="scroll-mt-4">
-                      <ExamReadinessCard readiness={readiness} materia={selectedMateria} estimate={estimate} />
+                      <ExamReadinessCard readiness={readiness} materia={selectedMateriaPiano} quota={selectedQuota} />
                     </div>
                   )}
                   <PianoAppuntiPanel
@@ -1276,11 +1089,34 @@ export default function QuadrantHub() {
             </div>
           )}
 
-          <div>
-            <label className={LABEL} htmlFor="wm-materia-data">
-              Data dell'esame <span className="text-slate-500 font-normal">(facoltativa)</span>
-            </label>
-            <input id="wm-materia-data" type="date" value={formExamDate} onChange={(e) => setFormExamDate(e.target.value)} className={INPUT} />
+          {formCourseId === CUSTOM_COURSE_ID && (
+            <div>
+              <span className={LABEL}>Nel piano di studi</span>
+              <div className="ds-segmented grid grid-cols-2" role="radiogroup" aria-label="Tipo di esame nel piano">
+                {[TIPO_PIANO.SCELTA, TIPO_PIANO.EXTRA].map((t) => (
+                  <button key={t} type="button" role="radio" aria-checked={formTipoPiano === t} onClick={() => setFormTipoPiano(t)} className="justify-center">
+                    {TIPO_PIANO_META[t].label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-slate-500 mt-1.5">
+                Gli esami a scelta contano per la laurea fino a 18 CFU; i sovrannumerari restano fuori da media e CFU del piano.
+              </p>
+            </div>
+          )}
+
+          <div className="rounded-xl border border-line bg-surface/40 p-4">
+            <AppelliEditor
+              appelli={formAppelli}
+              targetId={formTargetId}
+              formato={formFormato}
+              formatoBloccato={selectedCourse?.ungraded === true}
+              onFormato={setFormFormato}
+              onChange={({ appelli, targetId }) => {
+                setFormAppelli(appelli);
+                setFormTargetId(targetId);
+              }}
+            />
           </div>
 
           <div className="ds-well px-4 py-3.5">
@@ -1304,8 +1140,11 @@ export default function QuadrantHub() {
               // data di verbalizzazione parte da quella.
               const next = !formExamPassed;
               setFormExamPassed(next);
-              if (next && !formExamPassedDate && formExamDate && formExamDate <= todayDateOnlyKey()) {
-                setFormExamPassedDate(formExamDate);
+              // Data di verbalizzazione di partenza: l'ultima prova passata dell'appello scelto.
+              const target = formAppelli.find((a) => a.id === formTargetId) || null;
+              const ultima = target ? target.orale || target.scritto : null;
+              if (next && !formExamPassedDate && ultima && ultima <= todayDateOnlyKey()) {
+                setFormExamPassedDate(ultima);
               }
             }}
           />
@@ -1317,7 +1156,7 @@ export default function QuadrantHub() {
                 <Icon name="chartBar" className="w-4 h-4 text-accent" />
                 Voto e verbalizzazione
               </p>
-              <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-end">
+              <div className={`grid grid-cols-1 gap-3 items-end ${formSenzaVoto ? '' : 'sm:grid-cols-[1fr_1fr_auto]'}`}>
                 <div>
                   <label className={LABEL} htmlFor="wm-materia-verbale">
                     Data di verbalizzazione
@@ -1331,6 +1170,7 @@ export default function QuadrantHub() {
                     className={INPUT}
                   />
                 </div>
+                {!formSenzaVoto && (
                 <div>
                   <label className={LABEL} htmlFor="wm-materia-voto">
                     Voto (18–30)
@@ -1346,6 +1186,8 @@ export default function QuadrantHub() {
                     className={`${INPUT} ds-num`}
                   />
                 </div>
+                )}
+                {!formSenzaVoto && (
                 <button
                   type="button"
                   onClick={() => setFormLode((v) => !v)}
@@ -1356,10 +1198,12 @@ export default function QuadrantHub() {
                 >
                   <Icon name="trophy" className="w-4 h-4" />e lode
                 </button>
+                )}
               </div>
               <p className="text-xs text-slate-500">
-                La data è quella del verbale, non di oggi: alimenta lo storico della media e la stima del tempo di laurea. Senza
-                voto l'esame resta fuori dalla media ponderata.
+                {formSenzaVoto
+                  ? 'Idoneità: nessun voto, i CFU contano per la laurea ma non per la media.'
+                  : "La data è quella del verbale, non di oggi: alimenta lo storico della media e la stima del tempo di laurea. Senza voto l'esame resta fuori dalla media ponderata."}
               </p>
             </div>
           )}
@@ -1493,6 +1337,8 @@ export default function QuadrantHub() {
             onPagineAppuntiChange={setSfidaPagine}
             appuntiCompleti={sfidaAppuntiCompleti}
             onAppuntiCompletiChange={setSfidaAppuntiCompleti}
+            pagineAppuntiPreviste={sfidaPreviste}
+            onPagineAppuntiPrevisteChange={setSfidaPreviste}
             calibration={derived.calibration}
             oreStimate={sfidaOreStimate}
           />
@@ -1630,6 +1476,8 @@ export default function QuadrantHub() {
                     onPagineAppuntiChange={setEditPagine}
                     appuntiCompleti={editAppuntiCompleti}
                     onAppuntiCompletiChange={setEditAppuntiCompleti}
+                    pagineAppuntiPreviste={editPreviste}
+                    onPagineAppuntiPrevisteChange={setEditPreviste}
                     calibration={derived.calibration}
                     oreStimate={editOreStimate}
                     compact
@@ -1791,9 +1639,23 @@ export default function QuadrantHub() {
 
                 {/* Già studiato: interrogazione, poi il giudizio del ripasso
                     (V36.0: prima si tenta di richiamare, poi si giudica). */}
+                {status === NODE_STATUS.IN_PROGRESS && (
+                  <NodeQuizPanel
+                    node={nodeDetail}
+                    materiaId={selectedMateria.id}
+                    onSaveQuiz={handleSaveQuiz}
+                    onRegister={(esito) => actions.quizResult(selectedMateria.id, nodeDetail.id, esito)}
+                  />
+                )}
+
                 {isDone && (
                   <>
-                    <NodeQuizPanel node={nodeDetail} materiaId={selectedMateria.id} onSaveQuiz={handleSaveQuiz} />
+                    <NodeQuizPanel
+                      node={nodeDetail}
+                      materiaId={selectedMateria.id}
+                      onSaveQuiz={handleSaveQuiz}
+                      onRegister={(esito) => actions.quizResult(selectedMateria.id, nodeDetail.id, esito)}
+                    />
                     <div className="space-y-2">
                       <p className={`text-sm font-semibold flex items-center gap-2 ${status === NODE_STATUS.NEEDS_REVIEW ? 'text-accent' : 'text-slate-200'}`}>
                         <Icon name="radar" className="w-4 h-4" />
@@ -1801,7 +1663,8 @@ export default function QuadrantHub() {
                       </p>
                       <ReviewButtons
                         sfida={nodeDetail}
-                        examDate={selectedMateria?.examDate}
+                        examDate={planningDate}
+                        load={reviewLoadByDate(selectedSfide, nodeDetail.id)}
                         onReview={(rating) => {
                           handleReview(nodeDetail, rating);
                           closeNodeDetail();
@@ -1816,9 +1679,28 @@ export default function QuadrantHub() {
                         label="Ripassa con un blocco di Focus"
                         variant="ghost"
                         className="w-full"
+                        intent="RIPASSO"
                       />
                     )}
                   </>
+                )}
+
+                {/* V42 — pratica sull'argomento: esercizi fuori dal timer e
+                    interrogazione orale con K.A.R.E.N. */}
+                {(canComplete || isDone) && !selectedMateria.examPassed && (
+                  <div className="grid grid-cols-1 gap-2.5">
+                    <EserciziLogger node={nodeDetail} onLog={(fatti, corretti) => actions.logEsercizi(selectedMateria.id, nodeDetail.id, fatti, corretti)} />
+                    {(isDone || focusMin > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => setOralTarget({ materia: selectedMateria, sfide: [nodeDetail] })}
+                        className={`${BTN_GHOST} w-full`}
+                      >
+                        <Icon name="speaker" className="w-4 h-4 text-secondary" />
+                        Interrogazione orale su questo argomento
+                      </button>
+                    )}
+                  </div>
                 )}
 
                 {/* Azioni secondarie, in fondo: mai il primo pulsante cliccabile per sbaglio. */}
@@ -1869,7 +1751,9 @@ export default function QuadrantHub() {
         onClose={() => setReopenNodeTarget(null)}
         onConfirm={confirmReopenNode}
         title="Riportare a da completare?"
-        message={`"${reopenNodeTarget?.nome}" torna fra gli argomenti da studiare. XP, Tech Token e streak già guadagnati restano tuoi: cambia solo lo stato.`}
+        message={`"${reopenNodeTarget?.nome}" torna fra gli argomenti da studiare.${
+          Number(reopenNodeTarget?.xpAwarded) > 0 ? ` I ${reopenNodeTarget.xpAwarded} XP del completamento vengono ritirati: li riprendi quando lo richiudi.` : ''
+        } Tempo di studio, appunti e memoria stimata restano.`}
         confirmLabel="Riporta indietro"
         danger={false}
       />
@@ -1890,6 +1774,36 @@ export default function QuadrantHub() {
         title="Modifiche non salvate"
         message="Chiudendo ora le modifiche all'argomento andranno perse. Vuoi scartarle?"
         confirmLabel="Scarta modifiche"
+      />
+
+      {/* V42 — simulazione d'esame, ricostruzione, interrogazione orale. */}
+      <SimulazioneModal
+        open={simulazioneOpen}
+        onClose={() => setSimulazioneOpen(false)}
+        materia={selectedMateria}
+        onSave={(sim) => {
+          if (selectedMateria) actions.addSimulazione(selectedMateria.id, sim);
+          setSimulazioneOpen(false);
+          pushToast('Simulazione registrata: entra nella prontezza d’esame.', 'success');
+        }}
+      />
+      <RicostruisciModal
+        open={ricostruisciOpen}
+        onClose={() => setRicostruisciOpen(false)}
+        materia={selectedMateria}
+        onConfirm={(opzioni) => {
+          if (selectedMateria) actions.ricostruisciMateria(selectedMateria.id, opzioni);
+          setRicostruisciOpen(false);
+        }}
+      />
+      <OralExamModal
+        open={!!oralTarget}
+        onClose={() => setOralTarget(null)}
+        materia={oralTarget?.materia || null}
+        sfide={oralTarget?.sfide || []}
+        onRegister={(sfidaId, esito) => {
+          if (oralTarget?.materia) actions.quizResult(oralTarget.materia.id, sfidaId, esito);
+        }}
       />
 
       {/* Drawer: ripassi in sospeso, da fare in blocco. */}
@@ -1923,7 +1837,19 @@ export default function QuadrantHub() {
                     </button>
                     <span className={`${BADGE.slate} shrink-0`}>{diffMeta.label}</span>
                   </div>
-                  <ReviewButtons size="small" sfida={r} examDate={r.materiaExamDate} onReview={(rating) => actions.reviewSfida(r.materiaId, r.sfidaId, rating)} />
+                  {(() => {
+                    const m = derived.materiePiano.find((x) => x.id === r.materiaId);
+                    const nodo = (m?.sfide || []).find((x) => x.id === r.sfidaId) || null;
+                    return (
+                      <ReviewButtons
+                        size="small"
+                        sfida={nodo || r}
+                        examDate={m?.examDate || null}
+                        load={m ? reviewLoadByDate(m.sfide, r.sfidaId) : null}
+                        onReview={(rating) => actions.reviewSfida(r.materiaId, r.sfidaId, rating)}
+                      />
+                    );
+                  })()}
                 </div>
               );
             })

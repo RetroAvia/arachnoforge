@@ -65,13 +65,9 @@ function resolveCalibration(calibration) {
  * esattamente come in V37.
  */
 export function nodeBudgetHours(sfida, calibration = null) {
-  const cal = resolveCalibration(calibration);
-  return nodeWorkBreakdown(sfida, {
-    biasFactor: cal.biasFactor,
-    pagesPerHour: cal.pagesPerHour,
-    sintesiPagesPerHour: calibration?.sintesiPagesPerHour ?? null,
-    resaSintesi: calibration?.resaSintesi ?? null
-  }).oreTotali;
+  // V42 — la calibrazione passa intera: ritmi e rese PER TIPO di fonte
+  // vivono lì dentro, e sintesiEngine sa risolverla da solo.
+  return nodeWorkBreakdown(sfida, calibration).oreTotali;
 }
 
 /**
@@ -85,13 +81,7 @@ export function nodeBudgetHours(sfida, calibration = null) {
  * accorcia mai mentre lavori.
  */
 export function nodeRemainingBudgetHours(sfida, calibration = null) {
-  const cal = resolveCalibration(calibration);
-  return nodeWorkBreakdown(sfida, {
-    biasFactor: cal.biasFactor,
-    pagesPerHour: cal.pagesPerHour,
-    sintesiPagesPerHour: calibration?.sintesiPagesPerHour ?? null,
-    resaSintesi: calibration?.resaSintesi ?? null
-  }).oreResidue;
+  return nodeWorkBreakdown(sfida, calibration).oreResidue;
 }
 
 /**
@@ -112,7 +102,11 @@ export function computeRemainingHours(materia, calibration = null) {
   if (materia?.examPassed) return 0;
   const sfide = Array.isArray(materia?.sfide) ? materia.sfide : [];
   if (sfide.length === 0) {
-    return Math.max(0, (Number(materia?.cfu) || 0) * HOURS_PER_CFU);
+    // V42 — anche senza nodi lo studio fatto conta: le sessioni sulla
+    // materia (`focusMinutesLibere`) si tolgono dalla stima dai CFU. Prima
+    // 10 ore studiate lasciavano la materia a 90 ore, per sempre.
+    const libere = Math.max(0, Number(materia?.focusMinutesLibere) || 0) / 60;
+    return Math.max(0, (Number(materia?.cfu) || 0) * HOURS_PER_CFU - libere);
   }
   // V38.0 — la sottrazione del tempo già tracciato vive ora dentro
   // `nodeRemainingBudgetHours`, che sa distinguere le ore di studio da

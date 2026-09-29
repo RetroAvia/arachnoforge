@@ -1,4 +1,13 @@
-import { computeSpiderScore, PIANO_CFU_TOTALI } from '../data/vanvitelliCourseMap.js';
+import {
+  computeSpiderScore,
+  PIANO_CFU_TOTALI,
+  isUngradedMateria,
+  tipoPianoOf,
+  TIPO_PIANO,
+  computePlanCfu,
+  CFU_A_SCELTA,
+  getPrerequisiteStatus
+} from '../data/vanvitelliCourseMap.js';
 import { computeRemainingHours, HOURS_PER_CFU } from './materiaMeta.js';
 import { dateOnlyToUtcMs, todayDateOnlyKey, addDaysToDateOnly } from './dateUtils.js';
 
@@ -25,9 +34,16 @@ export const GRADUATION_MULTIPLIER = 11 / 3;
 export const WHAT_IF_SLOT_COUNT = 2;
 export const DEFAULT_WHAT_IF_VOTO = 27;
 
-/** Una Materia "conta" per la media solo se l'esame è superato E ha un voto valido registrato. */
+/**
+ * Una Materia "conta" per la media solo se l'esame è superato E ha un voto
+ * valido registrato. V42 — e se è un esame DEL CURRICULUM con voto: le
+ * idoneità (Inglese) e i sovrannumerari restano fuori anche se per errore
+ * porti un voto (un 18 su Inglese portava la media da 26,67 a 26,21).
+ */
 export function isGradedMateria(materia) {
-  return !!materia && !!materia.examPassed && Number.isFinite(materia.voto) && materia.voto >= MIN_VOTO && materia.voto <= MAX_VOTO;
+  if (!materia || !materia.examPassed) return false;
+  if (isUngradedMateria(materia) || tipoPianoOf(materia) === TIPO_PIANO.EXTRA) return false;
+  return Number.isFinite(materia.voto) && materia.voto >= MIN_VOTO && materia.voto <= MAX_VOTO;
 }
 
 /**
@@ -42,11 +58,92 @@ export function computeWeightedAverage(materie) {
   return { average, totalCfu, totalPoints, gradedCount: graded.length };
 }
 
-/** Proiezione di Laurea (voto di partenza su base 110) dalla Media Ponderata. Null se non c'è ancora nessun voto registrato. */
+/**
+ * Proiezione di Laurea (voto di partenza su base 110) dalla Media Ponderata.
+ * Null se non c'è ancora nessun voto registrato.
+ * V42 — arrotondamento senza errori di virgola mobile: 27,45 × 11/3 fa
+ * 100,65 e deve dare 100,7 (prima dava 100,6).
+ */
 export function computeGraduationProjection(average) {
   if (average == null || !Number.isFinite(average)) return null;
-  const raw = average * GRADUATION_MULTIPLIER;
-  return Math.round(raw * 10) / 10;
+  const raw = (average * 11) / 3;
+  return Math.round(raw * 10 + 1e-7) / 10;
+}
+
+/* ------------------------------------------------------------------ *
+ * V42 — IL VOTO DI LAUREA, con la formula del regolamento didattico del
+ * corso (L. Ingegneria Aerospaziale, Meccanica, Energetica — Vanvitelli):
+ *
+ *   V = 11·m/3 + p1 + p2 + p3 + p4, arrotondato all'intero (.5 in su)
+ *
+ *   p1 (media)   m > 28: 5 · 27 < m ≤ 28: 4 · 25 < m ≤ 27: 3 · 23 < m ≤ 25: 2
+ *   p2 (anni)    3 anni: 2 · 4: 1,5 · 5: 1 · oltre: 0
+ *   p3 (tesi)    fino a 2, a giudizio della commissione
+ *   p4 (estero)  1 per almeno 3 mesi di mobilità riconosciuta
+ *
+ * Il "voto di partenza" 11·m/3 resta: è la base, non il voto finale.
+ * ------------------------------------------------------------------ */
+export function puntiMedia(m) {
+  if (!Number.isFinite(m)) return 0;
+  if (m > 28) return 5;
+  if (m > 27) return 4;
+  if (m > 25) return 3;
+  if (m > 23) return 2;
+  return 0;
+}
+
+export function puntiDurata(anni) {
+  if (!Number.isFinite(anni)) return null;
+  if (anni <= 3) return 2;
+  if (anni <= 4) return 1.5;
+  if (anni <= 5) return 1;
+  return 0;
+}
+
+/**
+ * Anni di corso alla laurea, stimati: dall'1 ottobre dell'anno di
+ * immatricolazione, con le sessioni di laurea straordinarie (fino ad
+ * aprile) che contano ancora nell'anno accademico precedente.
+ */
+export function anniDiCorso(annoImmatricolazione, laureaDateKey) {
+  const anno = Number(annoImmatricolazione);
+  if (!Number.isInteger(anno) || anno < 1990 || !DATE_ONLY_RE.test(String(laureaDateKey || ''))) return null;
+  const [y, m] = String(laureaDateKey).split('-').map(Number);
+  const mesi = (y - anno) * 12 + (m - 10);
+  return Math.max(1, Math.ceil((mesi - 6) / 12));
+}
+
+function arrotondaVoto(v) {
+  return Math.floor(v + 0.5 + 1e-9);
+}
+
+/**
+ * @param {Array} materie
+ * @param {{annoImmatricolazione?:number, erasmus?:boolean, laureaDateKey?:string|null}} [opts]
+ * @returns {null|{media:number, base:number, p1:number, p2:number|null, p4:number, minimo:number, massimo:number, anni:number|null}}
+ */
+export function computeGraduationGrade(materie, { annoImmatricolazione = null, erasmus = false, laureaDateKey = null } = {}) {
+  const { average } = computeWeightedAverage(materie);
+  if (average == null) return null;
+  const base = (average * 11) / 3;
+  const p1 = puntiMedia(average);
+  const anni = anniDiCorso(annoImmatricolazione, laureaDateKey);
+  const p2 = puntiDurata(anni);
+  const p4 = erasmus ? 1 : 0;
+  const fisso = base + p1 + (p2 ?? 0) + p4;
+  return {
+    media: average,
+    base: computeGraduationProjection(average),
+    p1,
+    p2,
+    p4,
+    anni,
+    // p3 (tesi) va da 0 a 2: il voto si mostra come intervallo.
+    minimo: Math.min(110, arrotondaVoto(fisso)),
+    massimo: Math.min(110, arrotondaVoto(fisso + 2)),
+    oltre110: fisso + 2 > 110.5,
+    durataStimata: p2 == null
+  };
 }
 
 /**
@@ -172,7 +269,19 @@ export function computeGradeHistory(materie, todayKey = todayDateOnlyKey()) {
  * di affrontare per primi sono quelli più utile simulare).
  */
 export function getTopIncompleteByScore(materie, n = WHAT_IF_SLOT_COUNT, calibration = null) {
-  const pending = (Array.isArray(materie) ? materie : []).filter((m) => m && !m.examPassed && Number(m.cfu) > 0);
+  // V42 — solo esami con voto, del curriculum, non bloccati dalle
+  // propedeuticità: il What-If proponeva Inglese (idoneità) e Meccanica
+  // del Volo (congelata).
+  const tutte = Array.isArray(materie) ? materie : [];
+  const pending = tutte.filter(
+    (m) =>
+      m &&
+      !m.examPassed &&
+      Number(m.cfu) > 0 &&
+      !isUngradedMateria(m) &&
+      tipoPianoOf(m) !== TIPO_PIANO.EXTRA &&
+      !(m.courseId && getPrerequisiteStatus(m.courseId, tutte, { excludeMateriaId: m.id, dependentExamDate: m.examDate || null }).bloccanti.length > 0)
+  );
   // V39.0 — con la calibrazione personale, come ogni altro Spider-Score
   // dell'app: senza, il What-If ordinava le materie con capacità e
   // fattore neutri e poteva proporre esami diversi da quelli indicati
@@ -234,10 +343,13 @@ function isPassed(materia) {
  */
 export function computeGraduationForecast(materie, calibration = null, cfuTotali = PIANO_CFU_TOTALI) {
   const safe = Array.isArray(materie) ? materie : [];
-  const passed = safe.filter(isPassed);
-  const pending = safe.filter((m) => m && !m.examPassed);
+  const passed = safe.filter(isPassed).filter((m) => tipoPianoOf(m) !== TIPO_PIANO.EXTRA);
+  const pending = safe.filter((m) => m && !m.examPassed && tipoPianoOf(m) !== TIPO_PIANO.EXTRA);
 
-  const cfuAcquisiti = passed.reduce((sum, m) => sum + (Number(m.cfu) || 0), 0);
+  // V42 — CFU validi: i sovrannumerari non contano e gli esami a scelta
+  // riempiono i 18 CFU "a scelta", mai oltre (prima: 195 CFU e "piano
+  // completato" senza la prova finale).
+  const cfuAcquisiti = computePlanCfu(safe).totale;
   const cfuRimanenti = Math.max(0, cfuTotali - cfuAcquisiti);
   const progressPct = cfuTotali > 0 ? Math.round((cfuAcquisiti / cfuTotali) * 100) : 0;
 
@@ -261,7 +373,15 @@ export function computeGraduationForecast(materie, calibration = null, cfuTotali
   // nessuna Materia: senza quest'ultima parte la stima ignorerebbe tutto
   // ciò che non hai ancora nemmeno iniziato a mappare.
   const oreMaterieAperte = pending.reduce((sum, m) => sum + computeRemainingHours(m, calibration), 0);
-  const cfuTracciati = pending.reduce((sum, m) => sum + (Number(m.cfu) || 0), 0);
+  const sceltaFatti = computePlanCfu(safe).scelta;
+  let sceltaSpazio = Math.max(0, CFU_A_SCELTA - sceltaFatti);
+  const cfuTracciati = pending.reduce((sum, m) => {
+    const cfu = Number(m.cfu) || 0;
+    if (tipoPianoOf(m) !== TIPO_PIANO.SCELTA) return sum + cfu;
+    const valido = Math.min(cfu, sceltaSpazio);
+    sceltaSpazio -= valido;
+    return sum + valido;
+  }, 0);
   const cfuNonTracciati = Math.max(0, cfuRimanenti - cfuTracciati);
   const oreNonTracciate = cfuNonTracciati * HOURS_PER_CFU;
   const oreTotaliResidue = Math.round(oreMaterieAperte + oreNonTracciate);
@@ -341,7 +461,17 @@ export function computeGraduationForecast(materie, calibration = null, cfuTotali
     limitataDaAppello = true;
   }
 
-  const confidence = byCareer?.confident && byWorkload.confident ? 'ALTA' : byCareer || byWorkload.confident ? 'MEDIA' : 'BASSA';
+  // V42 — l'affidabilità descrive il METODO mostrato: una stima da carico
+  // di lavoro non calibrata è BASSA anche se esiste un ritmo di carriera
+  // (non abbastanza solido da essere usato).
+  const confidence =
+    scelta === byCareer
+      ? byWorkload.confident
+        ? 'ALTA'
+        : 'MEDIA'
+      : byWorkload.confident
+      ? 'MEDIA'
+      : 'BASSA';
 
   return {
     cfuTotali,

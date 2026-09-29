@@ -23,7 +23,9 @@ import {
   validateLezione,
   computeCampusSnapshot,
   createLezione,
-  argomentiSintesi
+  argomentiSintesi,
+  CODA_ARRETRATI_GIORNI,
+  buildCampusCalendar
 } from './campusEngine.js';
 import { getDateKey } from './dateUtils.js';
 
@@ -75,6 +77,18 @@ function campus(over = {}) {
     null,
     LUN
   );
+}
+
+/**
+ * V42 — la coda tiene le lezioni non sistemate per due settimane (come
+ * ARRETRATE oltre le 72 ore). Con il semestre di `campus()` (iniziato il 22
+ * settembre) ogni lunedì avrebbe già due settimane di arretrati; per isolare
+ * il comportamento delle lezioni RECENTI questi test usano un semestre
+ * iniziato giovedì 1 ottobre: prima lezione utile la fisica di venerdì 2.
+ */
+function campusRecente(over = {}) {
+  const c = campus(over);
+  return normalizeCampus({ ...c, semestri: c.semestri.map((sem) => ({ ...sem, inizio: '2026-10-01' })) }, null, LUN);
 }
 
 function sintesi(materiaId, when, minutes = 60) {
@@ -212,40 +226,40 @@ test('postLectureQueue', async (t) => {
   const fisicaVenerdiSistemata = sintesi('fisica', at('2026-10-02', '18:00'));
 
   await t.test('una lezione finita e non sistemata entra in coda', () => {
-    const q = postLectureQueue(campus(), at(LUN, '12:00'), byId, [fisicaVenerdiSistemata]);
+    const q = postLectureQueue(campusRecente(), at(LUN, '12:00'), byId, [fisicaVenerdiSistemata]);
     assert.deepEqual(q.map((x) => x.materiaId), ['analisi']);
   });
 
   await t.test('in ordine di fine lezione, più vecchie prima', () => {
-    const q = postLectureQueue(campus(), at(LUN, '12:00'), byId, []);
+    const q = postLectureQueue(campusRecente(), at(LUN, '12:00'), byId, []);
     assert.deepEqual(q.map((x) => x.materiaId), ['fisica', 'analisi'], 'la fisica del venerdì viene prima');
   });
 
   await t.test('una sessione di sintesi DOPO la lezione la toglie dalla coda', () => {
-    const q = postLectureQueue(campus(), at(LUN, '17:00'), byId, [fisicaVenerdiSistemata, sintesi('analisi', at(LUN, '11:30'))]);
+    const q = postLectureQueue(campusRecente(), at(LUN, '17:00'), byId, [fisicaVenerdiSistemata, sintesi('analisi', at(LUN, '11:30'))]);
     assert.deepEqual(q.map((x) => x.materiaId), ['fisica'], 'resta solo la fisica di oggi pomeriggio');
   });
 
   await t.test('due lezioni non sistemate della stessa materia diventano una voce sola', () => {
-    const q = postLectureQueue(campus(), at(LUN, '17:00'), byId, []);
+    const q = postLectureQueue(campusRecente(), at(LUN, '17:00'), byId, []);
     const f = q.find((x) => x.materiaId === 'fisica');
     assert.equal(f.lezioniDaSistemare, 2, 'venerdì + lunedì');
     assert.equal(f.minutiDaSistemare, 240);
   });
 
   await t.test('una sessione di sintesi PRIMA della lezione non la sistema', () => {
-    const q = postLectureQueue(campus(), at(LUN, '12:00'), byId, [fisicaVenerdiSistemata, sintesi('analisi', at(LUN, '08:00'))]);
+    const q = postLectureQueue(campusRecente(), at(LUN, '12:00'), byId, [fisicaVenerdiSistemata, sintesi('analisi', at(LUN, '08:00'))]);
     assert.deepEqual(q.map((x) => x.materiaId), ['analisi']);
   });
 
   await t.test('una sessione di STUDIO non conta come sintesi', () => {
     const studio = { ...sintesi('analisi', at(LUN, '11:30')), workMode: 'STUDIO' };
-    const q = postLectureQueue(campus(), at(LUN, '12:00'), byId, [fisicaVenerdiSistemata, studio]);
+    const q = postLectureQueue(campusRecente(), at(LUN, '12:00'), byId, [fisicaVenerdiSistemata, studio]);
     assert.deepEqual(q.map((x) => x.materiaId), ['analisi']);
   });
 
   await t.test('la lezione del venerdì pomeriggio è ancora in coda il lunedì mattina', () => {
-    const q = postLectureQueue(campus(), at('2026-10-12', '08:30'), byId, []);
+    const q = postLectureQueue(campusRecente(), at('2026-10-12', '08:30'), byId, []);
     assert.ok(q.some((x) => x.materiaId === 'fisica'));
   });
 
@@ -345,23 +359,29 @@ test('V40 — sintesi dei nodi già chiusa: niente da sistemare', () => {
   assert.ok(!q.some((x) => x.materiaId === 'analisi'));
 });
 
-test('V40 — sintesi fatta FUORI dall’app, registrata sul nodo dopo la lezione', () => {
-  const aggiornata = { ...analisi, sfide: conFonti('analisi', { sintesiAggiornataAt: at(LUN, '11:40').toISOString() }) };
-  const map = new Map([[aggiornata.id, aggiornata], [fisica.id, fisica]]);
-  const q = postLectureQueue(campus(), at(LUN, '12:00'), map, []);
-  assert.ok(!q.some((x) => x.materiaId === 'analisi'), 'aggiornare il nodo a mano sistema la lezione');
-  const p = weekPace(campus(), at(LUN, '12:00'), map, []);
-  const a = p.find((r) => r.materiaId === 'analisi');
+test('V42 — sintesi fatta FUORI dall’app: conta per il lavoro registrato sul nodo, non per il solo aggiornamento', () => {
+  // `sintesiManuale` (scritta dal reducer quando aggiorni il nodo a mano):
+  // pagine di fonte al tuo ritmo (12 pagine/ora di default) e pagine di
+  // appunti a 15 minuti l'una. 24 pagine = 120 minuti: la lezione di 2 ore è sistemata.
+  const conManuale = (pagine, appunti, quando) => ({ ...analisi, sfide: conFonti('analisi', { sintesiManuale: [{ at: quando.toISOString(), pagine, appunti }] }) });
+  const mappa = (m) => new Map([[m.id, m], [fisica.id, fisica]]);
+  const fatta = mappa(conManuale(24, 0, at(LUN, '11:40')));
+  const q = postLectureQueue(campusRecente(), at(LUN, '12:00'), fatta, []);
+  assert.ok(!q.some((x) => x.materiaId === 'analisi'), 'il lavoro registrato sul nodo sistema la lezione');
+  const a = weekPace(campusRecente(), at(LUN, '12:00'), fatta, []).find((r) => r.materiaId === 'analisi');
   assert.equal(a.creditoMin, 120, 'il lavoro fatto fuori dall’app conta nel passo');
   assert.equal(a.stato, 'IN_PARI');
-  // un aggiornamento PRIMA della lezione non la sistema
-  const prima = { ...analisi, sfide: conFonti('analisi', { sintesiAggiornataAt: at(LUN, '08:00').toISOString() }) };
-  const q2 = postLectureQueue(campus(), at(LUN, '12:00'), new Map([[prima.id, prima], [fisica.id, fisica]]), []);
-  assert.ok(q2.some((x) => x.materiaId === 'analisi'));
+  // Anche le pagine di appunti scritte contano: 8 pagine = 120 minuti.
+  assert.ok(!postLectureQueue(campusRecente(), at(LUN, '12:00'), mappa(conManuale(0, 8, at(LUN, '11:40'))), []).some((x) => x.materiaId === 'analisi'));
+  // Prima bastava UNA pagina per sistemare tutto: ora 1 pagina vale 5 minuti.
+  const poco = postLectureQueue(campusRecente(), at(LUN, '12:00'), mappa(conManuale(1, 0, at(LUN, '11:40'))), []).find((x) => x.materiaId === 'analisi');
+  assert.equal(poco.sintesiMancanteMin, 115);
+  // Un aggiornamento PRIMA della lezione non la sistema.
+  assert.ok(postLectureQueue(campusRecente(), at(LUN, '12:00'), mappa(conManuale(24, 0, at(LUN, '08:00'))), []).some((x) => x.materiaId === 'analisi'));
 });
 
 test('V40 — esiti manuali: "Fatta" e "Niente da sistemare"', () => {
-  const fatta = campus({ esiti: { [esitoKey('a1', LUN)]: ESITO_LEZIONE.FATTA } });
+  const fatta = campusRecente({ esiti: { [esitoKey('a1', LUN)]: ESITO_LEZIONE.FATTA } });
   const q1 = postLectureQueue(fatta, at(LUN, '12:00'), byId, []);
   assert.ok(!q1.some((x) => x.materiaId === 'analisi'));
   const p1 = weekPace(fatta, at(LUN, '12:00'), byId, []).find((r) => r.materiaId === 'analisi');
@@ -369,7 +389,7 @@ test('V40 — esiti manuali: "Fatta" e "Niente da sistemare"', () => {
   assert.equal(p1.sintesiFattaMin, 120, 'dichiarata fatta: credito pieno');
   assert.equal(p1.stato, 'IN_PARI');
 
-  const saltata = campus({ esiti: { [esitoKey('a1', LUN)]: ESITO_LEZIONE.SALTATA } });
+  const saltata = campusRecente({ esiti: { [esitoKey('a1', LUN)]: ESITO_LEZIONE.SALTATA } });
   const q2 = postLectureQueue(saltata, at(LUN, '12:00'), byId, []);
   assert.ok(!q2.some((x) => x.materiaId === 'analisi'));
   const p2 = weekPace(saltata, at(LUN, '12:00'), byId, []).find((r) => r.materiaId === 'analisi');
@@ -402,21 +422,21 @@ test('V40 — normalizeCampus pota esiti rotti, di lezioni inesistenti o troppo 
 });
 
 test('V40 — snapshot: minuti di sintesi davvero dovuti per il planner', () => {
-  const snap = computeCampusSnapshot(campus(), at(LUN, '12:00'), materie, [sintesi('fisica', at('2026-10-02', '18:00'))]);
+  const snap = computeCampusSnapshot(campusRecente(), at(LUN, '12:00'), materie, [sintesi('fisica', at('2026-10-02', '18:00'))]);
   assert.equal(snap.sintesiDovutaMin, 120, 'solo analisi di oggi (2h × rapporto 1)');
   const fin = snap.lezioniOggi.find((x) => x.id === 'a1');
   assert.equal(fin.sintesi, STATO_LEZIONE.DA_FARE);
 });
 
 test('V40 — una sessione breve non sistema una lezione lunga (copertura minima 50%)', () => {
-  const breve = postLectureQueue(campus(), at(LUN, '12:00'), byId, [sintesi('fisica', at('2026-10-02', '18:00'), 120), sintesi('analisi', at(LUN, '11:30'), 10)]);
+  const breve = postLectureQueue(campusRecente(), at(LUN, '12:00'), byId, [sintesi('fisica', at('2026-10-02', '18:00'), 120), sintesi('analisi', at(LUN, '11:30'), 10)]);
   assert.ok(breve.some((x) => x.materiaId === 'analisi'), '10 minuti su 2 ore non bastano');
   const item = breve.find((x) => x.materiaId === 'analisi');
   assert.equal(item.sintesiMancanteMin, 110, 'restano 110 minuti di sintesi');
 });
 
 test('V40 — i minuti non contano due volte: "Già fatta" più una sessione successiva', () => {
-  const c = campus({ esiti: { [esitoKey('a1', LUN)]: ESITO_LEZIONE.FATTA } });
+  const c = campusRecente({ esiti: { [esitoKey('a1', LUN)]: ESITO_LEZIONE.FATTA } });
   const p = weekPace(c, at(LUN, '17:00'), byId, [sintesi('analisi', at(LUN, '12:00'), 120)]);
   const a = p.find((r) => r.materiaId === 'analisi');
   assert.equal(a.sintesiFattaMin, 120, 'la sessione copre la lezione: nessun credito aggiuntivo');
@@ -433,7 +453,7 @@ test('V40 — aggiungere le fonti non trasforma in debito le lezioni già passat
 
 test('V40 — "Già fatta" non si prende i minuti destinati a una lezione successiva', () => {
   // Lunedì 9-11 analisi segnata "già fatta"; mercoledì 11-13 analisi; sessione di 120' mercoledì alle 15.
-  const c = campus({ esiti: { [esitoKey('a1', LUN)]: ESITO_LEZIONE.FATTA } });
+  const c = campusRecente({ esiti: { [esitoKey('a1', LUN)]: ESITO_LEZIONE.FATTA } });
   const MER = '2026-10-07';
   const log = [sintesi('fisica', at('2026-10-02', '18:00'), 120), sintesi('fisica', at(LUN, '17:00'), 120), sintesi('analisi', at(MER, '15:00'), 120)];
   const q = postLectureQueue(c, at(MER, '16:00'), byId, log);
@@ -444,11 +464,46 @@ test('V40 — "Già fatta" non si prende i minuti destinati a una lezione succes
   assert.equal(p.stato, 'IN_PARI');
 });
 
-test('V40 — una sessione va alla lezione più recente, non a una vecchia già uscita dalla coda', () => {
-  // Venerdì 9: fisica venerdì 15-17 (f2). Lunedì precedente fisica 14-16 ignorata. Sessione venerdì 18:00.
+test('V40 — una sessione va alla lezione più recente, non a una vecchia', () => {
+  // Venerdì 9: fisica venerdì 15-17 (f2), sessione venerdì alle 18. Le
+  // fisiche del 2 e del 5 ottobre restano (V42) arretrate in coda.
   const log = [sintesi('fisica', at(VEN, '18:00'), 120)];
-  const q = postLectureQueue(campus(), at(VEN, '19:00'), byId, log);
-  assert.ok(!q.some((x) => x.materiaId === 'fisica'), 'la fisica di venerdì è sistemata');
+  const f = postLectureQueue(campusRecente(), at(VEN, '19:00'), byId, log).find((x) => x.materiaId === 'fisica');
+  assert.ok(!f.lezioni.some((l) => l.dateKey === VEN), 'la fisica di venerdì è sistemata');
+  assert.deepEqual(f.lezioni.map((l) => l.dateKey), ['2026-10-02', LUN]);
+  assert.equal(f.lezioniArretrate, 2);
+});
+
+/* ------------------------------------------------------------------ *
+ * V42 — gli arretrati non spariscono da soli
+ * ------------------------------------------------------------------ */
+test('V42 — oltre le 72 ore una lezione non sistemata resta in coda come arretrata, per due settimane', () => {
+  // Semestre dal 22 settembre, lunedì 5 ottobre alle 12, niente sintesi.
+  const q = postLectureQueue(campus(), at(LUN, '12:00'), byId, []);
+  const f = q.find((x) => x.materiaId === 'fisica');
+  assert.deepEqual(f.lezioni.map((l) => `${l.id}@${l.dateKey}`), ['f2@2026-09-25', 'f1@2026-09-28', 'f2@2026-10-02']);
+  assert.deepEqual(f.lezioni.map((l) => l.arretrata), [true, true, false]);
+  assert.equal(f.lezioniArretrate, 2);
+  assert.equal(f.sintesiMancanteMin, 360);
+  // Il 19 ottobre le lezioni di più di due settimane prima sono uscite.
+  const dopo = postLectureQueue(campus(), at('2026-10-19', '12:00'), byId, []).find((x) => x.materiaId === 'fisica');
+  assert.ok(dopo.lezioni.every((l) => l.dateKey >= '2026-10-05'), `finestra di ${CODA_ARRETRATI_GIORNI} giorni`);
+  const snap = computeCampusSnapshot(campus(), at(LUN, '12:00'), materie, []);
+  assert.equal(snap.lezioniArretrate, 5);
+});
+
+test('V42 — in coda prima le materie con solo lezioni fresche, poi quelle con arretrati', () => {
+  // Analisi: le lezioni vecchie dichiarate fatte, resta solo quella di oggi.
+  const c = campus({
+    esiti: {
+      [esitoKey('a2', '2026-09-23')]: ESITO_LEZIONE.FATTA,
+      [esitoKey('a1', '2026-09-28')]: ESITO_LEZIONE.FATTA,
+      [esitoKey('a2', '2026-09-30')]: ESITO_LEZIONE.FATTA
+    }
+  });
+  const q = postLectureQueue(c, at(LUN, '12:00'), byId, []);
+  assert.deepEqual(q.map((x) => x.materiaId), ['analisi', 'fisica']);
+  assert.equal(q[0].lezioniArretrate, 0);
 });
 
 /* V40.2 — scelta dell'argomento della sintesi. */
@@ -479,4 +534,17 @@ test('argomentiSintesi: dati con un ciclo non vanno in loop', () => {
   const materia = { sfide: [{ id: 'x', nome: 'X', parentId: 'y' }, { id: 'y', nome: 'Y', parentId: 'x' }] };
   assert.deepEqual(argomentiSintesi(materia).map((a) => a.id).sort(), ['x', 'y']);
   assert.deepEqual(argomentiSintesi(null), []);
+});
+
+test('V42 — buildCampusCalendar: fase e ore di lezione giorno per giorno, per il planner', () => {
+  const cal = buildCampusCalendar(campus(), materie);
+  assert.equal(cal.haSemestri, true);
+  assert.equal(cal.phaseOf(LUN), FASE.LEZIONI);
+  assert.equal(cal.lectureHoursOf(LUN), 4, 'analisi 9-11 + fisica 14-16');
+  assert.equal(cal.lectureHoursOf(MAR), 0, 'il martedì c’è solo chimica, già superata');
+  assert.equal(cal.lectureHoursOf('2026-11-02'), 0, 'giorno sospeso');
+  const vuoto = buildCampusCalendar(normalizeCampus(undefined), materie);
+  assert.equal(vuoto.haSemestri, false);
+  assert.equal(vuoto.phaseOf(LUN), null);
+  assert.equal(vuoto.lectureHoursOf(LUN), 0);
 });

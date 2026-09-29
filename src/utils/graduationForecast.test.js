@@ -13,6 +13,12 @@ import { PIANO_CFU_TOTALI } from '../data/vanvitelliCourseMap.js';
  * bastano, invece di inventare una cifra autorevole.
  */
 
+/**
+ * V42 — una materia senza `courseId` (aggiunta a mano, fuori dalla mappa
+ * del corso) conta come esame A SCELTA, e gli esami a scelta valgono al
+ * massimo 18 CFU. Queste materie di prova rappresentano esami del piano:
+ * lo dichiarano esplicitamente con `tipoPiano: 'PIANO'`.
+ */
 function materia(patch = {}) {
   return {
     id: Math.random().toString(36).slice(2),
@@ -23,6 +29,7 @@ function materia(patch = {}) {
     examPassedDate: null,
     examDate: null,
     voto: null,
+    tipoPiano: 'PIANO',
     ...patch
   };
 }
@@ -103,6 +110,22 @@ describe('computeGraduationForecast', () => {
     const f = computeGraduationForecast([materia({ cfu: 6, sfide: [nodo({ oreStimate: 1 })] })], NEUTRAL_CALIBRATION);
     assert.ok(f.byWorkload.oreNonTracciate > 0, 'i CFU non tracciati sono stati ignorati');
     assert.ok(f.byWorkload.oreResidue > 100);
+  });
+
+  test('V42: gli esami a scelta valgono al massimo 18 CFU, i sovrannumerari zero', () => {
+    const f = computeGraduationForecast(
+      [
+        materia({ cfu: 12, tipoPiano: 'SCELTA', examPassed: true, examPassedDate: '2026-02-10' }),
+        materia({ cfu: 12, tipoPiano: 'SCELTA', examPassed: true, examPassedDate: '2026-06-10' }),
+        materia({ cfu: 6, tipoPiano: 'EXTRA', examPassed: true, examPassedDate: '2026-07-10' }),
+        materia({ cfu: 9, examPassed: true, examPassedDate: '2026-09-10' })
+      ],
+      NEUTRAL_CALIBRATION
+    );
+    assert.equal(f.cfuAcquisiti, 9 + 18);
+    // Senza tipo né corso del piano, una materia aggiunta a mano è "a scelta".
+    const libera = computeGraduationForecast([materia({ cfu: 24, tipoPiano: undefined, examPassed: true, examPassedDate: '2026-02-10' })], NEUTRAL_CALIBRATION);
+    assert.equal(libera.cfuAcquisiti, 18);
   });
 
   test('una materia superata non pesa più sul carico residuo', () => {

@@ -10,10 +10,13 @@ import Modal from '../components/Modal.jsx';
 import Dropdown from '../components/Dropdown.jsx';
 import DebriefModal from '../components/DebriefModal.jsx';
 import PageHeader, { HeaderStat } from '../components/PageHeader.jsx';
+import TodayPanel from '../components/mission/TodayPanel.jsx';
+import CloseDayModal from '../components/mission/CloseDayModal.jsx';
+import StreakCard from '../components/mission/StreakCard.jsx';
+import AppelloEsitoCard from '../components/mission/AppelloEsitoCard.jsx';
 import { WORK_MODE_META, nodeSources, suggestedWorkMode } from '../utils/sintesiEngine.js';
-import { nodoInSintesi, GIORNI } from '../utils/campusEngine.js';
+import { GIORNI } from '../utils/campusEngine.js';
 import { goTo, ROUTES } from '../hooks/useArachnoForgeRouter.js';
-import EmptyState from '../components/EmptyState.jsx';
 import WebSlingChest from '../components/WebSlingChest.jsx';
 import { formatClock, formatHoursMinutes, getDateKey } from '../utils/dateUtils.js';
 import { getBriefingForToday } from '../data/briefings.js';
@@ -21,103 +24,12 @@ import { deriveNodeStatus, NODE_STATUS } from '../utils/skillTree.js';
 import { resolveLiveStudyFocus } from '../utils/studyFocusLive.js';
 import { computeFocusStaminaCost, DIFFICULTY, DIFFICULTY_META } from '../utils/xpEngine.js';
 import { QUEST_DIFFICULTY_META } from '../utils/dailyPatrol.js';
-import { QUOTA_STATUS_META } from '../hooks/useKarenAutoRouter.js';
-import { formatInt, formatNumber, minutiLabel } from '../utils/format.js';
+import { computeTodaySequence, tomorrowPlanDraft } from '../utils/nowTarget.js';
+import { ESITO_APPELLO, nextAppelloAfter } from '../utils/appelli.js';
+import { PROTOCOL_MAX_STAMINA, PROTOCOL_MAX_XP, PROTOCOL_STAMINA_DAY_CAP, PROTOCOL_XP_DAY_CAP } from '../state/reducer.js';
+import { formatInt, minutiLabel } from '../utils/format.js';
 import { INTENT, useIntent } from '../utils/uiIntents.js';
-import { CARD, BTN_PRIMARY, BTN_SECONDARY, BTN_AMBER, BTN_GHOST, BTN_DANGER, BTN_LG, INPUT, LABEL, BADGE } from '../utils/designSystem.js';
-
-/** V40.0 — una materia senza data non è "in attenzione": non ha una
- * scadenza da rischiare. Stile neutro, nessuna pulsazione. */
-const SENZA_DATA_META = {
-  label: 'Senza data',
-  badgeClass: 'ds-badge-slate',
-  dotClass: 'bg-slate-500',
-  cardClass: '',
-  glowStyle: undefined
-};
-
-/** Tinte V41 dei quattro stati di quota (le classi "vive" restano in quotaEngine). */
-const QUOTA_BADGE = {
-  OTTIMALE: 'ds-badge-green',
-  ATTENZIONE: 'ds-badge-amber',
-  CRITICO: 'ds-badge-red',
-  CONGELATA: 'ds-badge-slate'
-};
-
-/**
- * Riga della Quota Odierna (In focus oggi / In coda / Congelate).
- * V35.4 — "Ritmo vs Oggi": solo le materie davvero in focus mostrano
- * "Oggi: Xh" (le ore ripartite dal budget); quelle in coda mostrano il
- * ritmo sostenibile, dichiarato come tale.
- */
-function QuotaRow({ q, today = true }) {
-  const senzaData = q.daysRemaining == null && !q.dataScaduta && !q.frozen && q.status === 'ATTENZIONE';
-  const statusMeta = senzaData ? SENZA_DATA_META : QUOTA_STATUS_META[q.status];
-  const badgeTone = senzaData ? 'ds-badge-slate' : QUOTA_BADGE[q.status] || 'ds-badge-slate';
-  const oreOggi = today && Number.isFinite(q.assignedHours) ? q.assignedHours : q.dailyQuotaHours;
-  const critico = q.status === 'CRITICO';
-  return (
-    <div className={`rounded-xl border px-3.5 py-3 ${critico ? 'border-primary/35 bg-primary/[0.05]' : 'border-line bg-surface'}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex items-start gap-2">
-          <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${statusMeta.dotClass}`} />
-          <span className="min-w-0">
-            <span className="block text-sm font-semibold text-slate-100 line-clamp-2 break-words">{q.nome}</span>
-            <span className="block text-xs text-slate-500 mt-0.5">
-              {q.dataScaduta
-                ? 'Appello passato: aggiorna la data o segna l’esame come superato'
-                : q.daysRemaining == null
-                ? 'Nessuna data d’esame'
-                : q.daysRemaining === 0
-                ? 'Esame oggi'
-                : q.daysRemaining === 1
-                ? 'Esame domani'
-                : `Esame fra ${q.daysRemaining} giorni`}
-              {' · '}
-              {q.stimaDaCfu && q.daysRemaining == null ? (
-                <>fuori dal piano finché non mappi il programma (stima {formatHoursMinutes(q.hoursRemaining)})</>
-              ) : (
-                <>
-                  {formatHoursMinutes(q.hoursRemaining)} residue{q.hasNodes ? '' : ' (stima dai CFU)'}
-                </>
-              )}
-            </span>
-          </span>
-        </div>
-        <span className="flex flex-col items-end gap-1 shrink-0">
-          <span className={`ds-badge ${badgeTone}`}>{statusMeta.label}</span>
-          {!q.frozen && today && Number.isFinite(oreOggi) && oreOggi > 0 && (
-            <span className="text-xs font-semibold text-secondary ds-num">Oggi {formatHoursMinutes(oreOggi)}</span>
-          )}
-          {!q.frozen && !today && Number.isFinite(q.dailyQuotaHours) && q.dailyQuotaHours > 0 && (
-            <span className="text-xs text-slate-500 ds-num">{formatHoursMinutes(q.dailyQuotaHours)}/giorno</span>
-          )}
-        </span>
-      </div>
-      {q.frozen ? (
-        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-          Propedeuticità mancante: {q.missingPrereqNames.join(', ')}. Preparabile a mano, esclusa dal planner automatico finché non la sblocchi.
-        </p>
-      ) : (
-        <>
-          {critico && (
-            <p className="text-xs text-primary mt-2 leading-relaxed font-medium">
-              Traiettoria insostenibile al tuo ritmo reale: valuta di rinviare l’appello o di tagliare il programma.
-            </p>
-          )}
-          {q.status === 'ATTENZIONE' && !senzaData && q.hasNodes && !q.cumulativeOverload && (
-            <p className="text-xs text-accent/90 mt-2 leading-relaxed">Il ritmo è appena dietro la Fine Prevista: niente panico, ma non rallentare.</p>
-          )}
-          {q.cumulativeOverload && !critico && (
-            <p className="text-xs text-accent/90 mt-2 leading-relaxed">
-              Da sola ci starebbe, ma con gli esami che vengono prima il carico arriva al {Math.round(q.cumulativeRatio * 100)}% delle ore che hai fino a quella data.
-            </p>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
+import { CARD, BTN_PRIMARY, BTN_SECONDARY, BTN_AMBER, BTN_GHOST, BTN_DANGER, BTN_LG, BTN_SM, INPUT, LABEL, BADGE } from '../utils/designSystem.js';
 
 /**
  * V39.0 — Le lezioni di oggi, in una riga sopra "ADESSO". Compare solo
@@ -178,57 +90,107 @@ function CampusStrip({ campus }) {
  * V36.0 — "ADESSO": la prima cosa che si vede aprendo l'app — una riga,
  * un numero e un pulsante per rispondere a "cosa studio adesso e per
  * quanto". Tutto il resto resta a un click di distanza.
+ * V42 — la voce viene dalla SEQUENZA della giornata (utils/nowTarget.js):
+ * il blocco deciso ieri sera, i ripassi dovuti, le materie del piano con
+ * l'argomento e il lavoro giusti. "Solo 5 minuti" abbassa la soglia
+ * d'ingresso quando partire è la parte difficile.
  */
-function NowCard({ target, minutes, budget, canStart, onStart, onOpenDetails, detailsOpen, staminaCost }) {
+function NowCard({ seq, minutes, plan, onStart, onStartShort, onOpenDetails, detailsOpen, staminaCost, onCloseDay, dayClosed, anticipo, onAnticipa }) {
+  const target = seq?.current || null;
+  const next = seq?.next || null;
+  const modo = target?.intent && WORK_MODE_META[target.intent] ? WORK_MODE_META[target.intent] : null;
+  const minuti = target?.minutes || minutes;
+  const targetH = plan?.targetHours || 0;
+  const doneH = plan?.doneHours || 0;
+  const pct = targetH > 0 ? Math.min(100, Math.round((doneH / targetH) * 100)) : 0;
+  // V42 — "in ritardo" è il ritardo agli ESAMI previsto dal piano (lo stesso
+  // numero del Piano della sessione); "slittano" è solo la giornata troppo piena.
+  const inRitardo = Number(plan?.lateHours) >= 0.5;
+  const badgeTone = target?.badgeTone === 'red' ? BADGE.red : target?.badgeTone === 'amber' ? BADGE.amber : target?.kind === 'PIANO_IERI' ? BADGE.violet : BADGE.slate;
+
+  let corpo;
+  if (target) {
+    corpo = (
+      <>
+        <h2 className="text-[22px] sm:text-[26px] font-bold text-white tracking-tight leading-tight mt-2 break-words">{target.argomento}</h2>
+        <p className="text-sm text-slate-400 mt-1">{target.materia}</p>
+      </>
+    );
+  } else if (seq?.doneForToday) {
+    corpo = (
+      <>
+        <h2 className="text-[22px] font-bold text-white tracking-tight leading-tight mt-2">Obiettivo di oggi raggiunto</h2>
+        <p className="text-sm text-slate-400 mt-1">
+          {anticipo
+            ? `Se hai ancora energia puoi anticipare ${anticipo.nome}, che il piano mette domani. Altrimenti chiudi la giornata e fissa il primo blocco di domani.`
+            : 'Chiudi la giornata e fissa il primo blocco di domani: domattina basta un click.'}
+        </p>
+      </>
+    );
+  } else if (seq?.restDay) {
+    corpo = (
+      <>
+        <h2 className="text-[22px] font-bold text-white tracking-tight leading-tight mt-2">Giorno di riposo</h2>
+        <p className="text-sm text-slate-400 mt-1">Il piano oggi non ti chiede niente: recuperare fa parte del piano. Se ti va, un blocco libero non guasta.</p>
+      </>
+    );
+  } else {
+    corpo = (
+      <>
+        <h2 className="text-[22px] font-bold text-white tracking-tight leading-tight mt-2">Nessun bersaglio attivo</h2>
+        <p className="text-sm text-slate-400 mt-1">
+          Apri una materia nel Web-Matrix e dalle un appello in calendario: il piano sceglierà da solo cosa viene prima.
+        </p>
+      </>
+    );
+  }
+
   return (
     <div className="ds-card !p-0 flex flex-col">
       <div className="p-5 sm:p-6 flex flex-col gap-4 flex-1">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <p className="ds-eyebrow !text-primary flex items-center gap-1.5">
+            <p className="ds-eyebrow !text-primary flex items-center gap-1.5 flex-wrap">
               <span className="w-1.5 h-1.5 rounded-full bg-primary" />
               Adesso
+              {target?.badge && <span className={`${badgeTone} !normal-case !tracking-normal ml-1`}>{target.badge}</span>}
             </p>
-            {target ? (
-              <>
-                <h2 className="text-[22px] sm:text-[26px] font-bold text-white tracking-tight leading-tight mt-2 break-words">
-                  {target.argomento}
-                </h2>
-                <p className="text-sm text-slate-400 mt-1">{target.materia}</p>
-              </>
-            ) : (
-              <>
-                <h2 className="text-[22px] font-bold text-white tracking-tight leading-tight mt-2">Nessun bersaglio attivo</h2>
-                <p className="text-sm text-slate-400 mt-1">
-                  Apri una materia nel Web-Matrix e dalle una data d’esame: Karen sceglierà da sola cosa viene prima.
-                </p>
-              </>
-            )}
+            {corpo}
           </div>
-          <div className="text-right shrink-0 ds-well px-3.5 py-2.5">
-            <p className="text-2xl font-bold ds-num text-white leading-none">{minutes}′</p>
-            <p className="text-[11px] text-slate-500 mt-1">blocco</p>
-          </div>
+          {target && (
+            <div className="text-right shrink-0 ds-well px-3.5 py-2.5">
+              <p className="text-2xl font-bold ds-num text-white leading-none">{minuti}′</p>
+              <p className="text-[11px] text-slate-500 mt-1">blocco</p>
+            </div>
+          )}
         </div>
 
+        {target && modo && (
+          <p className="text-sm flex items-start gap-2">
+            <Icon name={modo.icon} className={`w-4 h-4 mt-0.5 shrink-0 ${modo.color}`} />
+            <span className={`font-semibold ${modo.color}`}>{target.kind === 'FINALE' ? 'Ripasso finale' : modo.label}</span>
+          </p>
+        )}
         {target?.rationale && <p className="text-sm text-slate-300 leading-relaxed">{target.rationale}</p>}
         {target?.metodo && (
-          <p className="text-sm text-secondary leading-relaxed border-l-2 border-secondary/50 pl-3">{target.metodo}</p>
+          <p className="text-sm text-secondary leading-relaxed border-l-2 border-secondary/50 pl-3">
+            {target.daKaren && <span className="font-semibold">K.A.R.E.N.: </span>}
+            {target.metodo}
+          </p>
         )}
 
-        {target?.dopo && (
+        {next && (
           <p className="text-sm text-slate-400 flex items-start gap-2.5">
             <span className="ds-badge ds-badge-slate !text-[11px] shrink-0">Poi</span>
             <span className="min-w-0 pt-0.5">
-              <span className="text-slate-200">{target.dopo.testo}</span>
-              {target.dopo.minuti ? (
+              <span className="text-slate-200">{next.breve}</span>
+              {next.oreOggi > 0 && (
                 <span className="text-slate-500">
                   {' '}
-                  · {formatHoursMinutes(target.dopo.minuti / 60)} {target.dopo.etichetta}
+                  · {formatHoursMinutes(next.oreOggi)} {next.etichettaOre || (next.kind === 'RIPASSI' ? 'di ripassi' : 'oggi')}
                 </span>
-              ) : target.dopo.nota ? (
-                <span className="text-slate-500"> · {target.dopo.nota}</span>
-              ) : null}
+              )}
+              {next.dopoGliEsami && <span className="text-slate-500"> · col tempo che gli esami lasciano libero</span>}
             </span>
           </p>
         )}
@@ -236,38 +198,73 @@ function NowCard({ target, minutes, budget, canStart, onStart, onOpenDetails, de
 
       <div className="px-5 sm:px-6 py-4 border-t border-line bg-surface/50 flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2.5 flex-wrap">
-          <button type="button" onClick={onStart} disabled={!canStart} className={`${BTN_PRIMARY} ${BTN_LG}`}>
-            <Icon name="play" className="w-4 h-4" />
-            {target ? 'Avvia su questo' : 'Avvia Focus'}
-          </button>
-          <button type="button" onClick={onOpenDetails} className={BTN_GHOST}>
-            <Icon name={detailsOpen ? 'chevronUp' : 'chevronDown'} className="w-4 h-4" />
-            {detailsOpen ? 'Nascondi briefing e quota' : 'Briefing e quota'}
+          {target ? (
+            <>
+              <button type="button" onClick={onStart} className={`${BTN_PRIMARY} ${BTN_LG}`} title="Avvia il blocco (Spazio)">
+                <Icon name="play" className="w-4 h-4" />
+                Avvia su questo
+              </button>
+              {minuti > 10 && (
+                <button type="button" onClick={onStartShort} className={BTN_GHOST} title="Parti con 5 minuti: il difficile è cominciare. Poi decidi se continuare.">
+                  <Icon name="bolt" className="w-4 h-4" />
+                  Solo 5 minuti
+                </button>
+              )}
+            </>
+          ) : seq?.doneForToday ? (
+            <>
+              {anticipo && (
+                <button type="button" onClick={onAnticipa} className={`${BTN_SECONDARY} ${BTN_LG}`}>
+                  <Icon name="arrowRight" className="w-4 h-4" />
+                  Anticipa {anticipo.nome}
+                </button>
+              )}
+              {onCloseDay && (
+                <button type="button" onClick={onCloseDay} className={anticipo ? BTN_GHOST : `${BTN_PRIMARY} ${BTN_LG}`}>
+                  <Icon name={dayClosed ? 'check' : 'moon'} className="w-4 h-4" />
+                  {dayClosed ? 'Giornata chiusa' : 'Chiudi la giornata'}
+                </button>
+              )}
+            </>
+          ) : (
+            <button type="button" onClick={onStart} className={`${BTN_PRIMARY} ${BTN_LG}`}>
+              <Icon name="play" className="w-4 h-4" />
+              Avvia Focus
+            </button>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-xs text-slate-500">
+          {Number.isFinite(staminaCost) && (target || !seq?.doneForToday) && <span className="ds-num">−{staminaCost} Stamina</span>}
+          <button type="button" onClick={onOpenDetails} className="ds-btn ds-btn-quiet ds-btn-sm !px-2" aria-expanded={detailsOpen}>
+            <Icon name={detailsOpen ? 'chevronUp' : 'chevronDown'} className="w-3.5 h-3.5" />
+            {detailsOpen ? 'Nascondi piano' : 'Briefing e piano'}
             <span className="ds-kbd ml-0.5">D</span>
           </button>
         </div>
-        <div className="flex items-center gap-3 text-xs text-slate-500">
-          {Number.isFinite(staminaCost) && <span className="ds-num">−{staminaCost} Stamina</span>}
-          <span className="hidden sm:flex items-center gap-1">
-            <span className="ds-kbd">Spazio</span> per partire
-          </span>
-        </div>
       </div>
 
-      {budget && ((budget.assegnateHours ?? budget.totalNeedHours) > 0 || budget.sintesiHours > 0) && (
-        <div className={`px-5 sm:px-6 py-3 border-t text-xs flex items-center gap-2 flex-wrap ${budget.overCapacity ? 'border-primary/25 bg-primary/[0.05] text-primary' : 'border-line text-slate-400'}`}>
-          <Icon name="clock" className="w-3.5 h-3.5 shrink-0" />
-          <span>
-            Oggi <span className="font-semibold text-slate-100 ds-num">{formatHoursMinutes(budget.assegnateHours ?? budget.totalNeedHours)}</span> di studio
-            {budget.sintesiHours > 0 && (
-              <>
-                {' '}+ <span className="font-semibold text-cyan-200 ds-num">{formatHoursMinutes(budget.sintesiHours)}</span> di sintesi
-              </>
-            )}{' '}
-            su {formatHoursMinutes(budget.budgetHours)} disponibili
-          </span>
-          {budget.overCapacity && <span className="font-medium">· deficit di {formatHoursMinutes(budget.deficitHours)} al tuo ritmo reale</span>}
-          {budget.loadAdjustmentPct < 0 && <span className="text-accent">· carico ridotto del {Math.abs(budget.loadAdjustmentPct)}% da K.A.R.E.N.</span>}
+      {targetH > 0 && (
+        <div className={`px-5 sm:px-6 py-3 border-t text-xs ${plan.overCapacity || inRitardo ? 'border-primary/25 bg-primary/[0.05]' : 'border-line'}`}>
+          <div className="flex items-center justify-between gap-3 flex-wrap text-slate-400">
+            <span className="flex items-center gap-2">
+              <Icon name="clock" className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                Oggi fatto <span className="font-semibold text-slate-100 ds-num">{formatHoursMinutes(doneH)}</span> di{' '}
+                <span className="font-semibold text-slate-100 ds-num">{formatHoursMinutes(targetH)}</span> previste
+                {plan.reviews?.targetCount > 0 ? ` · ripassi ${plan.reviews.done || 0}/${plan.reviews.targetCount}` : ''}
+              </span>
+            </span>
+            {inRitardo ? (
+              <span className="font-medium text-primary">piano in ritardo di {formatHoursMinutes(plan.lateHours)}</span>
+            ) : plan.overCapacity ? (
+              <span className="font-medium text-primary">{formatHoursMinutes(plan.deficitHours)} slittano a domani</span>
+            ) : plan.loadAdjustmentPct < 0 ? (
+              <span className="text-accent">capacità ridotta del {Math.abs(plan.loadAdjustmentPct)}% da K.A.R.E.N.</span>
+            ) : null}
+          </div>
+          <div className="ds-progress mt-2">
+            <span className={pct >= 100 ? 'bg-emerald-400' : 'bg-primary'} style={{ width: `${pct}%` }} />
+          </div>
         </div>
       )}
     </div>
@@ -314,7 +311,7 @@ function SessionCard({ timer, TIMER_STATUS, activeMateria, activeSfida, modoCons
           </div>
         )}
       </div>
-      {activeSfida && modoConsigliato && (
+      {modoConsigliato && (
         <p className="text-sm text-slate-300 flex items-start gap-2">
           <Icon name={WORK_MODE_META[modoConsigliato].icon} className={`w-4 h-4 mt-0.5 shrink-0 ${WORK_MODE_META[modoConsigliato].color}`} />
           <span>
@@ -337,7 +334,7 @@ function SessionCard({ timer, TIMER_STATUS, activeMateria, activeSfida, modoCons
 }
 
 export default function MissionControl() {
-  const { state, actions, derived, sensoryZero, setSensoryZero, TIMER_STATUS, spiderSenseSurgeAt } = useArachnoForge();
+  const { state, actions, derived, sensoryZero, setSensoryZero, TIMER_STATUS, spiderSenseSurgeAt, pushToast } = useArachnoForge();
   // V37.0 — il Tactical Timer arriva da un contesto dedicato: cambia una
   // volta al secondo, e prima quel tick rirenderizzava anche Web-Matrix,
   // Star Log e Sidebar, che del countdown non sanno nulla.
@@ -388,6 +385,7 @@ export default function MissionControl() {
   // SuitTelemetryView.handleScan, qui isolato per non confondersi con
   // un'eventuale Diagnostica Neurale lanciata da quella pagina.
   const [planRefreshFeedback, setPlanRefreshFeedback] = useState(null);
+  const [planRefreshMessage, setPlanRefreshMessage] = useState(null);
   const planRefreshFeedbackTimeoutRef = useRef(null);
   useEffect(() => () => clearTimeout(planRefreshFeedbackTimeoutRef.current), []);
 
@@ -486,11 +484,14 @@ export default function MissionControl() {
   );
 
   const handleRefreshStudyPlan = useCallback(async () => {
-    const { error: refreshError } = await karen.triggerOracleScan({ force: true });
-    setPlanRefreshFeedback(refreshError ? 'error' : 'success');
+    // V42 — con il piano di oggi: K.A.R.E.N. sceglie dentro le materie del piano.
+    // Su un piano di ripiego è un nuovo tentativo, non una rigenerazione.
+    const { data: refreshData, error: refreshError } = await karen.triggerOracleScan({ force: !karen.briefingFallback, planContext: derived.karenPlanContext });
+    setPlanRefreshFeedback(refreshError ? 'error' : refreshData?.fallback ? 'fallback' : 'success');
+    setPlanRefreshMessage(refreshError ? null : refreshData?.warning || null);
     clearTimeout(planRefreshFeedbackTimeoutRef.current);
     planRefreshFeedbackTimeoutRef.current = setTimeout(() => setPlanRefreshFeedback(null), 3200);
-  }, [karen]);
+  }, [karen, derived.karenPlanContext]);
 
   const selectedMateria = useMemo(
     () => materie.find((m) => m.id === selectedMateriaId) || null,
@@ -540,11 +541,15 @@ export default function MissionControl() {
   // Stamina mentre il costo reale applicato dal reducer è zero per tutta
   // la finestra attiva. Stessa firma, stesso motore: nessun secondo
   // calcolo che possa divergere da quello vero.
+  // V42 — la Stamina si misura sulla TUA giornata (capacità calibrata) e
+  // Maximum Carnage non la rende più gratis.
+  const staminaCapacityHours = Number(derived.calibration?.hoursPerDay) > 0 ? Number(derived.calibration.hoursPerDay) : 4.5;
   const previewStaminaCost = computeFocusStaminaCost(
     effectiveFocusMinutes,
     previewDifficulty,
     derived.skillEffects.staminaCostMultiplier,
-    derived.isMaxCarnageActive
+    derived.isMaxCarnageActive,
+    staminaCapacityHours
   );
 
   // V34.5 — "Timer pulito": le Materie già superate (esame passato,
@@ -595,12 +600,18 @@ export default function MissionControl() {
 
   // V40.2 — intento della prossima partenza dopo la conferma "Avvia
   // Comunque": resta 'SINTESI' se la partenza era dalla card di una lezione.
+  // V42 — con l'intento viaggiano anche la durata forzata e l'eventuale
+  // "blocco deciso ieri sera" da segnare come avviato.
   const intentoInAttesaRef = useRef(null);
+  const partenzaInAttesaRef = useRef(null);
   const doStartFocus = useCallback(() => {
     const intento = intentoInAttesaRef.current;
+    const extra = partenzaInAttesaRef.current;
     intentoInAttesaRef.current = null;
-    timer.startFocus(selectedMateriaId || null, selectedSfidaId || null, false, intento);
-  }, [timer, selectedMateriaId, selectedSfidaId]);
+    partenzaInAttesaRef.current = null;
+    if (extra?.pianoIeri) actions.markTomorrowPlanStarted();
+    timer.startFocus(selectedMateriaId || null, selectedSfidaId || null, false, intento, extra?.minuti ? { minutes: extra.minuti } : null);
+  }, [timer, selectedMateriaId, selectedSfidaId, actions]);
 
   // V35.0 — guardia "sessione non salvata": `timer.awaitingDebrief` è ora
   // derivato direttamente dall'hook (mai una copia locale che si perde a
@@ -609,6 +620,7 @@ export default function MissionControl() {
   // Si chiede conferma esplicita invece di permetterlo senza preavviso.
   const handleStartFocus = useCallback(() => {
     intentoInAttesaRef.current = null;
+    partenzaInAttesaRef.current = null;
     if (timer.awaitingDebrief) {
       setConfirmRestartOpen(true);
       return;
@@ -622,115 +634,125 @@ export default function MissionControl() {
   }, [doStartFocus]);
 
   /**
-   * V36.0 — il bersaglio della card "ADESSO", in ordine di specificità
-   * decrescente: l'argomento scelto oggi da K.A.R.E.N. (già riconciliato
-   * live con l'albero), altrimenti il Primary Target di materia, altrimenti
-   * niente — mai un suggerimento inventato quando non c'è nulla da
-   * suggerire.
+   * V42 — la giornata come SEQUENZA (utils/nowTarget.js): il blocco deciso
+   * ieri sera, la lezione appena finita (se il piano lo consente), i
+   * ripassi dovuti, le materie del piano con l'argomento e il lavoro
+   * giusti, poi la lezione col tempo che avanza. K.A.R.E.N. sceglie
+   * argomento e metodo solo dentro le materie che il piano ha messo oggi.
    */
-  const nowTarget = useMemo(() => {
-    // V40.0 — due candidati, e un arbitro.
-    //  - lo STUDIO per gli esami (argomento scelto oggi da K.A.R.E.N.,
-    //    altrimenti il Primary Target di materia);
-    //  - la SINTESI di una lezione davvero da sistemare (coda del Campus,
-    //    solo con fonti aperte o non dichiarata già fatta).
-    // La lezione passa davanti solo se il piano lo consente
-    // (`karenSintesi.prima`: nessun esame in focus a rischio, niente
-    // monotask) o se non c'è altro da fare. Altrimenti resta come "POI":
-    // visibile, con il suo tempo riservato, ma mai sopra un esame che
-    // rischia di non starci. Prima vinceva sempre la lezione.
-    const campus = derived.campus;
-    const sintesiPlan = derived.karenSintesi;
-    let lezione = null;
-    if (campus?.fase === 'LEZIONI' && campus.coda?.length > 0) {
-      const l = campus.coda[0];
-      const materia = materie.find((m) => m.id === l.materiaId);
-      const nodo = nodoInSintesi(materia);
-      lezione = {
-        argomento: nodo ? nodo.nome : `Appunti di ${l.materia.nome}`,
-        materia: `${l.materia.nome} · sistema la lezione ${
-          l.lezioniDaSistemare > 1 ? `(${l.lezioniDaSistemare} lezioni)` : `delle ${l.inizio}`
-        }`,
-        rationale:
-          l.oreFa < 1
-            ? 'La lezione è appena finita: trasformarla nei tuoi appunti adesso costa una frazione di quanto costerà fra una settimana.'
-            : `Finita ${l.oreFa}h fa. Sistemarla oggi, finché la ricordi, è il lavoro di sintesi che rende di più.`,
-        metodo: 'Modalità Sintesi: dal libro, dalle slide e da ciò che hai scritto in aula ai tuoi appunti definitivi.',
-        materiaId: l.materiaId,
-        sfidaId: nodo?.id || null,
-        daLezione: true,
-        breve: `Sistema la lezione di ${l.materia.nome}`
-      };
-    }
-    let studio = null;
-    if (liveStudyFocus.primary) {
-      studio = {
-        argomento: liveStudyFocus.primary.argomento,
-        materia: liveStudyFocus.primary.materia,
-        rationale: liveStudyFocus.primary.rationale,
-        metodo: liveStudyFocus.primary.metodo,
-        materiaId: liveStudyFocus.primary.materiaId || null,
-        sfidaId: liveStudyFocus.primary.sfidaId || null,
-        breve: liveStudyFocus.primary.argomento
-      };
-    } else if (derived.primaryTarget) {
-      studio = {
-        argomento: derived.primaryTarget.materia.nome,
-        materia: `Primary Target · Spider-Score ${formatNumber(derived.primaryTarget.spiderScore, 1)}`,
-        rationale: derived.primaryTarget.reason,
-        metodo: null,
-        materiaId: derived.primaryTarget.materia.id,
-        sfidaId: null,
-        breve: derived.primaryTarget.materia.nome
-      };
-    }
-    const minutiSintesi = Math.round((sintesiPlan?.riservateOre || 0) * 60);
-    if (lezione && (sintesiPlan?.prima || !studio)) {
-      const oreStudio = derived.karenDailyFocusQuotas?.find((q) => q.materiaId === studio?.materiaId)?.assignedHours;
-      return {
-        ...lezione,
-        dopo: studio
-          ? { testo: studio.breve, minuti: Number.isFinite(oreStudio) && oreStudio > 0 ? Math.round(oreStudio * 60) : null, etichetta: 'di studio oggi' }
-          : null
-      };
-    }
-    if (studio) {
-      return {
-        ...studio,
-        dopo: lezione
-          ? minutiSintesi > 0
-            ? { testo: lezione.breve, minuti: minutiSintesi, etichetta: 'riservati oggi' }
-            : {
-                testo: lezione.breve,
-                minuti: null,
-                nota: derived.karenMonotaskActive
-                  ? 'dopo l’esame: con un appello entro 10 giorni il tempo va tutto lì'
-                  : 'quando avanzi tempo: oggi gli esami occupano tutta la giornata'
-              }
-          : null
-      };
-    }
-    return null;
-  }, [liveStudyFocus, derived.primaryTarget, derived.campus, derived.karenSintesi, derived.karenDailyFocusQuotas, derived.karenMonotaskActive, materie]);
+  const todayKey = getDateKey();
+  const sequenza = useMemo(
+    () =>
+      computeTodaySequence({
+        materie: derived.materiePiano,
+        planToday: derived.planToday,
+        dueReviews: derived.upcomingReviews,
+        campus: derived.campus,
+        karen: liveStudyFocus,
+        tomorrowPlan: derived.tomorrowPlanToday,
+        reviewMinutes: derived.calibration?.reviewMinutes,
+        todayKey
+      }),
+    [derived.materiePiano, derived.planToday, derived.upcomingReviews, derived.campus, liveStudyFocus, derived.tomorrowPlanToday, derived.calibration, todayKey]
+  );
+  const nowTarget = sequenza.current;
+
+  // La bozza di domani: serve a "Chiudi la giornata" e ad "Anticipa".
+  const bozzaDomani = useMemo(
+    () => tomorrowPlanDraft({ timeline: derived.planTimeline, materie: derived.materiePiano, allTrackedReviews: derived.allTrackedReviews, todayKey }),
+    [derived.planTimeline, derived.materiePiano, derived.allTrackedReviews, todayKey]
+  );
+  const anticipo = sequenza.doneForToday ? bozzaDomani.items[0] || null : null;
+
+  // Il costo di Stamina del blocco proposto da "ADESSO" (durata e difficoltà vere).
+  const nowStaminaCost = useMemo(() => {
+    if (!nowTarget) return previewStaminaCost;
+    const m = materie.find((x) => x.id === nowTarget.materiaId);
+    const nodo = m && nowTarget.sfidaId ? (m.sfide || []).find((x) => x.id === nowTarget.sfidaId) : null;
+    return computeFocusStaminaCost(
+      nowTarget.minutes || effectiveFocusMinutes,
+      nodo ? nodo.difficulty : DIFFICULTY.MEDIUM,
+      derived.skillEffects.staminaCostMultiplier,
+      derived.isMaxCarnageActive,
+      staminaCapacityHours
+    );
+  }, [nowTarget, materie, effectiveFocusMinutes, derived.skillEffects.staminaCostMultiplier, derived.isMaxCarnageActive, staminaCapacityHours, previewStaminaCost]);
 
   /** Avvio in un solo gesto dalla card "ADESSO": seleziona il bersaglio
    * (così i due Dropdown restano coerenti con ciò che sta girando) e fa
    * partire il blocco, passando comunque dalla stessa guardia "sessione
-   * non salvata" di handleStartFocus. */
-  const handleStartNow = useCallback(() => {
-    const materiaId = nowTarget?.materiaId || selectedMateriaId || null;
-    const sfidaId = nowTarget?.sfidaId || (nowTarget?.materiaId ? null : selectedSfidaId) || null;
-    setSelectedMateriaId(materiaId || '');
-    setSelectedSfidaId(sfidaId || '');
-    if (timer.awaitingDebrief) {
-      intentoInAttesaRef.current = nowTarget?.daLezione ? 'SINTESI' : null;
-      setConfirmRestartOpen(true);
-      return;
-    }
-    // V40.2 — dalla card di una lezione da sistemare la sessione nasce
-    // come Sintesi: il Debriefing chiederà le pagine fonte per fonte.
-    timer.startFocus(materiaId, sfidaId, false, nowTarget?.daLezione ? 'SINTESI' : null);
-  }, [nowTarget, selectedMateriaId, selectedSfidaId, timer]);
+   * non salvata" di handleStartFocus. `minuti` forza la durata ("Solo 5
+   * minuti", ripassi brevi, blocco deciso ieri sera). */
+  const avviaVoce = useCallback(
+    (voce, minutiForzati = null) => {
+      const materiaId = voce?.materiaId || selectedMateriaId || null;
+      const sfidaId = voce ? voce.sfidaId || null : selectedSfidaId || null;
+      const intento = voce?.intent || null;
+      const minuti = minutiForzati || voce?.minutes || null;
+      setSelectedMateriaId(materiaId || '');
+      setSelectedSfidaId(sfidaId || '');
+      if (timer.awaitingDebrief) {
+        intentoInAttesaRef.current = intento;
+        partenzaInAttesaRef.current = { minuti, pianoIeri: voce?.kind === 'PIANO_IERI' };
+        setConfirmRestartOpen(true);
+        return;
+      }
+      if (voce?.kind === 'PIANO_IERI') actions.markTomorrowPlanStarted();
+      timer.startFocus(materiaId, sfidaId, false, intento, minuti ? { minutes: minuti } : null);
+    },
+    [selectedMateriaId, selectedSfidaId, timer, actions]
+  );
+  const handleStartNow = useCallback(() => avviaVoce(nowTarget), [avviaVoce, nowTarget]);
+  const handleStartShort = useCallback(() => avviaVoce(nowTarget, 5), [avviaVoce, nowTarget]);
+  const handleAnticipa = useCallback(() => {
+    if (!anticipo) return;
+    avviaVoce({ materiaId: anticipo.materiaId, sfidaId: anticipo.sfidaId, intent: anticipo.modo, kind: 'ANTICIPO' });
+  }, [anticipo, avviaVoce]);
+
+  // V42 — dopo "Solo 5 minuti": continuare sullo stesso bersaglio con un
+  // blocco pieno, senza chiudere la sessione (i minuti si sommano).
+  const handleContinue = useCallback(() => {
+    timer.startFocus(timer.pendingFocusMateriaId || null, timer.pendingFocusSfidaId || null, false, timer.pendingFocusIntent || null);
+  }, [timer]);
+
+  // V42 — "Chiudi la giornata".
+  const [closeDayOpen, setCloseDayOpen] = useState(false);
+  const handleCloseDaySave = useCallback(
+    (payload) => {
+      actions.closeDay(payload);
+      setCloseDayOpen(false);
+      pushToast(
+        payload.tomorrowPlan?.primoBlocco
+          ? `Giornata chiusa. Domani si parte${payload.tomorrowPlan.oraInizio ? ` alle ${payload.tomorrowPlan.oraInizio}` : ''}: il primo blocco ti aspetta qui.`
+          : 'Giornata chiusa. Buon riposo.',
+        'success'
+      );
+    },
+    [actions, pushToast]
+  );
+  const oraAttuale = new Date().getHours();
+  const seraDiChiusura = oraAttuale >= (Number(state.settings.chiusuraOra) || 19) && !derived.dayClosedToday;
+
+  // V42 — esito di un appello passato.
+  const handleEsitoAppello = useCallback(
+    (materia, appello, esito, extra) => {
+      actions.setAppelloEsito(materia.id, appello.id, esito, extra);
+      if (esito === ESITO_APPELLO.SUPERATO) {
+        pushToast(`${materia.nome}: esame superato${Number.isFinite(extra?.voto) ? ` con ${extra.voto}${extra.lode ? ' e lode' : ''}` : ''}. Esce dal piano.`, 'success');
+      } else if (esito === ESITO_APPELLO.NON_SUPERATO) {
+        const prossimo = nextAppelloAfter(materia, appello, todayKey);
+        pushToast(
+          prossimo
+            ? `${materia.nome}: si punta al prossimo appello (${prossimo.scritto || prossimo.orale}). Il piano è già ricalcolato.`
+            : `${materia.nome}: nessun altro appello in calendario. Aggiungine uno nel Web-Matrix per riattivare il piano.`,
+          'info'
+        );
+      } else {
+        pushToast(`${materia.nome}: te lo richiedo fra qualche giorno.`, 'info');
+      }
+    },
+    [actions, pushToast, todayKey]
+  );
 
   /**
    * V36.0 — Scorciatoie da tastiera. Tre soli tasti, quelli che si usano
@@ -760,7 +782,7 @@ export default function MissionControl() {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTypingTarget(e.target)) return;
       if (e.code === 'Space' && e.target instanceof Element && e.target.closest(INTERACTIVE)) return;
-      if (debriefOpen || questModalOpen || confirmInterruptOpen || confirmRestartOpen) return;
+      if (debriefOpen || questModalOpen || confirmInterruptOpen || confirmRestartOpen || closeDayOpen) return;
       // V37.0 — Escape è anche il tasto standard per chiudere una
       // modale o un menu. L'elenco esplicito di stati qui sopra copriva
       // solo i quattro modali di QUESTA pagina: un Dropdown aperto o un
@@ -783,7 +805,7 @@ export default function MissionControl() {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [timer, handleStartNow, debriefOpen, questModalOpen, confirmInterruptOpen, confirmRestartOpen, setSensoryZero, TIMER_STATUS]);
+  }, [timer, handleStartNow, debriefOpen, questModalOpen, confirmInterruptOpen, confirmRestartOpen, closeDayOpen, setSensoryZero, TIMER_STATUS]);
 
   // V41 — "Avvia Focus" dalla palette comandi (Ctrl K).
   useIntent(INTENT.TIMER_START_NOW, () => {
@@ -800,12 +822,13 @@ export default function MissionControl() {
     const sfidaId = payload.sfidaId || null;
     setSelectedMateriaId(materiaId || '');
     setSelectedSfidaId(sfidaId || '');
-    intentoInAttesaRef.current = null;
+    intentoInAttesaRef.current = payload.intent || null;
+    partenzaInAttesaRef.current = null;
     if (timer.awaitingDebrief) {
       setConfirmRestartOpen(true);
       return;
     }
-    timer.startFocus(materiaId, sfidaId, false, null);
+    timer.startFocus(materiaId, sfidaId, false, payload.intent || null);
   });
 
   const handleInterrupt = useCallback(() => setConfirmInterruptOpen(true), []);
@@ -908,12 +931,14 @@ export default function MissionControl() {
     return debriefMateria.sfide.find((s) => s.id === timer.pendingFocusSfidaId) || null;
   }, [debriefMateria, timer.pendingFocusSfidaId]);
 
+  // V42 — il lavoro dichiarato alla partenza vince sul suggerito.
   const modoConsigliato = useMemo(() => {
+    if (timer.activeFocusIntent && WORK_MODE_META[timer.activeFocusIntent]) return timer.activeFocusIntent;
     if (!activeSfida) return null;
     const src = nodeSources(activeSfida);
-    if (src.totali === 0) return null;
+    if (src.totali === 0 && activeSfida.status !== 'COMPLETED') return null;
     return suggestedWorkMode(activeSfida);
-  }, [activeSfida]);
+  }, [activeSfida, timer.activeFocusIntent]);
 
   // Active SVG Progress Ring — cerchio reale che si svuota in tempo reale
   // (stroke-dashoffset ricalcolato ad ogni tick del Tactical Timer, mai un
@@ -938,8 +963,6 @@ export default function MissionControl() {
     if (eff.xpBonusPct > 0) activeSkillChips.push(`+${Math.round(eff.xpBonusPct * 100)}% XP`);
     if (eff.staminaCostMultiplier < 1) activeSkillChips.push(`-${Math.round((1 - eff.staminaCostMultiplier) * 100)}% Stamina`);
     if (eff.streakThresholdBonus > 0) activeSkillChips.push(`Streak soglie -${eff.streakThresholdBonus}gg`);
-    const sessionHour = new Date().getHours();
-    if (eff.nightBonusEnabled && sessionHour >= 0 && sessionHour < 4) activeSkillChips.push('+10% XP notturno');
     if (timer.isOverdriveActive) activeSkillChips.push(`Overdrive x${eff.overdriveMultiplier.toFixed(2)}`);
   }
 
@@ -1153,7 +1176,20 @@ export default function MissionControl() {
           {timer.status !== TIMER_STATUS.IDLE && (
             <p className="text-xs text-center text-slate-500">Un blocco è ancora in corso: “Termina e salva” lo ferma e aggiunge i suoi minuti interi.</p>
           )}
-          <button type="button" onClick={handleEndAndSave} className={`w-full ${BTN_PRIMARY}`}>
+          {/* V42 — dopo un avvio da "Solo 5 minuti" la cosa più utile è
+              continuare: un blocco pieno sullo stesso argomento, i minuti si
+              sommano alla sessione. */}
+          {timer.status === TIMER_STATUS.IDLE && timer.pendingFocusMinutes > 0 && timer.pendingFocusMinutes <= 10 && (
+            <button type="button" onClick={handleContinue} className={`w-full ${BTN_PRIMARY}`}>
+              <Icon name="play" className="w-4 h-4" />
+              Il difficile è fatto: continua · {effectiveFocusMinutes} min
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleEndAndSave}
+            className={`w-full ${timer.status === TIMER_STATUS.IDLE && timer.pendingFocusMinutes > 0 && timer.pendingFocusMinutes <= 10 ? BTN_GHOST : BTN_PRIMARY}`}
+          >
             <Icon name="check" className="w-4 h-4" />
             Termina sessione e salva
           </button>
@@ -1241,18 +1277,25 @@ export default function MissionControl() {
 
       <CampusStrip campus={derived.campus} />
 
+      {/* V42 — appelli passati: l'esito in un gesto. */}
+      <AppelloEsitoCard voci={derived.appelliDaChiudere} todayKey={todayKey} onEsito={handleEsitoAppello} />
+
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
         <div className="xl:col-span-7 space-y-6 min-w-0">
           {idle ? (
             <NowCard
-              target={nowTarget}
+              seq={sequenza}
               minutes={effectiveFocusMinutes}
-              budget={derived.karenBudget}
-              canStart
+              plan={derived.planToday}
               onStart={handleStartNow}
+              onStartShort={handleStartShort}
               onOpenDetails={() => setDetailsOpen((v) => !v)}
               detailsOpen={detailsOpen}
-              staminaCost={previewStaminaCost}
+              staminaCost={nowStaminaCost}
+              onCloseDay={() => setCloseDayOpen(true)}
+              dayClosed={derived.dayClosedToday}
+              anticipo={anticipo}
+              onAnticipa={handleAnticipa}
             />
           ) : (
             <SessionCard
@@ -1281,6 +1324,11 @@ export default function MissionControl() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-2 flex-wrap mb-1.5">
                     <p className="ds-eyebrow">{karenBriefingToday ? 'K.A.R.E.N. · Daily Briefing' : 'Daily Briefing'}</p>
+                    {karenBriefingToday && karen.briefingFallback && (
+                      <span className={BADGE.amber} title="Karen non era raggiungibile: direttive calcolate dall’app. Rigenera dalla Suit Telemetry.">
+                        Piano di ripiego
+                      </span>
+                    )}
                     {karenDirectivesToday?.study_window?.label && (
                       <span className={BADGE.blue}>
                         <Icon name="clock" className="w-3 h-3" />
@@ -1337,6 +1385,9 @@ export default function MissionControl() {
                       </button>
                     </div>
                     {planRefreshFeedback === 'success' && <p className="text-xs text-emerald-300 mb-1.5">Piano rivalutato da K.A.R.E.N.</p>}
+                    {planRefreshFeedback === 'fallback' && (
+                      <p className="text-xs text-accent mb-1.5">{planRefreshMessage || 'K.A.R.E.N. non ha risposto: piano di ripiego sulle materie di oggi. Riprova fra qualche minuto.'}</p>
+                    )}
                     {planRefreshFeedback === 'error' && (
                       <p className="text-xs text-primary mb-1.5">{karen.error || 'Rigenerazione non riuscita — riprova.'}</p>
                     )}
@@ -1388,95 +1439,35 @@ export default function MissionControl() {
                 </div>
               )}
 
-              {/* K.A.R.E.N. Quantum Router — Quota Odierna */}
-              <div className={CARD}>
-                <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
-                  <div className="flex items-center gap-3">
-                    <span className="ds-icon-tile text-primary">
-                      <Icon name="satellite" className="w-[18px] h-[18px]" />
-                    </span>
-                    <div>
-                      <p className="ds-eyebrow">K.A.R.E.N. Quantum Router</p>
-                      <h2 className="ds-h2">Quota Odierna</h2>
-                    </div>
-                  </div>
-                  {derived.karenMonotaskActive && (
-                    <span className={BADGE.red}>
-                      <Icon name="crosshair" className="w-3 h-3" />
-                      Monotask · esame vicino
-                    </span>
-                  )}
-                </div>
-                {derived.karenQuotas.length === 0 ? (
-                  <EmptyState
-                    variant="radar"
-                    compact
-                    title="Nessuna rotta attiva"
-                    subtitle="Apri una materia nel Web-Matrix con una data d’esame per calcolare la Quota Odierna."
-                  />
-                ) : (
-                  <div className="space-y-5">
-                    <div className="space-y-2">
-                      <p className="ds-eyebrow !text-secondary">In focus oggi</p>
-                      {derived.karenDailyFocusQuotas.length === 0 ? (
-                        <p className="text-sm text-slate-500">Nessuna materia da spingere oggi.</p>
-                      ) : (
-                        derived.karenDailyFocusQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} today />)
-                      )}
-                    </div>
-
-                    {derived.karenQueuedQuotas.length > 0 && (
-                      <div className="space-y-2">
-                        <p className="ds-eyebrow">In coda · non spinte oggi</p>
-                        {derived.karenMonotaskActive && (
-                          <p className="text-xs text-slate-500">
-                            Monotask attivo: il tempo di oggi va sulla materia in focus. Il ritmo qui sotto è il passo che servirebbe iniziando da oggi.
-                          </p>
-                        )}
-                        {derived.karenQueuedQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} today={false} />)}
-                      </div>
-                    )}
-
-                    {derived.karenFrozenQuotas.length > 0 && (
-                      <div className="space-y-2">
-                        <p className="ds-eyebrow">Congelate · propedeuticità mancante</p>
-                        {derived.karenFrozenQuotas.map((q) => <QuotaRow key={q.materiaId} q={q} />)}
-                      </div>
-                    )}
-
-                    {derived.karenBudget?.totalNeedHours > 0 && (
-                      <div className="ds-well px-4 py-3">
-                        <div className="flex items-center justify-between gap-2 flex-wrap">
-                          <p className="ds-eyebrow">Budget di oggi</p>
-                          <span className={derived.karenBudget.overCapacity ? BADGE.red : BADGE.green}>
-                            {formatHoursMinutes(derived.karenBudget.totalNeedHours)} richieste / {formatHoursMinutes(derived.karenBudget.studioHours ?? derived.karenBudget.budgetHours)} per lo studio
-                          </span>
-                        </div>
-                        {derived.karenBudget.sintesiHours > 0 && (
-                          <p className="text-xs text-cyan-300/90 mt-2">
-                            + {formatHoursMinutes(derived.karenBudget.sintesiHours)} riservate alla sintesi delle lezioni (su {formatHoursMinutes(derived.karenBudget.budgetHours)} della giornata), prese solo dal tempo che gli esami lasciano libero.
-                          </p>
-                        )}
-                        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                          {derived.karenBudget.overCapacity ? (
-                            <>
-                              Il piano di oggi supera di {formatHoursMinutes(derived.karenBudget.deficitHours)} la tua capacità reale misurata. Le ore sono già ripartite in proporzione all’urgenza: un deficit che si ripete significa spostare una data o tagliare programma, non recuperare a forza di volontà.
-                            </>
-                          ) : (
-                            <>
-                              Margine libero: {formatHoursMinutes(derived.karenBudget.slackHours)}.
-                              {derived.calibration?.capacityConfident
-                                ? ` Capacità calcolata sulle tue ultime ${derived.calibration.observedDays} giornate.`
-                                : ' Capacità ancora sul valore di default: servono almeno 7 giorni di sessioni per calibrarla su di te.'}
-                            </>
-                          )}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
+              {/* V42 — il piano di oggi, materia per materia (fatto / previsto,
+                  minimo e anticipo, ripassi, lezioni, le altre materie). */}
+              <TodayPanel
+                plan={derived.planToday}
+                quotas={derived.karenQuotas}
+                calibration={derived.calibration}
+                monotask={derived.karenMonotaskActive}
+                onCloseDay={() => setCloseDayOpen(true)}
+                dayClosed={derived.dayClosedToday}
+                todayKey={todayKey}
+              />
             </>
+          )}
+
+          {/* V42 — la sera: chiudere la giornata e decidere il primo blocco di domani. */}
+          {idle && seraDiChiusura && (
+            <div className="rounded-xl border border-violet-400/25 bg-violet-400/[0.05] px-4 py-3.5 flex items-center gap-3.5 flex-wrap">
+              <span className="ds-icon-tile text-violet-300">
+                <Icon name="moon" className="w-[18px] h-[18px]" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-white">È sera: chiudi la giornata</p>
+                <p className="text-xs text-slate-400 mt-0.5">Un minuto: il bilancio di oggi e il primo blocco di domani, con l’ora di partenza. Domattina basta un click.</p>
+              </div>
+              <button type="button" onClick={() => setCloseDayOpen(true)} className={`${BTN_SECONDARY} ${BTN_SM}`}>
+                <Icon name="moon" className="w-3.5 h-3.5" />
+                Chiudi la giornata
+              </button>
+            </div>
           )}
 
           {/* Daily Patrol — sempre in vista: la gamification resta in primo piano. */}
@@ -1551,10 +1542,19 @@ export default function MissionControl() {
           <div className={derived.fatigued ? 'ds-card ds-card-alert' : CARD}>
             <StaminaBar
               stamina={state.profile.stamina}
-              readinessScore={karen.hasSession && karen.briefing ? readinessScore : null}
+              readinessScore={karen.hasSession && karen.briefing && karen.readinessKnown ? readinessScore : null}
               readinessBand={karen.readinessBand}
             />
           </div>
+
+          {/* V42 — serie di studio con i riposi, e la carica del simbionte. */}
+          <StreakCard
+            streak={derived.streak}
+            profile={state.profile}
+            todayKey={todayKey}
+            carnageActive={derived.isMaxCarnageActive}
+            onActivateCarnage={actions.activateMaxCarnage}
+          />
 
           <WebSlingChest />
 
@@ -1658,6 +1658,22 @@ export default function MissionControl() {
         calibration={derived.calibration}
       />
 
+      <CloseDayModal
+        open={closeDayOpen}
+        onClose={() => setCloseDayOpen(false)}
+        onSave={handleCloseDaySave}
+        todayKey={todayKey}
+        todayMinutes={derived.todayMinutes}
+        plan={derived.planToday}
+        draft={bozzaDomani}
+        materie={derived.materiePiano}
+        streak={derived.streak}
+        existingPlan={state.tomorrowPlan && state.tomorrowPlan.dateKey === bozzaDomani.dateKey ? state.tomorrowPlan : null}
+        defaultFocusMinutes={Number(effectiveFocusMinutes) || 25}
+        defaultOraInizio={state.tomorrowPlan?.oraInizio || '09:00'}
+        alreadyClosed={derived.dayClosedToday}
+      />
+
       <Modal open={questModalOpen} onClose={() => setQuestModalOpen(false)} title="Nuovo Daily Protocol">
         <div className="space-y-4">
           <div>
@@ -1683,7 +1699,7 @@ export default function MissionControl() {
                 id="af-quest-stamina"
                 type="number"
                 min={1}
-                max={100}
+                max={PROTOCOL_MAX_STAMINA}
                 value={questReward}
                 onChange={(e) => setQuestReward(e.target.value)}
                 className={INPUT}
@@ -1697,22 +1713,25 @@ export default function MissionControl() {
                 id="af-quest-xp"
                 type="number"
                 min={0}
-                max={500}
+                max={PROTOCOL_MAX_XP}
                 value={questXpReward}
                 onChange={(e) => setQuestXpReward(e.target.value)}
                 className={INPUT}
               />
             </div>
           </div>
-          <p className="text-xs text-slate-500">Stamina da 1 a 100, bonus XP da 0 a 500. Ogni protocollo vale una volta al giorno.</p>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Stamina da 1 a {PROTOCOL_MAX_STAMINA}, bonus XP da 0 a {PROTOCOL_MAX_XP}. Ogni protocollo vale una volta al giorno; in tutto, i protocolli ricaricano al
+            massimo {PROTOCOL_STAMINA_DAY_CAP} Stamina e {PROTOCOL_XP_DAY_CAP} XP al giorno: gli XP veri arrivano dallo studio.
+          </p>
           <button
             type="button"
             disabled={!questNome.trim()}
             onClick={() => {
               // V41 — valori sempre validi: prima un campo svuotato arrivava
               // al reducer come NaN e rendeva la Stamina "NaN%" per sempre.
-              const stamina = Math.min(100, Math.max(1, Math.round(Number(questReward) || 0)));
-              const xp = Math.min(500, Math.max(0, Math.round(Number(questXpReward) || 0)));
+              const stamina = Math.min(PROTOCOL_MAX_STAMINA, Math.max(1, Math.round(Number(questReward) || 0)));
+              const xp = Math.min(PROTOCOL_MAX_XP, Math.max(0, Math.round(Number(questXpReward) || 0)));
               actions.addQuickQuest(questNome.trim(), stamina, xp);
               setQuestNome('');
               setQuestReward(20);

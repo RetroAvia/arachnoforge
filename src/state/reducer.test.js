@@ -236,59 +236,99 @@ describe('V37.0 — Esame superato chiude davvero la Materia', () => {
   });
 });
 
+/* ------------------------------------------------------------------ *
+ * V42 — LA SERIE DI STUDIO (src/utils/streakEngine.js).
+ * Avanza quando OGGI diventa un giorno di studio valido (≥ 25 minuti di
+ * Focus), non più con un click qualsiasi; ogni settimana concede dei
+ * giorni di riposo che non la spezzano; gli Streak Shield coprono solo i
+ * giorni saltati OLTRE quel riposo. Per rendere i test indipendenti dal
+ * giorno della settimana in cui girano, i casi con gli scudi azzerano i
+ * riposi (settings.streakRiposiSettimana = 0).
+ * ------------------------------------------------------------------ */
 describe('Streak', () => {
-  test('un giorno consecutivo incrementa la streak', () => {
+  const giorniFa = (n) => new Date(Date.now() - n * 86400000).toISOString();
+  const focus = (stato, minuti = 25) =>
+    reducer(stato, { type: 'FOCUS_COMPLETED', payload: { materiaId: 'm1', sfidaId: 'n1', focusMinutes: minuti, quality: 'NORMAL' } });
+  const senzaRiposi = (s) => ({ ...s, settings: { ...s.settings, streakRiposiSettimana: 0 } });
+
+  test('un giorno di studio valido (25 minuti) dopo quello di ieri incrementa la serie', () => {
     const s = conMateria({}, [nodo()]);
-    const ieri = new Date(Date.now() - 86400000);
-    s.profile.lastActiveDate = ieri.toISOString();
+    s.profile.lastActiveDate = giorniFa(1);
     s.profile.streak = 4;
-    const next = reducer(s, { type: 'COMPLETE_SFIDA', payload: { materiaId: 'm1', sfidaId: 'n1' } });
-    assert.equal(next.profile.streak, 5);
+    assert.equal(focus(s, 25).profile.streak, 5);
   });
 
-  test('un orologio che torna indietro non azzera la streak', () => {
+  test('sotto i 25 minuti di oggi la serie non avanza (e non si azzera)', () => {
+    const s = conMateria({}, [nodo()]);
+    s.profile.lastActiveDate = giorniFa(1);
+    s.profile.streak = 4;
+    const next = focus(s, 10);
+    assert.equal(next.profile.streak, 4);
+    assert.equal(next.profile.lastActiveDate, s.profile.lastActiveDate);
+    // Un secondo blocco che porta il giorno oltre i 25 minuti lo rende valido.
+    assert.equal(focus(next, 15).profile.streak, 5);
+  });
+
+  test('completare un nodo da solo non muove più la serie', () => {
+    const s = conMateria({}, [nodo()]);
+    s.profile.lastActiveDate = giorniFa(1);
+    s.profile.streak = 4;
+    const next = reducer(s, { type: 'COMPLETE_SFIDA', payload: { materiaId: 'm1', sfidaId: 'n1' } });
+    assert.equal(next.profile.streak, 4);
+  });
+
+  test('un orologio che torna indietro non azzera la serie', () => {
     // V37.0 — prima un fuso cambiato o una data sistemata a mano
     // mandava la streak a 1, senza alcun modo di recuperarla.
     const s = conMateria({}, [nodo()]);
     s.profile.lastActiveDate = new Date(Date.now() + 3 * 86400000).toISOString();
     s.profile.streak = 40;
-    const next = reducer(s, { type: 'COMPLETE_SFIDA', payload: { materiaId: 'm1', sfidaId: 'n1' } });
-    assert.equal(next.profile.streak, 40);
+    assert.equal(focus(s, 30).profile.streak, 40);
   });
 
-  test('uno Streak Shield copre un giorno saltato', () => {
+  test('un giorno saltato dentro i riposi della settimana non consuma scudi', () => {
     const s = conMateria({}, [nodo()]);
-    s.profile.lastActiveDate = new Date(Date.now() - 2 * 86400000).toISOString();
+    s.profile.lastActiveDate = giorniFa(2);
+    s.profile.streak = 12;
+    s.profile.streakShields = 1;
+    s.profile.lastStreakShieldGrantMonthKey = getDateKey().slice(0, 7);
+    const next = focus(s);
+    assert.equal(next.profile.streak, 13, 'il riposo non spezza la serie');
+    assert.equal(next.profile.streakShields, 1, 'lo scudo resta in cassa');
+  });
+
+  test('oltre i riposi concessi, uno Streak Shield copre il giorno saltato', () => {
+    const s = senzaRiposi(conMateria({}, [nodo()]));
+    s.profile.lastActiveDate = giorniFa(2);
     s.profile.streak = 12;
     s.profile.streakShields = 1;
     // Il mese corrente risulta già premiato, altrimenti l'assegnazione
     // mensile automatica rimpiazzerebbe lo scudo appena consumato e il
     // test non misurerebbe più niente.
     s.profile.lastStreakShieldGrantMonthKey = getDateKey().slice(0, 7);
-    const next = reducer(s, { type: 'COMPLETE_SFIDA', payload: { materiaId: 'm1', sfidaId: 'n1' } });
-    assert.equal(next.profile.streak, 12, 'la streak andava preservata');
+    const next = focus(s);
+    assert.equal(next.profile.streak, 13, 'la serie andava preservata');
     assert.equal(next.profile.streakShields, 0, 'lo scudo non è stato consumato');
     assert.equal(next.profile.streakShieldsUsedTotal, 1);
   });
 
   test('il nuovo mese assegna uno scudo da solo', () => {
     const s = conMateria({}, [nodo()]);
-    s.profile.lastActiveDate = new Date(Date.now() - 86400000).toISOString();
+    s.profile.lastActiveDate = giorniFa(1);
     s.profile.streakShields = 0;
     s.profile.lastStreakShieldGrantMonthKey = null;
-    const next = reducer(s, { type: 'COMPLETE_SFIDA', payload: { materiaId: 'm1', sfidaId: 'n1' } });
+    const next = focus(s);
     assert.equal(next.profile.streakShields, 1);
     assert.equal(next.profile.lastStreakShieldGrantMonthKey, getDateKey().slice(0, 7));
   });
 
-  test('senza scudi a sufficienza la streak riparte da 1', () => {
-    const s = conMateria({}, [nodo()]);
-    s.profile.lastActiveDate = new Date(Date.now() - 5 * 86400000).toISOString();
+  test('senza scudi a sufficienza la serie riparte da 1', () => {
+    const s = senzaRiposi(conMateria({}, [nodo()]));
+    s.profile.lastActiveDate = giorniFa(5);
     s.profile.streak = 12;
     s.profile.streakShields = 1;
     s.profile.lastStreakShieldGrantMonthKey = getDateKey().slice(0, 7);
-    const next = reducer(s, { type: 'COMPLETE_SFIDA', payload: { materiaId: 'm1', sfidaId: 'n1' } });
-    assert.equal(next.profile.streak, 1);
+    assert.equal(focus(s).profile.streak, 1);
   });
 });
 
@@ -658,11 +698,19 @@ describe('FOCUS_COMPLETED — pagine per fonte (V40.2)', () => {
     assert.equal(voce.pagineFonte, 30, '20 dal libro + le 10 che restavano sulle slide');
   });
 
-  test('segna il momento in cui la sintesi del nodo è avanzata', () => {
+  test('V42: una sessione col timer non marca più la sintesi "fatta a mano"; la registrazione manuale sì, con le pagine', () => {
+    // Prima una sessione da 5 minuti con una pagina marcava il nodo e la
+    // coda delle lezioni considerava sistemate ore di lezioni: ora i minuti
+    // del timer contano per quello che valgono (campusEngine li legge
+    // dallo Star Log) e la marca resta alla sintesi registrata a mano.
     const out = sessione(base(), { workMode: 'SINTESI', pagineFontePer: { libro: 5 } });
-    assert.equal(typeof out.materie[0].sfide[0].sintesiAggiornataAt, 'string');
-    const senzaPagine = sessione(base(), { workMode: 'SINTESI' });
-    assert.equal(senzaPagine.materie[0].sfide[0].sintesiAggiornataAt, undefined, 'solo tempo: nessuna marca');
+    assert.equal(out.materie[0].sfide[0].sintesiAggiornataAt, undefined);
+    const fonti = base().materie[0].sfide[0].fonti.map((f) => (f.id === 'libro' ? { ...f, pagineFatte: f.pagineFatte + 12 } : f));
+    const manuale = reducer(base(), { type: 'UPDATE_SFIDA', payload: { materiaId: 'm1', sfidaId: 'n1', patch: { fonti } } });
+    const n = manuale.materie[0].sfide[0];
+    assert.equal(typeof n.sintesiAggiornataAt, 'string');
+    assert.equal(n.sintesiManuale.length, 1);
+    assert.equal(n.sintesiManuale[0].pagine, 12);
   });
 
   test('in modo Studio il dettaglio per fonte viene ignorato', () => {
@@ -757,5 +805,28 @@ describe('V41 — ADD_SHOP_REWARD', () => {
     const r = out.shopRewards[out.shopRewards.length - 1];
     assert.equal(r.nome.length, 80);
     assert.equal(r.costoXp, 10000000);
+  });
+});
+
+describe('V42 — SAVE_KAREN_WEEKLY', () => {
+  const bilancio = { sintesi: 'Settimana solida.', bene: [], migliorare: [], tecnica: null, prossima_settimana: [] };
+
+  test('conserva la data VERA del bilancio (anche dalla cache) e se la settimana era chiusa', () => {
+    const s = reducer(statoBase(), {
+      type: 'SAVE_KAREN_WEEKLY',
+      payload: { weekKey: '2026-09-21', payload: bilancio, generatedAt: '2026-09-23T18:00:00.000Z', weekClosed: false }
+    });
+    assert.equal(s.karenWeekly.weekKey, '2026-09-21');
+    assert.equal(s.karenWeekly.savedAt, '2026-09-23T18:00:00.000Z');
+    assert.equal(s.karenWeekly.weekClosed, false);
+  });
+
+  test('senza una data valida vale adesso; payload mancante: nessun cambiamento', () => {
+    const prima = Date.now();
+    const s = reducer(statoBase(), { type: 'SAVE_KAREN_WEEKLY', payload: { weekKey: '2026-09-21', payload: bilancio, generatedAt: 'boh', weekClosed: true } });
+    assert.ok(Date.parse(s.karenWeekly.savedAt) >= prima - 1000);
+    assert.equal(s.karenWeekly.weekClosed, true);
+    const base = statoBase();
+    assert.equal(reducer(base, { type: 'SAVE_KAREN_WEEKLY', payload: { weekKey: '2026-09-21' } }), base);
   });
 });

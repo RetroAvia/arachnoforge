@@ -1,9 +1,5 @@
 /**
- * THE DAILY PATROL ENGINE — V23.0 "The Quantum Router" (Modulo 2).
- *
- * Riscrittura completa rispetto alla V20: non più un calcolo "derivato" a
- * ogni render (che richiedeva ricomputare da zero l'intera condizione ogni
- * volta), ma un VERO motore a eventi persistito in `state.dailyPatrols`:
+ * THE DAILY PATROL ENGINE — motore delle missioni giornaliere.
  *
  *   state.dailyPatrols = {
  *     dateKey: 'YYYY-MM-DD',
@@ -11,17 +7,22 @@
  *                targetAmount, currentProgress, isCompleted, xpReward, icon }]
  *   }
  *
- * Ogni giorno (dateKey diverso da oggi) il Context rigenera 3 missioni —
- * una per tier di difficoltà (EASY/MEDIUM/HARD) — pescate a caso da un
- * pool di template più ampio (varietà giorno per giorno), con un seed
- * deterministico derivato dalla data stessa: stesso giorno, stesse quest,
- * anche se l'app viene ricaricata più volte (mai un reroll accidentale a
- * metà giornata). Il progresso si aggiorna in modo "event-driven": ogni
- * azione rilevante del reducer (Focus completato, Ripasso, Nodo
- * completato, Boss Fight vinta) chiama `applyQuestEvent`, una funzione
- * pura che scorre le quest attive e incrementa quelle il cui `type`
- * corrisponde all'evento — zero derivazione a runtime, zero doppio
- * calcolo, auto-tracking reale.
+ * Ogni giorno 3 missioni (una per difficoltà) pescate da un pool con un
+ * seed derivato dalla data (stesse missioni anche dopo più reload), e
+ * aggiornate "a eventi" dal reducer (applyQuestEvent).
+ *
+ * V42 — le missioni seguono il METODO DI STUDIO e la fase del semestre:
+ *  - in periodo di LEZIONI: sistemare le lezioni (sintesi), produrre
+ *    pagine dei tuoi appunti, ripassi, il bersaglio del piano;
+ *  - in SESSIONE: esercizi, simulazioni d'esame, l'obiettivo di oggi del
+ *    piano, ripassi;
+ *  - le missioni "a sessioni" contano solo blocchi veri (almeno 20
+ *    minuti): prima una sessione da un minuto completava "Primary Target";
+ *  - niente più premi per lo studio notturno (Night Owl) né per
+ *    l'Overdrive in sé: al loro posto "Chiudi la giornata" e il blocco
+ *    profondo;
+ *  - una missione impossibile oggi (nessun ripasso scaduto, nessuna
+ *    lezione da sistemare) non viene nemmeno pescata.
  */
 
 export const QUEST_DIFFICULTY = { EASY: 'EASY', MEDIUM: 'MEDIUM', HARD: 'HARD' };
@@ -34,14 +35,21 @@ export const QUEST_DIFFICULTY_META = {
 
 export const QUEST_TYPE = {
   FOCUS_MINUTES: 'FOCUS_MINUTES',
+  DAY_TARGET: 'DAY_TARGET',
   REVIEWS_CLEARED: 'REVIEWS_CLEARED',
   PRIMARY_TARGET_SESSION: 'PRIMARY_TARGET_SESSION',
   EARLY_BIRD_FOCUS: 'EARLY_BIRD_FOCUS',
-  NIGHT_OWL_FOCUS: 'NIGHT_OWL_FOCUS',
   NODES_COMPLETED: 'NODES_COMPLETED',
   FLOW_STATE_SESSIONS: 'FLOW_STATE_SESSIONS',
   BOSS_DEFEATED: 'BOSS_DEFEATED',
   SINISTER_SIX_WINS: 'SINISTER_SIX_WINS',
+  DEEP_WORK: 'DEEP_WORK',
+  LESSON_SINTESI: 'LESSON_SINTESI',
+  NOTES_PAGES: 'NOTES_PAGES',
+  EXERCISES: 'EXERCISES',
+  CLOSE_DAY: 'CLOSE_DAY',
+  // Storici: missioni già generate prima della V42 (non più pescate).
+  NIGHT_OWL_FOCUS: 'NIGHT_OWL_FOCUS',
   OVERDRIVE_STRIKES: 'OVERDRIVE_STRIKES'
 };
 
@@ -49,142 +57,121 @@ export const QUEST_EVENTS = {
   FOCUS_SESSION: 'FOCUS_SESSION',
   REVIEW_DONE: 'REVIEW_DONE',
   NODE_COMPLETED: 'NODE_COMPLETED',
-  BOSS_FIGHT_WIN: 'BOSS_FIGHT_WIN'
+  BOSS_FIGHT_WIN: 'BOSS_FIGHT_WIN',
+  EXERCISES_LOGGED: 'EXERCISES_LOGGED',
+  DAY_CLOSED: 'DAY_CLOSED'
 };
 
-/**
- * Pool di template — INIZIATIVA LIBERA: oltre alle 3 missioni base
- * richieste, sono state aggiunte varianti creative (Early Bird, Night
- * Owl, Flow Seeker, Overdrive Master...) per garantire varietà reale
- * giorno per giorno invece delle solite 3 sempre uguali.
- */
-const EASY_TEMPLATES = [
-  {
-    id: 'focusStrikeEasy',
-    title: 'Focus Strike',
-    type: QUEST_TYPE.FOCUS_MINUTES,
-    targetAmount: 60,
-    xpReward: 25,
-    icon: 'bolt',
-    description: 'Studia almeno 1 ora (60 min) oggi.'
-  },
-  {
+/** Minuti minimi perché una sessione conti per le missioni "a sessioni". */
+export const QUEST_SESSION_MIN_MINUTES = 20;
+/** Il blocco profondo. */
+export const DEEP_WORK_MINUTES = 50;
+
+const T = {
+  focusStrikeEasy: { id: 'focusStrikeEasy', title: 'Focus Strike', type: QUEST_TYPE.FOCUS_MINUTES, targetAmount: 60, xpReward: 25, icon: 'bolt', description: 'Studia almeno 1 ora (60 min) oggi.' },
+  webShooter: {
     id: 'webShooter',
     title: 'Web-Shooter',
     type: QUEST_TYPE.REVIEWS_CLEARED,
-    dynamicTarget: (ctx) => Math.max(1, ctx.upcomingReviewsCount || 1),
+    dynamicTarget: (ctx) => Math.max(1, Math.min(ctx.upcomingReviewsCount || 1, ctx.reviewTargetCount || ctx.upcomingReviewsCount || 1)),
+    available: (ctx) => (ctx.upcomingReviewsCount || 0) > 0,
     xpReward: 25,
     icon: 'radar',
-    description: 'Azzera tutti i ripassi in sospeso nello Spider-Sense.'
+    description: 'Fai i ripassi in scadenza oggi nello Spider-Sense.'
   },
-  {
-    id: 'earlyBird',
-    title: 'Early Bird Special',
-    type: QUEST_TYPE.EARLY_BIRD_FOCUS,
+  earlyBird: { id: 'earlyBird', title: 'Early Bird Special', type: QUEST_TYPE.EARLY_BIRD_FOCUS, targetAmount: 1, xpReward: 25, icon: 'flag', description: 'Chiudi un blocco di Focus da almeno 20 minuti prima delle 9:00.' },
+  closeDay: {
+    id: 'closeDay',
+    title: 'Chiudi la giornata',
+    type: QUEST_TYPE.CLOSE_DAY,
     targetAmount: 1,
     xpReward: 25,
-    icon: 'flag',
-    description: 'Completa una sessione di Focus prima delle 9:00.'
-  }
-];
-
-const MEDIUM_TEMPLATES = [
-  {
-    id: 'focusStrikeMedium',
-    title: 'Focus Strike II',
-    type: QUEST_TYPE.FOCUS_MINUTES,
-    targetAmount: 120,
-    xpReward: 45,
-    icon: 'bolt',
-    description: 'Studia almeno 2 ore (120 min) oggi.'
+    icon: 'moon',
+    description: 'Stasera fai il bilancio della giornata e prepara il piano di domani.'
   },
-  {
+  focusStrikeMedium: { id: 'focusStrikeMedium', title: 'Focus Strike II', type: QUEST_TYPE.FOCUS_MINUTES, targetAmount: 120, xpReward: 45, icon: 'bolt', description: 'Studia almeno 2 ore (120 min) oggi.' },
+  primaryTarget: {
     id: 'primaryTarget',
     title: 'Primary Target',
     type: QUEST_TYPE.PRIMARY_TARGET_SESSION,
     targetAmount: 1,
+    available: (ctx) => ctx.hasPrimaryTarget !== false,
     xpReward: 50,
     icon: 'crosshair',
-    description: "Completa una sessione di Focus sull'esame suggerito da Karen."
+    description: 'Un blocco da almeno 25 minuti sulla prima materia del piano di oggi.'
   },
-  {
-    id: 'nodeHunter',
-    title: 'Node Hunter',
-    type: QUEST_TYPE.NODES_COMPLETED,
-    targetAmount: 2,
-    xpReward: 45,
-    icon: 'target',
-    description: 'Completa 2 nodi dello Skill Tree oggi.'
+  nodeHunter: { id: 'nodeHunter', title: 'Node Hunter', type: QUEST_TYPE.NODES_COMPLETED, targetAmount: 2, xpReward: 45, icon: 'target', description: 'Completa 2 argomenti studiati oggi (almeno 15 minuti di studio ciascuno).' },
+  flowSeeker: { id: 'flowSeeker', title: 'Flow Seeker', type: QUEST_TYPE.FLOW_STATE_SESSIONS, targetAmount: 2, xpReward: 45, icon: 'heart', description: 'Due blocchi da almeno 20 minuti valutati Flow State nel Debriefing.' },
+  lessonSintesi: {
+    id: 'lessonSintesi',
+    title: 'Lezione del giorno',
+    type: QUEST_TYPE.LESSON_SINTESI,
+    targetAmount: 1,
+    available: (ctx) => !!ctx.hasLessonsToProcess,
+    xpReward: 50,
+    icon: 'flask',
+    description: 'Sistema una lezione in coda: un blocco di Sintesi da almeno 20 minuti sulla sua materia.'
   },
-  {
-    id: 'flowSeeker',
-    title: 'Flow Seeker',
-    type: QUEST_TYPE.FLOW_STATE_SESSIONS,
-    targetAmount: 2,
+  notesPages: {
+    id: 'notesPages',
+    title: 'Forgia degli Appunti',
+    type: QUEST_TYPE.NOTES_PAGES,
+    targetAmount: 3,
+    available: (ctx) => !!ctx.hasSintesiWork,
     xpReward: 45,
-    icon: 'heart',
-    description: 'Completa 2 sessioni di Focus valutate come Flow State nel Tactical Debriefing.'
-  }
-];
-
-const HARD_TEMPLATES = [
-  {
-    id: 'focusMarathon',
-    title: 'Focus Marathon',
-    type: QUEST_TYPE.FOCUS_MINUTES,
-    targetAmount: 240,
+    icon: 'book',
+    description: 'Scrivi almeno 3 pagine dei tuoi appunti oggi (registrale nel Debriefing).'
+  },
+  exercises: {
+    id: 'exercises',
+    title: 'Palestra di Esercizi',
+    type: QUEST_TYPE.EXERCISES,
+    targetAmount: 8,
+    available: (ctx) => !!ctx.hasWrittenExam,
+    xpReward: 50,
+    icon: 'grid',
+    description: "Risolvi almeno 8 esercizi o problemi d'esame oggi."
+  },
+  focusMarathon: { id: 'focusMarathon', title: 'Focus Marathon', type: QUEST_TYPE.FOCUS_MINUTES, targetAmount: 240, xpReward: 90, icon: 'flame', description: 'Studia almeno 4 ore (240 min) oggi, con le pause.' },
+  dayTarget: {
+    id: 'dayTarget',
+    title: 'Obiettivo di oggi',
+    type: QUEST_TYPE.DAY_TARGET,
+    dynamicTarget: (ctx) => Math.max(60, Math.round((Number(ctx.todayTargetMinutes) || 0) / 15) * 15),
+    available: (ctx) => Number(ctx.todayTargetMinutes) >= 60,
     xpReward: 90,
-    icon: 'flame',
-    description: 'Studia almeno 4 ore (240 min) in un solo giorno.'
+    icon: 'crosshair',
+    description: "Raggiungi l'obiettivo di studio che il piano ti ha dato per oggi."
   },
-  {
+  sinisterSixSlayer: {
     id: 'sinisterSixSlayer',
     title: 'Sinister Six Slayer',
     type: QUEST_TYPE.SINISTER_SIX_WINS,
     targetAmount: 1,
+    available: (ctx) => !!ctx.hasUpcomingExam,
     xpReward: 90,
     icon: 'skull',
-    description: 'Vinci una Boss Fight nel Sinister Six Simulator oggi.'
+    description: "Completa una simulazione d'esame (Boss Fight) da almeno 20 minuti."
   },
-  {
-    id: 'bossHunter',
-    title: 'Boss Hunter',
-    type: QUEST_TYPE.BOSS_DEFEATED,
-    targetAmount: 1,
-    xpReward: 90,
-    icon: 'shield',
-    description: 'Completa un Nodo Padre (Boss) dello Skill Tree oggi.'
-  },
-  {
-    id: 'nightOwl',
-    title: 'Night Owl Protocol',
-    type: QUEST_TYPE.NIGHT_OWL_FOCUS,
-    targetAmount: 1,
-    xpReward: 90,
-    icon: 'moon',
-    description: 'Completa una sessione di Focus fra le 22:00 e le 4:00.'
-  },
-  {
-    id: 'overdriveMaster',
-    title: 'Overdrive Master',
-    type: QUEST_TYPE.OVERDRIVE_STRIKES,
-    targetAmount: 2,
-    xpReward: 90,
-    icon: 'bolt',
-    description: 'Attiva Overdrive 2 volte in sessioni di Focus oggi.'
-  }
-];
+  bossHunter: { id: 'bossHunter', title: 'Boss Hunter', type: QUEST_TYPE.BOSS_DEFEATED, targetAmount: 1, xpReward: 90, icon: 'shield', description: 'Completa un modulo (argomento padre) dello Skill Tree oggi.' },
+  deepWork: { id: 'deepWork', title: 'Blocco Profondo', type: QUEST_TYPE.DEEP_WORK, targetAmount: 1, xpReward: 90, icon: 'bolt', description: 'Un unico blocco di Focus da almeno 50 minuti, senza interruzioni.' }
+};
 
-const TEMPLATE_TIERS = [
-  { difficulty: QUEST_DIFFICULTY.EASY, pool: EASY_TEMPLATES },
-  { difficulty: QUEST_DIFFICULTY.MEDIUM, pool: MEDIUM_TEMPLATES },
-  { difficulty: QUEST_DIFFICULTY.HARD, pool: HARD_TEMPLATES }
-];
+const POOLS = {
+  LEZIONI: {
+    EASY: [T.webShooter, T.focusStrikeEasy, T.closeDay, T.earlyBird],
+    MEDIUM: [T.lessonSintesi, T.notesPages, T.primaryTarget, T.nodeHunter],
+    HARD: [T.dayTarget, T.deepWork, T.bossHunter]
+  },
+  SESSIONE: {
+    EASY: [T.webShooter, T.focusStrikeEasy, T.closeDay],
+    MEDIUM: [T.primaryTarget, T.exercises, T.nodeHunter, T.flowSeeker, T.focusStrikeMedium],
+    HARD: [T.dayTarget, T.sinisterSixSlayer, T.deepWork, T.bossHunter, T.focusMarathon]
+  }
+};
 
 /* ------------------------------------------------------------------ *
- * Seeded PRNG (mulberry32) — stesse quest per tutta la giornata anche
- * dopo reload multipli, MAI un reroll casuale a metà giornata: il seed è
- * derivato deterministicamente dalla dateKey stessa.
+ * Seeded PRNG (mulberry32): stesse missioni per tutta la giornata.
  * ------------------------------------------------------------------ */
 function hashStringToInt(str) {
   let h = 0;
@@ -227,26 +214,28 @@ function instantiateQuest(template, difficulty, dateKey, ctx) {
 }
 
 /**
- * Genera le 3 missioni del giorno (una per tier), deterministiche sul
- * `dateKey`. `ctx.upcomingReviewsCount` alimenta il target dinamico di
- * Web-Shooter (snapshot preso al momento della generazione — nuovi
- * ripassi diventati dovuti più tardi nella giornata non spostano il
- * traguardo già fissato).
+ * Le 3 missioni del giorno (una per difficoltà), deterministiche sul
+ * `dateKey` e sul contesto preso alla generazione:
+ *   ctx = { fase: 'LEZIONI'|'SESSIONE', upcomingReviewsCount, reviewTargetCount,
+ *           hasLessonsToProcess, hasSintesiWork, hasWrittenExam,
+ *           hasUpcomingExam, hasPrimaryTarget, todayTargetMinutes }
  */
 export function generateDailyQuests(dateKey, ctx = {}) {
   const rng = mulberry32(hashStringToInt(dateKey));
-  return TEMPLATE_TIERS.map(({ difficulty, pool }) => instantiateQuest(pickRandom(pool, rng), difficulty, dateKey, ctx));
+  const pools = POOLS[ctx.fase === 'LEZIONI' ? 'LEZIONI' : 'SESSIONE'];
+  return ['EASY', 'MEDIUM', 'HARD'].map((difficulty) => {
+    const disponibili = pools[difficulty].filter((t) => typeof t.available !== 'function' || t.available(ctx));
+    const pool = disponibili.length > 0 ? disponibili : [T.focusStrikeEasy];
+    return instantiateQuest(pickRandom(pool, rng), QUEST_DIFFICULTY[difficulty], dateKey, ctx);
+  });
 }
 
 /* ------------------------------------------------------------------ *
- * Auto-Tracking — funzione pura richiamata dal reducer di Context ad
- * ogni azione rilevante. Non tocca mai XP/profilo: si limita a
- * incrementare `currentProgress` e a marcare `isCompleted`. È compito del
- * chiamante (il reducer) rilevare le transizioni false -> true e
- * assegnare l'XP corrispondente in modo atomico nella stessa azione.
+ * Auto-Tracking — funzione pura richiamata dal reducer. Non tocca mai
+ * XP/profilo: incrementa `currentProgress` e marca `isCompleted`.
  * ------------------------------------------------------------------ */
 function bumpQuest(quest, amount) {
-  if (quest.isCompleted || amount <= 0) return quest;
+  if (quest.isCompleted || !(amount > 0)) return quest;
   const nextProgress = Math.min(quest.targetAmount, quest.currentProgress + amount);
   return { ...quest, currentProgress: nextProgress, isCompleted: nextProgress >= quest.targetAmount };
 }
@@ -254,31 +243,56 @@ function bumpQuest(quest, amount) {
 export function applyQuestEvent(quests, eventType, payload = {}) {
   if (!Array.isArray(quests) || quests.length === 0) return quests;
   return quests.map((q) => {
-    if (q.isCompleted) return q;
+    if (!q || typeof q !== 'object' || q.isCompleted) return q;
     switch (eventType) {
       case QUEST_EVENTS.FOCUS_SESSION: {
-        const { minutes = 0, wasOverdrive = false, quality, hour, materiaId, primaryTargetMateriaId } = payload;
-        if (q.type === QUEST_TYPE.FOCUS_MINUTES) return bumpQuest(q, minutes);
-        if (q.type === QUEST_TYPE.PRIMARY_TARGET_SESSION && primaryTargetMateriaId && materiaId === primaryTargetMateriaId) {
+        const {
+          minutes = 0,
+          quality,
+          hour,
+          materiaId,
+          primaryTargetMateriaId,
+          workMode,
+          pagineAppuntiProdotte = 0,
+          lessonMateriaIds = []
+        } = payload;
+        const vera = minutes >= QUEST_SESSION_MIN_MINUTES;
+        if (q.type === QUEST_TYPE.FOCUS_MINUTES || q.type === QUEST_TYPE.DAY_TARGET) return bumpQuest(q, minutes);
+        if (q.type === QUEST_TYPE.PRIMARY_TARGET_SESSION && primaryTargetMateriaId && materiaId === primaryTargetMateriaId && minutes >= 25) {
           return bumpQuest(q, 1);
         }
-        if (q.type === QUEST_TYPE.EARLY_BIRD_FOCUS && typeof hour === 'number' && hour < 9) return bumpQuest(q, 1);
-        if (q.type === QUEST_TYPE.NIGHT_OWL_FOCUS && typeof hour === 'number' && (hour >= 22 || hour < 4)) return bumpQuest(q, 1);
-        if (q.type === QUEST_TYPE.OVERDRIVE_STRIKES && wasOverdrive) return bumpQuest(q, 1);
-        if (q.type === QUEST_TYPE.FLOW_STATE_SESSIONS && quality === 'FLOW') return bumpQuest(q, 1);
+        if (q.type === QUEST_TYPE.EARLY_BIRD_FOCUS && vera && typeof hour === 'number' && hour >= 5 && hour < 9) return bumpQuest(q, 1);
+        if (q.type === QUEST_TYPE.FLOW_STATE_SESSIONS && vera && quality === 'FLOW') return bumpQuest(q, 1);
+        if (q.type === QUEST_TYPE.DEEP_WORK && minutes >= DEEP_WORK_MINUTES) return bumpQuest(q, 1);
+        if (q.type === QUEST_TYPE.LESSON_SINTESI && vera && workMode === 'SINTESI' && Array.isArray(lessonMateriaIds) && lessonMateriaIds.includes(materiaId)) {
+          return bumpQuest(q, 1);
+        }
+        if (q.type === QUEST_TYPE.NOTES_PAGES && pagineAppuntiProdotte > 0) return bumpQuest(q, pagineAppuntiProdotte);
+        // Missioni storiche generate prima della V42: si completano ancora,
+        // ma solo con blocchi veri e mai di notte.
+        if (q.type === QUEST_TYPE.OVERDRIVE_STRIKES && vera && payload.wasOverdrive) return bumpQuest(q, 1);
         return q;
       }
       case QUEST_EVENTS.REVIEW_DONE:
-        if (q.type === QUEST_TYPE.REVIEWS_CLEARED) return bumpQuest(q, 1);
+        // V42 — solo i ripassi DOVUTI: ripassare dieci volte lo stesso
+        // argomento non "azzera" lo Spider-Sense.
+        if (q.type === QUEST_TYPE.REVIEWS_CLEARED && payload.wasDue !== false) return bumpQuest(q, 1);
         return q;
       case QUEST_EVENTS.NODE_COMPLETED: {
-        const { isBoss = false } = payload;
+        const { isBoss = false, tracked = true } = payload;
+        if (!tracked) return q;
         if (q.type === QUEST_TYPE.NODES_COMPLETED) return bumpQuest(q, 1);
         if (q.type === QUEST_TYPE.BOSS_DEFEATED && isBoss) return bumpQuest(q, 1);
         return q;
       }
       case QUEST_EVENTS.BOSS_FIGHT_WIN:
-        if (q.type === QUEST_TYPE.SINISTER_SIX_WINS) return bumpQuest(q, 1);
+        if (q.type === QUEST_TYPE.SINISTER_SIX_WINS && (payload.minutes == null || payload.minutes >= QUEST_SESSION_MIN_MINUTES)) return bumpQuest(q, 1);
+        return q;
+      case QUEST_EVENTS.EXERCISES_LOGGED:
+        if (q.type === QUEST_TYPE.EXERCISES) return bumpQuest(q, Math.max(0, Number(payload.count) || 0));
+        return q;
+      case QUEST_EVENTS.DAY_CLOSED:
+        if (q.type === QUEST_TYPE.CLOSE_DAY) return bumpQuest(q, 1);
         return q;
       default:
         return q;

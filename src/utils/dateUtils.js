@@ -140,6 +140,36 @@ export function todayDateOnlyKey() {
   return getDateKey(new Date());
 }
 
+const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** V42 — "YYYY-MM-DD" ben formata e reale (niente 2026-02-31). */
+export function isValidDateKey(v) {
+  if (typeof v !== 'string' || !DATE_KEY_RE.test(v)) return false;
+  const ms = dateOnlyToUtcMs(v);
+  if (!Number.isFinite(ms)) return false;
+  // Il round-trip scarta le date che Date.UTC "aggiusta" (31 febbraio -> 3 marzo).
+  return addDaysToDateOnly(v, 0) === v;
+}
+
+/** V42 — Giorni interi da `fromKey` a `toKey` (positivo se `toKey` viene dopo). */
+export function daysBetweenDateKeys(fromKey, toKey) {
+  const a = dateOnlyToUtcMs(fromKey);
+  const b = dateOnlyToUtcMs(toKey);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round((b - a) / 86400000);
+}
+
+/** V42 — Giorno della settimana ISO di una data-only: 1 = lunedì … 7 = domenica. */
+export function isoWeekdayOfDateKey(dateKey) {
+  const d = new Date(dateOnlyToUtcMs(dateKey)).getUTCDay();
+  return d === 0 ? 7 : d;
+}
+
+/** V42 — Il lunedì della settimana ISO che contiene `dateKey` (chiave della settimana). */
+export function mondayOfDateKey(dateKey) {
+  return addDaysToDateOnly(dateKey, -(isoWeekdayOfDateKey(dateKey) - 1));
+}
+
 /* ------------------------------------------------------------------ *
  * Star Log — Pagination temporale (V16.0, Pillar 5).
  * ------------------------------------------------------------------ */
@@ -194,4 +224,28 @@ export function formatMonthYearHuman(monthKey) {
     timeZone: 'UTC'
   });
   return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+/**
+ * V42 — Data breve per il piano: "14 ott" (anno solo se diverso da quello
+ * di `todayKey`). Calcolata in UTC come ogni data-only.
+ */
+export function formatDateShort(dateKey, todayKey = todayDateOnlyKey()) {
+  if (!isValidDateKey(dateKey)) return '';
+  const ms = dateOnlyToUtcMs(dateKey);
+  const stessoAnno = typeof todayKey === 'string' && todayKey.slice(0, 4) === dateKey.slice(0, 4);
+  return new Date(ms).toLocaleDateString('it-IT', { day: 'numeric', month: 'short', ...(stessoAnno ? {} : { year: 'numeric' }), timeZone: 'UTC' });
+}
+
+/** V42 — "oggi", "domani", "dopodomani", altrimenti "mar 14 ott". */
+export function formatDateRelative(dateKey, todayKey = todayDateOnlyKey()) {
+  if (!isValidDateKey(dateKey)) return '';
+  const diff = daysBetweenDateKeys(todayKey, dateKey);
+  if (diff === 0) return 'oggi';
+  if (diff === 1) return 'domani';
+  if (diff === 2) return 'dopodomani';
+  if (diff === -1) return 'ieri';
+  const ms = dateOnlyToUtcMs(dateKey);
+  const giorno = new Date(ms).toLocaleDateString('it-IT', { weekday: 'short', timeZone: 'UTC' });
+  return `${giorno} ${formatDateShort(dateKey, todayKey)}`;
 }

@@ -14,8 +14,10 @@ import {
   getTopIncompleteByScore,
   computeGraduationForecast,
   computeGradeHistory,
+  computeGraduationGrade,
   CAREER_MIN_EXAMS
 } from '../utils/gpaEngine.js';
+import { goTo, ROUTES } from '../hooks/useArachnoForgeRouter.js';
 import { formatDateOnlyHuman, formatMonthYearHuman, monthKeyFromDateKey, dateOnlyToUtcMs, formatHoursMinutes } from '../utils/dateUtils.js';
 import { CARD, CARD_NOPAD, BADGE } from '../utils/designSystem.js';
 import PageHeader from '../components/PageHeader.jsx';
@@ -211,7 +213,7 @@ function GraduationForecastCard({ forecast }) {
             <Icon name="calendar" className="w-[18px] h-[18px]" />
           </span>
           <div className="min-w-0">
-            <p className="ds-eyebrow">Tempo stimato alla laurea</p>
+            <p className="ds-eyebrow">Ultimo esame previsto</p>
             <p className="text-3xl font-bold text-white tracking-tight mt-0.5 first-letter:uppercase">
               {formatMonthYearHuman(monthKeyFromDateKey(forecast.dateKey))}
             </p>
@@ -292,8 +294,8 @@ function GraduationForecastCard({ forecast }) {
           </p>
         )}
         <p className="text-xs text-slate-500 leading-relaxed">
-          È una proiezione, non una promessa: migliora da sola man mano che registri le date di verbalizzazione e accumuli
-          sessioni di Focus reali.
+          È quando finiresti gli esami, non la seduta di laurea: dopo vengono tesi e prova finale, nella prima sessione utile del calendario del
+          corso. È una proiezione, non una promessa: migliora da sola man mano che registri le date di verbalizzazione e accumuli sessioni reali.
         </p>
       </div>
     </section>
@@ -314,6 +316,18 @@ export default function MultiverseSimulator() {
 
   const { average, totalCfu, gradedCount } = useMemo(() => computeWeightedAverage(materie), [materie]);
   const projection = useMemo(() => computeGraduationProjection(average), [average]);
+  // V42 — il voto di laurea con la formula del regolamento: base 11·m/3 +
+  // punti media + punti durata + tesi (0–2) + estero. Si mostra come
+  // intervallo, perché i punti della tesi li decide la commissione.
+  const gradeOpts = useMemo(
+    () => ({
+      annoImmatricolazione: state.settings.annoImmatricolazione,
+      erasmus: state.settings.erasmus === true,
+      laureaDateKey: graduationForecast?.dateKey || null
+    }),
+    [state.settings.annoImmatricolazione, state.settings.erasmus, graduationForecast]
+  );
+  const grade = useMemo(() => computeGraduationGrade(materie, gradeOpts), [materie, gradeOpts]);
 
   // V32.0 — Storico Media Ponderata: ledger append-only popolato dal
   // reducer (vedi ArachnoForgeContext, case UPDATE_MATERIA) a ogni prima
@@ -349,6 +363,15 @@ export default function MultiverseSimulator() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [whatIfSlots, simulatedVoti, materie]);
 
+  // Il voto di laurea se gli esami simulati andassero così.
+  const whatIfGrade = useMemo(() => {
+    if (whatIfSlots.length === 0) return null;
+    const simulate = whatIfSlots.map((m) => ({ ...m, examPassed: true, voto: getVoto(m.id), lode: false }));
+    const ids = new Set(whatIfSlots.map((m) => m.id));
+    return computeGraduationGrade([...materie.filter((m) => !ids.has(m.id)), ...simulate], gradeOpts);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [whatIfSlots, simulatedVoti, materie, gradeOpts]);
+
   const cfuTotali = graduationForecast?.cfuTotali || 180;
   const cfuAcquisiti = graduationForecast?.cfuAcquisiti ?? 0;
 
@@ -378,12 +401,24 @@ export default function MultiverseSimulator() {
         <StatCard
           icon="trophy"
           iconTone="text-primary"
-          label="Voto di partenza alla laurea"
-          value={projection != null ? formatDecimal(projection, 1) : '—'}
-          suffix={projection != null ? '/ 110' : ''}
-          valueTone={projection != null ? 'text-primary' : 'text-slate-500'}
-          hint={projection != null ? 'Media × 11 / 3, senza i punti di tesi e attività.' : 'Si attiva col primo voto registrato.'}
-        />
+          label="Voto di laurea stimato"
+          value={grade ? (grade.minimo === grade.massimo ? `${grade.minimo}` : `${grade.minimo}–${grade.massimo}`) : '—'}
+          suffix={grade ? '/ 110' : ''}
+          valueTone={grade ? 'text-primary' : 'text-slate-500'}
+          hint={
+            grade
+              ? `Base ${formatDecimal(grade.base, 1)} (media × 11/3) + ${formatDecimal(grade.p1, 0)} media${
+                  grade.p2 != null ? ` + ${formatDecimal(grade.p2, 1)} durata (${grade.anni} ${grade.anni === 1 ? 'anno' : 'anni'})` : ''
+                }${grade.p4 ? ' + 1 Erasmus' : ''} + tesi 0–2.${grade.oltre110 ? ' Oltre 110: si punta alla lode.' : ''}`
+              : 'Si attiva col primo voto registrato.'
+          }
+        >
+          {grade && grade.p2 == null && (
+            <button type="button" onClick={() => goTo(ROUTES.CORE_CONFIG)} className="mt-2 text-xs text-secondary hover:underline text-left">
+              Imposta l’anno di immatricolazione per i punti della durata degli studi
+            </button>
+          )}
+        </StatCard>
         <StatCard
           icon="layers"
           iconTone="text-accent"
@@ -551,10 +586,16 @@ export default function MultiverseSimulator() {
                   Se {whatIfSlots.length === 1 ? 'l’esame simulato andasse' : `i ${whatIfSlots.length} esami simulati andassero`} così.
                 </p>
               </div>
-              <p className="text-3xl font-bold text-white ds-num">
-                {combinedWhatIf.projection != null ? formatDecimal(combinedWhatIf.projection, 1) : '—'}
-                <span className="text-lg font-semibold text-slate-500 ml-1.5">/ 110</span>
-              </p>
+              <div className="text-right">
+                <p className="text-3xl font-bold text-white ds-num">
+                  {whatIfGrade ? (whatIfGrade.minimo === whatIfGrade.massimo ? whatIfGrade.minimo : `${whatIfGrade.minimo}–${whatIfGrade.massimo}`) : '—'}
+                  <span className="text-lg font-semibold text-slate-500 ml-1.5">/ 110</span>
+                </p>
+                <p className="text-xs text-slate-500 ds-num mt-0.5">
+                  base {combinedWhatIf.projection != null ? formatDecimal(combinedWhatIf.projection, 1) : '—'}
+                  {whatIfGrade && grade ? ` · ora ${grade.minimo === grade.massimo ? grade.minimo : `${grade.minimo}–${grade.massimo}`}` : ''}
+                </p>
+              </div>
             </div>
           </>
         )}

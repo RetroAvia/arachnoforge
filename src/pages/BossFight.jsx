@@ -11,6 +11,8 @@ import { isMaxCarnageActive } from '../utils/maxCarnage.js';
 import { CARD, CARD_NOPAD, CARD_ALERT, BTN_PRIMARY, BTN_SECONDARY, BTN_SUCCESS, BTN_GHOST, BTN_DANGER, INPUT, LABEL, BADGE } from '../utils/designSystem.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { formatInt, minutiLabel } from '../utils/format.js';
+import { SIMULATION_MIN_MINUTES } from '../state/reducer.js';
+import { haProvaScritta } from '../utils/appelli.js';
 
 const PHASES = { SETUP: 'SETUP', FIGHTING: 'FIGHTING', WON: 'WON', LOST: 'LOST' };
 const HP_PENALTY = 20;
@@ -96,10 +98,16 @@ export default function BossFight() {
   const materie = Array.isArray(state.materie) ? state.materie : [];
   const materia = materie.find((m) => m.id === materiaId) || null;
 
+  // V42 — solo le materie ancora da sostenere: una simulazione serve a prepararle.
   const materiaOptions = [
     { value: '', label: 'Simulazione generica' },
-    ...materie.map((m) => ({ value: m.id, label: m.nome }))
+    ...materie.filter((m) => m && !m.examPassed).map((m) => ({ value: m.id, label: m.nome }))
   ];
+
+  // V42 — punteggio della prova, da registrare nel report (prontezza d'esame).
+  const [scorePunti, setScorePunti] = useState('');
+  const [scoreSu, setScoreSu] = useState('30');
+  const [scoreSalvato, setScoreSalvato] = useState(false);
 
   const clearAllIntervals = () => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -112,15 +120,23 @@ export default function BossFight() {
     lastStandIntervalRef.current = null;
   };
 
+  // V42 — gli XP di una simulazione sono A TEMPO, come nel reducer: 2,5 al
+  // minuto di prova vinta (di più con HP alti e streak), 1 al minuto se
+  // persa (l'allenamento conta), niente sotto i 20 minuti. Prima una
+  // vittoria valeva fino a 500 XP qualunque fosse la durata: cinque
+  // minuti "vinti" pagavano come un compito di tre ore.
   const buildReport = (win, finalHp, finalRemaining, finalTotal) => {
-    let xpGain = win
-      ? Math.round(500 * (0.5 + finalHp / 200) * computeStreakMultiplier(state.profile.streak, derived.skillEffects.streakThresholdBonus))
-      : 0;
-    // V41 — stesso calcolo del reducer: con Maximum Carnage attivo l'XP
-    // accreditato è doppio, e il report deve dire quello vero.
-    if (win && isMaxCarnageActive(state.profile)) xpGain = Math.round(xpGain * MAX_CARNAGE_MULTIPLIER);
+    const elapsedSeconds = Math.max(0, finalTotal - finalRemaining);
+    const minuti = Math.floor(elapsedSeconds / 60);
+    const streakMult = computeStreakMultiplier(state.profile.streak, derived.skillEffects.streakThresholdBonus);
+    let xpGain = 0;
+    if (minuti >= SIMULATION_MIN_MINUTES) {
+      xpGain = win ? minuti * 2.5 * (0.6 + (0.4 * finalHp) / 100) * streakMult : minuti * streakMult;
+      if (isMaxCarnageActive(state.profile)) xpGain *= MAX_CARNAGE_MULTIPLIER;
+      xpGain = Math.round(xpGain);
+    }
     const efficiency = win ? computeEfficiency(finalHp, finalRemaining, finalTotal) : { grade: 'F', color: 'text-primary' };
-    return { win, xpGain, hpRemaining: finalHp, timeRemainingSeconds: finalRemaining, totalSeconds: finalTotal, efficiency };
+    return { win, xpGain, hpRemaining: finalHp, timeRemainingSeconds: finalRemaining, totalSeconds: finalTotal, elapsedSeconds, minuti, efficiency };
   };
 
   const endFight = useCallback((win, finalHp) => {
@@ -134,11 +150,15 @@ export default function BossFight() {
     actions.bossFightResult({
       win,
       hpRemaining: finalHp,
+      materiaId: materia ? materia.id : null,
       materiaNome: materia ? materia.nome : null,
       timeRemainingSeconds: finalRemaining,
-      totalSeconds: finalTotal
+      totalSeconds: finalTotal,
+      elapsedSeconds: Math.max(0, finalTotal - finalRemaining)
     });
     setReportData(buildReport(win, finalHp, finalRemaining, finalTotal));
+    setScorePunti('');
+    setScoreSalvato(false);
     setReportOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actions, materia, remainingSeconds, totalSeconds]);
@@ -179,9 +199,11 @@ export default function BossFight() {
     actions.bossFightResult({
       win,
       hpRemaining: finalHp,
+      materiaId: materia ? materia.id : null,
       materiaNome: materia ? materia.nome : null,
       timeRemainingSeconds: finalRemaining,
-      totalSeconds: finalTotal
+      totalSeconds: finalTotal,
+      elapsedSeconds: Math.max(0, finalTotal - finalRemaining)
     });
     setGauntletHistory((prev) => [...prev, { round: gauntletRound, win, hp: finalHp, xpGain: roundReport.xpGain, efficiency: roundReport.efficiency }]);
 
@@ -200,6 +222,8 @@ export default function BossFight() {
     } else {
       setPhase(win ? PHASES.WON : PHASES.LOST);
       setReportData(roundReport);
+      setScorePunti('');
+      setScoreSalvato(false);
       setReportOpen(true);
       // V33.1 — Run "pulita": tutti e 6 i Villain abbattuti in fila,
       // senza mai perdere un round. Segnale distinto da un normale round
@@ -501,7 +525,11 @@ export default function BossFight() {
                   A 0 HP hai 3 secondi per il Last Stand: sacrifichi il 10% dell'XP e resti in piedi a 1 HP.
                 </BriefLine>
                 <BriefLine icon="trophy" tone="text-amber-300">
-                  Vittoria: fino a 500 XP (di più con HP alti e streak lunga), più il grado di efficienza S–D.
+                  XP a tempo: 2,5 al minuto di prova vinta (di più con HP alti e una serie lunga), 1 al minuto se la perdi — l’allenamento conta. Sotto i{' '}
+                  {SIMULATION_MIN_MINUTES} minuti non vale come prova.
+                </BriefLine>
+                <BriefLine icon="chartBar" tone="text-secondary">
+                  Alla fine registri il punteggio: le simulazioni sono il dato più forte della prontezza d’esame della materia.
                 </BriefLine>
               </ul>
             </section>
@@ -532,7 +560,9 @@ export default function BossFight() {
                             </p>
                           </div>
                         </div>
-                        <span className={`${won ? BADGE.green : BADGE.red} ds-num`}>{won ? `+${formatInt(f.xp)} XP` : 'Persa'}</span>
+                        <span className={`${won ? BADGE.green : BADGE.red} ds-num`}>
+                          {won ? `+${formatInt(f.xp)} XP` : f.xp > 0 ? `Persa · +${formatInt(f.xp)} XP` : 'Persa'}
+                        </span>
                       </li>
                     );
                   })}
@@ -664,7 +694,9 @@ export default function BossFight() {
                 ? `Tutti e ${GAUNTLET_SIZE} i Villain abbattuti in fila. Il report ha il riepilogo round per round.`
                 : "La run si ferma qui. L'XP dei round già vinti resta tuo."
               : phase === PHASES.WON
-              ? 'Prova superata. Nel report trovi XP, HP e grado di efficienza.'
+              ? 'Prova superata. Nel report trovi XP, HP e grado di efficienza, e puoi registrare il punteggio.'
+              : reportData?.xpGain > 0
+              ? `Prova persa, ma ${reportData.minuti} minuti di allenamento valgono comunque +${formatInt(reportData.xpGain)} XP. Rivedi dove hai sbirciato.`
               : 'Nessun XP questa volta. Rivedi dove hai sbirciato e riprova quando sei pronto.'}
           </p>
           <div className="flex items-center justify-center gap-2 pt-1">
@@ -688,7 +720,7 @@ export default function BossFight() {
         message={
           gauntletMode
             ? `Il Gauntlet si chiude come sconfitta al Villain ${gauntletRound}/${GAUNTLET_SIZE}: questo round non dà XP, quelli già vinti restano.`
-            : 'Conta come sconfitta: nessun XP.'
+            : `Conta come sconfitta. Se hai lavorato almeno ${SIMULATION_MIN_MINUTES} minuti il tempo vale come allenamento (1 XP al minuto).`
         }
         confirmLabel="Abbandona"
       />
@@ -714,6 +746,51 @@ export default function BossFight() {
                 <p className="text-[11px] text-slate-500">tempo avanzato</p>
               </div>
             </div>
+
+            <p className="text-xs text-slate-500 text-center ds-num">
+              {minutiLabel(reportData.minuti || 0)} di prova
+              {(reportData.minuti || 0) < SIMULATION_MIN_MINUTES ? ` · sotto i ${SIMULATION_MIN_MINUTES} minuti non dà XP` : ''}
+            </p>
+
+            {/* V42 — il punteggio della prova entra nella prontezza d'esame. */}
+            {materia && (reportData.minuti || 0) >= SIMULATION_MIN_MINUTES && (
+              <div className="ds-well p-3.5 space-y-2.5">
+                <p className="text-sm font-semibold text-slate-100">Com’è andata la prova?</p>
+                {scoreSalvato ? (
+                  <p className="text-xs text-emerald-300">Punteggio registrato su {materia.nome}: conta nella prontezza d’esame.</p>
+                ) : (
+                  <div className="flex items-end gap-2.5 flex-wrap">
+                    <label className="block">
+                      <span className="block text-[11px] text-slate-500 mb-1">Punti</span>
+                      <input type="number" min={0} value={scorePunti} onChange={(e) => setScorePunti(e.target.value)} className={`${INPUT} ds-input-sm !w-24 ds-num`} />
+                    </label>
+                    <label className="block">
+                      <span className="block text-[11px] text-slate-500 mb-1">su</span>
+                      <input type="number" min={1} value={scoreSu} onChange={(e) => setScoreSu(e.target.value)} className={`${INPUT} ds-input-sm !w-24 ds-num`} />
+                    </label>
+                    <button
+                      type="button"
+                      disabled={!(Number(scoreSu) > 0 && Number(scorePunti) >= 0 && scorePunti !== '' && Number(scorePunti) <= Number(scoreSu))}
+                      onClick={() => {
+                        const p = Number(scorePunti);
+                        const t = Number(scoreSu);
+                        actions.addSimulazione(materia.id, {
+                          tipo: haProvaScritta(materia) ? 'SCRITTO' : 'ORALE',
+                          punteggioPct: Math.round((p / t) * 100),
+                          voto: t === 30 ? p : null,
+                          durataMin: reportData.minuti || 0,
+                          fonte: 'BOSS_FIGHT'
+                        });
+                        setScoreSalvato(true);
+                      }}
+                      className={`${BTN_SECONDARY} ds-btn-sm`}
+                    >
+                      Registra
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {gauntletMode && gauntletHistory.length > 0 && (
               <div className="space-y-2 pt-3 border-t border-line">

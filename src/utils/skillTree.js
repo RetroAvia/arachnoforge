@@ -113,6 +113,7 @@ export function createSfida({
   pagineAppunti,
   fonti,
   appuntiCompleti = false,
+  pagineAppuntiPreviste = 0,
   parentId = null,
   difficulty = DIFFICULTY.MEDIUM
 }) {
@@ -162,13 +163,33 @@ export function createSfida({
     // ritrovare gli appunti altrove — l'attrito che faceva saltare i
     // ripassi brevi.
     note: '',
-    // V36.0 — Spaced Repetition SM-2 lite (vedi utils/spiderSense.js):
-    // stato personale della curva di memoria di QUESTO nodo.
+    // V36.0 — Spaced Repetition (vedi utils/spiderSense.js).
+    // V42 — modello FSRS: stabilità e difficoltà nascono al primo
+    // completamento; `srsEase` resta solo per compatibilità.
     srsEase: DEFAULT_EASE,
     srsIntervalDays: 0,
+    srsStability: null,
+    srsDifficulty: null,
+    srsLapses: 0,
+    lastReviewedAt: null,
+    // V42 — minuti spesi a RIPASSARE (non entrano nella calibrazione delle
+    // stime di studio) e storico breve dei ripassi.
+    minutiRipasso: 0,
+    ripassi: [],
+    // V42 — esercizi svolti su questo argomento: [{ at, fatti, corretti, minuti }].
+    esercizi: [],
+    // V42 — pagine di appunti che prevedi di scrivere (0 = stima dalla resa).
+    pagineAppuntiPreviste: Number.isFinite(Number(pagineAppuntiPreviste)) && Number(pagineAppuntiPreviste) > 0 ? Math.round(Number(pagineAppuntiPreviste)) : 0,
+    // V42 — XP del completamento: pagati una volta sola, ritirati se lo riapri.
+    xpAwarded: 0,
+    xpAwardedAt: null,
     // V36.0 — Interrogazione K.A.R.E.N., generata on-demand (vedi
     // QuadrantHub): `null` finché il Cadetto non la chiede.
     quiz: null,
+    // V42 — esiti delle interrogazioni: [{ at, sapevo, parziale, no }].
+    quizEsiti: [],
+    // V42 — sintesi registrata a mano: [{ at, pagine }], per la coda lezioni.
+    sintesiManuale: [],
     // V31.3 — Bounty Board (Friction Analytics), vedi utils/friction.js.
     tentativiSuccessi: 0,
     tentativiFalliti: 0
@@ -176,18 +197,20 @@ export function createSfida({
 }
 
 /**
- * Marca un nodo come completato per la prima volta.
+ * Marca un nodo come completato.
  * V36.0 — `examDate` della materia viene passata per non schedulare mai
- * il primo ripasso oltre la data d'esame (vedi capIntervalToExam).
+ * il primo ripasso oltre la data d'esame.
+ * V42 — la memoria di un nodo già studiato (completato, riaperto e
+ * ri-completato) si conserva invece di ripartire da zero; `load` sono i
+ * ripassi già in programma nella materia, per spalmare le finestre finali.
  */
-export function markFirstCompletion(sfida, examDate = null) {
-  const { nextReviewDate, srsEase, srsIntervalDays } = computeInitialReview(examDate);
+export function markFirstCompletion(sfida, examDate = null, { load = null, todayKey, nowIso } = {}) {
+  const now = nowIso || new Date().toISOString();
+  const schedule = computeInitialReview(examDate, { sfida, load, nowIso: now, ...(todayKey ? { todayKey } : {}) });
   return {
     ...sfida,
     status: PERSISTED_STATUS.COMPLETED,
-    completionTimestamp: new Date().toISOString(),
-    nextReviewDate,
-    srsEase,
-    srsIntervalDays
+    completionTimestamp: now,
+    ...schedule
   };
 }

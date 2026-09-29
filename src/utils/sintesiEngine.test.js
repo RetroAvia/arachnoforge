@@ -5,6 +5,9 @@ import {
   WORK_MODE,
   DEFAULT_RESA_SINTESI,
   DEFAULT_SINTESI_PAGES_PER_HOUR,
+  DEFAULT_SINTESI_RITMO_PER_TIPO,
+  DEFAULT_RESA_PER_TIPO,
+  RESIDUO_MINIMO_ORE,
   createFonte,
   normalizeFonti,
   nodeSources,
@@ -21,8 +24,16 @@ import {
 } from './sintesiEngine.js';
 import { addDaysToDateOnly, todayDateOnlyKey } from './dateUtils.js';
 import { nodeBudgetHours, computeRemainingHours } from './materiaMeta.js';
+import { DEFAULT_PAGES_PER_HOUR } from './planningConstants.js';
 
-/** Calibrazione completa e "misurata": rende i test deterministici. */
+/**
+ * Calibrazione completa e "misurata": rende i test deterministici.
+ * V42 — resa e ritmo sono per TIPO di fonte: con una misura globale i
+ * default di ogni tipo si riscalano su di essa. Il tipo ALTRO è quello
+ * neutro (il suo default coincide col default globale), quindi per le
+ * fonti ALTRO valgono esattamente questi numeri: 20 pagine tue ogni 100,
+ * 10 pagine snellite all'ora.
+ */
 const CAL = {
   hoursPerDay: 5,
   biasFactor: 1,
@@ -88,7 +99,7 @@ test('nodeSources', async (t) => {
 test('nodeNotes proietta le pagine finali di appunti', async (t) => {
   await t.test('somma appunti esistenti e proiezione sul residuo', () => {
     // 100 pagine di fonte fatte -> 20 mie; ne restano 100 -> +20 previste.
-    const s = nodo({ fonti: [fonte(200, 100)], pagineAppunti: 20 });
+    const s = nodo({ fonti: [fonte(200, 100, FONTE_TIPO.ALTRO)], pagineAppunti: 20 });
     const n = nodeNotes(s, 0.2);
     assert.equal(n.attuali, 20);
     assert.equal(n.daProdurre, 20);
@@ -105,6 +116,33 @@ test('nodeNotes proietta le pagine finali di appunti', async (t) => {
   await t.test('legge il campo V37 `pagine` come sinonimo', () => {
     assert.equal(nodeNotes(nodo({ pagine: 15 })).attuali, 15);
   });
+
+  await t.test('V42: la resa dipende dal tipo — il tuo metodo, 1000 pagine di libro + 300 slide ≈ 35 pagine', () => {
+    const n = nodeNotes(nodo({ fonti: [fonte(1000, 0, FONTE_TIPO.LIBRO), fonte(300, 0, FONTE_TIPO.SLIDE)] }), {});
+    assert.equal(n.proiettate, Math.round(1000 * DEFAULT_RESA_PER_TIPO.LIBRO + 300 * DEFAULT_RESA_PER_TIPO.SLIDE));
+    assert.ok(n.proiettate >= 30 && n.proiettate <= 40, `pagine proiettate: ${n.proiettate}`);
+    // A parità di pagine, le slide (già un riassunto) rendono più del libro.
+    const libro = nodeNotes(nodo({ fonti: [fonte(100, 0, FONTE_TIPO.LIBRO)] }), {}).proiettate;
+    const slide = nodeNotes(nodo({ fonti: [fonte(100, 0, FONTE_TIPO.SLIDE)] }), {}).proiettate;
+    assert.ok(slide > libro);
+  });
+
+  await t.test('V42: pagine di fonte fatte senza appunti dichiarati -> appunti stimati dalla resa', () => {
+    // Prima valevano zero: snellire metà libro ACCORCIAVA il piano di studio.
+    const n = nodeNotes(nodo({ fonti: [fonte(200, 100, FONTE_TIPO.ALTRO)], pagineAppunti: 0 }), 0.2);
+    assert.equal(n.attuali, 0);
+    assert.equal(n.stimaAttuali, true);
+    assert.equal(n.proiettate, 40, '20 stimate sulle 100 fatte + 20 sulle 100 da fare');
+  });
+
+  await t.test('V42: le pagine previste scritte sul nodo vincono su qualunque stima', () => {
+    const aperto = nodeNotes(nodo({ fonti: [fonte(1000, 200, FONTE_TIPO.LIBRO)], pagineAppunti: 10, pagineAppuntiPreviste: 35 }), 0.2);
+    assert.equal(aperto.proiettate, 35);
+    assert.equal(aperto.daProdurre, 25);
+    // Sintesi chiusa: contano le pagine vere, se ci sono.
+    const chiuso = nodeNotes(nodo({ fonti: [fonte(100, 100)], pagineAppunti: 28, pagineAppuntiPreviste: 35, appuntiCompleti: true }), 0.2);
+    assert.equal(chiuso.proiettate, 28);
+  });
 });
 
 /* ================================================================== *
@@ -115,7 +153,7 @@ test('nodeWorkBreakdown', async (t) => {
   await t.test('separa le ore di sintesi da quelle di studio', () => {
     // 200 pagine di fonte @10/h = 20h di sintesi.
     // 40 pagine di appunti proiettate @5/h = 8h di studio.
-    const s = nodo({ fonti: [fonte(200, 0)], pagineAppunti: 0 });
+    const s = nodo({ fonti: [fonte(200, 0, FONTE_TIPO.ALTRO)], pagineAppunti: 0 });
     const b = nodeWorkBreakdown(s, CAL);
     assert.equal(b.oreSintesiTotali, 20);
     assert.equal(b.pagineAppuntiProiettate, 40);
@@ -124,7 +162,7 @@ test('nodeWorkBreakdown', async (t) => {
   });
 
   await t.test('la sintesi già fatta riduce il residuo ma non il totale', () => {
-    const s = nodo({ fonti: [fonte(200, 150)], pagineAppunti: 30 });
+    const s = nodo({ fonti: [fonte(200, 150, FONTE_TIPO.ALTRO)], pagineAppunti: 30 });
     const b = nodeWorkBreakdown(s, CAL);
     assert.equal(b.oreSintesiTotali, 20, 'il costo del nodo da zero non cambia');
     assert.equal(b.oreSintesiResidue, 5, '50 pagine rimaste @10/h');
@@ -149,7 +187,7 @@ test('nodeWorkBreakdown', async (t) => {
     // 10h di sintesi già spese su un nodo con fonti: il residuo va
     // calcolato sulle PAGINE rimaste, non anche scalando quelle ore.
     const s = nodo({
-      fonti: [fonte(200, 100)],
+      fonti: [fonte(200, 100, FONTE_TIPO.ALTRO)],
       pagineAppunti: 20,
       focusMinutes: 600,
       focusMinutesSintesi: 600,
@@ -182,23 +220,23 @@ test('nodeWorkBreakdown', async (t) => {
     assert.equal(b.oreStudioTracciate, 0, 'prudenza: meglio sovrastimare il residuo che far sparire lavoro');
   });
 
-  await t.test('senza ritmo di sintesi misurato usa il default e lo dichiara', () => {
+  await t.test('V42: senza ritmo di sintesi misurato usa il default del TIPO di fonte e lo dichiara', () => {
     const b = nodeWorkBreakdown(nodo({ fonti: [fonte(120, 0)] }), { biasFactor: 1, pagesPerHour: 5 });
-    assert.equal(b.oreSintesiTotali, 120 / DEFAULT_SINTESI_PAGES_PER_HOUR);
+    assert.equal(b.oreSintesiTotali, 120 / DEFAULT_SINTESI_RITMO_PER_TIPO.LIBRO);
     assert.equal(b.sintesiStimata, true, 'la UI deve poter dire che non è ancora calibrato');
+    // 40 slide si snelliscono nel tempo di poche pagine di libro.
+    const slide = nodeWorkBreakdown(nodo({ fonti: [fonte(120, 0, FONTE_TIPO.SLIDE)] }), { biasFactor: 1, pagesPerHour: 5 });
+    assert.equal(slide.oreSintesiTotali, 120 / DEFAULT_SINTESI_RITMO_PER_TIPO.SLIDE);
+    assert.equal(nodeWorkBreakdown(nodo({ fonti: [fonte(120, 0, FONTE_TIPO.ALTRO)] }), {}).oreSintesiTotali, 120 / DEFAULT_SINTESI_PAGES_PER_HOUR);
   });
 
   await t.test('senza ritmo di studio misurato vince la stima più prudente', () => {
-    // 1000 pagine di fonte -> 180 pagine di appunti previste. A 6 pag/h
-    // sono 30h di studio: le 3h dichiarate (default del form) non possono
+    // 3000 pagine di libro -> 60 pagine di appunti previste. A 6 pag/h
+    // sono 10h di studio: le 3h dichiarate (default del form) non possono
     // descrivere quel volume. Era il caso "162 pagine = 4h" della V38.
-    const b = nodeWorkBreakdown(nodo({ fonti: [fonte(1000, 0)], oreStimate: 3 }), {
-      biasFactor: 1,
-      sintesiPagesPerHour: 10
-    });
-    assert.equal(b.oreSintesiTotali, 100);
-    assert.equal(b.pagineAppuntiProiettate, 180);
-    assert.equal(b.oreStudioTotali, 30);
+    const b = nodeWorkBreakdown(nodo({ fonti: [fonte(3000, 0)], oreStimate: 3 }), { biasFactor: 1 });
+    assert.equal(b.pagineAppuntiProiettate, 3000 * DEFAULT_RESA_PER_TIPO.LIBRO);
+    assert.equal(b.oreStudioTotali, Math.round((60 / DEFAULT_PAGES_PER_HOUR) * 100) / 100);
     assert.equal(b.studioDaPagine, true);
     assert.equal(b.studioStimato, true, 'la UI deve poter dire che il ritmo non è misurato');
   });
@@ -213,6 +251,17 @@ test('nodeWorkBreakdown', async (t) => {
     const b = nodeWorkBreakdown(nodo({ pagineAppunti: 40, oreStimate: 2 }), { biasFactor: 1, pagesPerHour: 5 });
     assert.equal(b.oreStudioTotali, 8);
     assert.equal(b.studioStimato, false);
+  });
+
+  await t.test('V42: un argomento aperto oltre la stima non costa mai zero', () => {
+    // 10 ore di studio spese su un argomento stimato 4 e non ancora chiuso:
+    // resta un residuo minimo (il 25% dello studio, almeno mezz'ora).
+    const b = nodeWorkBreakdown(nodo({ oreStimate: 4, focusMinutes: 600, focusMinutesStudio: 600 }), { biasFactor: 1 });
+    assert.equal(b.oltreStima, true);
+    assert.equal(b.oreStudioResidueNette, Math.max(RESIDUO_MINIMO_ORE, 1));
+    assert.ok(b.oreResidue > 0);
+    // Completato: zero, come sempre.
+    assert.equal(nodeWorkBreakdown(nodo({ status: 'COMPLETED', oreStimate: 4, focusMinutesStudio: 600 }), { biasFactor: 1 }).oreResidue, 0);
   });
 
   await t.test('modo consigliato: sintesi finché resta fonte, poi studio', () => {
@@ -234,7 +283,7 @@ test('nodeTotalHours e nodeRemainingHours sono le due facce dello stesso bilanci
 
 test('materiaMeta eredita le fonti senza modifiche ai motori a valle', async (t) => {
   await t.test('nodeBudgetHours include ora le ore di sintesi', () => {
-    const s = nodo({ fonti: [fonte(200, 0)] });
+    const s = nodo({ fonti: [fonte(200, 0, FONTE_TIPO.ALTRO)] });
     assert.equal(nodeBudgetHours(s, CAL), 28, '20h di sintesi + 8h di studio proiettato');
   });
 
@@ -470,8 +519,11 @@ test('materiaSintesiPlan', async (t) => {
     assert.equal(plan.fontiTotali, 1000);
     assert.equal(plan.fontiFatte, 100);
     assert.equal(plan.fontiResidue, 900);
-    // 20 già scritte + 900 × 0.2 = 180 previste -> 200 pagine finali.
-    assert.equal(plan.pagineAppuntiProiettate, 180 + 20);
+    // V42 — resa per tipo, riscalata sulla tua resa misurata (0,2 = 5 volte
+    // il default): libro 0,02 × 5 = 0,1, dispense 0,08 × 5 = 0,4.
+    // 20 già scritte + 500 × 0,1 + 400 × 0,4 = 230 pagine finali.
+    const scala = CAL.resaSintesi / DEFAULT_RESA_SINTESI;
+    assert.equal(plan.pagineAppuntiProiettate, 20 + Math.round(500 * DEFAULT_RESA_PER_TIPO.LIBRO * scala + 400 * DEFAULT_RESA_PER_TIPO.APPUNTI_PROF * scala));
     assert.ok(plan.dataChiusuraAppunti, 'con un esame in calendario la scadenza esiste');
   });
 });

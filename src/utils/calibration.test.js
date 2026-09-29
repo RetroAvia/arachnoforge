@@ -8,9 +8,18 @@
 // =====================================================================
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeDailyCapacity, computeEstimateBias, calibratedNodeHours, CAPACITY_MAX_HOURS } from './calibration.js';
+import {
+  computeDailyCapacity,
+  computeEstimateBias,
+  calibratedNodeHours,
+  capacityForDate,
+  computeReviewMinutes,
+  CAPACITY_MAX_HOURS,
+  CAPACITY_MIN_DAYS,
+  DEFAULT_REVIEW_MINUTES
+} from './calibration.js';
 import { HOURS_PER_NODE_DAY } from './materiaMeta.js';
-import { addDaysToDateOnly, todayDateOnlyKey } from './dateUtils.js';
+import { addDaysToDateOnly, todayDateOnlyKey, isoWeekdayOfDateKey } from './dateUtils.js';
 
 /**
  * V38.0 — FIX: questo helper costruiva la data nel calendario UTC,
@@ -27,11 +36,14 @@ function dayKey(offset) {
   return addDaysToDateOnly(todayDateOnlyKey(), offset);
 }
 
-/** N giorni consecutivi che finiscono OGGI, ognuno con `minutes` minuti. */
+/**
+ * N giorni consecutivi che finiscono IERI, ognuno con `minutes` minuti.
+ * V42 — la capacità si misura solo sui giorni CONCLUSI: oggi non entra.
+ */
 function focusLog(days, minutes) {
   return Array.from({ length: days }, (_, i) => ({
     type: 'FOCUS_MINUTES',
-    dateKey: dayKey(-(days - 1 - i)),
+    dateKey: dayKey(-(days - i)),
     minutes,
     xp: 0
   }));
@@ -61,14 +73,47 @@ describe('computeDailyCapacity', () => {
     // Stesso monte ore del test precedente (20h) ma concentrato in 5
     // giorni su 10: la capacità SOSTENIBILE resta 2h/giorno, non 4h.
     const log = [
-      { type: 'FOCUS_MINUTES', dateKey: dayKey(-9), minutes: 240 },
-      { type: 'FOCUS_MINUTES', dateKey: dayKey(-7), minutes: 240 },
-      { type: 'FOCUS_MINUTES', dateKey: dayKey(-5), minutes: 240 },
-      { type: 'FOCUS_MINUTES', dateKey: dayKey(-3), minutes: 240 },
-      { type: 'FOCUS_MINUTES', dateKey: dayKey(0), minutes: 240 }
+      { type: 'FOCUS_MINUTES', dateKey: dayKey(-10), minutes: 240 },
+      { type: 'FOCUS_MINUTES', dateKey: dayKey(-8), minutes: 240 },
+      { type: 'FOCUS_MINUTES', dateKey: dayKey(-6), minutes: 240 },
+      { type: 'FOCUS_MINUTES', dateKey: dayKey(-4), minutes: 240 },
+      { type: 'FOCUS_MINUTES', dateKey: dayKey(-2), minutes: 240 }
     ];
     const c = computeDailyCapacity(log);
+    assert.equal(c.observedDays, 10);
     assert.equal(c.hoursPerDay, 2);
+  });
+
+  test('V42: oggi non entra mai nel calcolo (la capacità non cambia a metà giornata)', () => {
+    const conOggi = [...focusLog(10, 120), { type: 'FOCUS_MINUTES', dateKey: dayKey(0), minutes: 25 }];
+    assert.deepEqual(computeDailyCapacity(conOggi), computeDailyCapacity(focusLog(10, 120)));
+    const soloOggi = computeDailyCapacity([{ type: 'FOCUS_MINUTES', dateKey: dayKey(0), minutes: 300 }]);
+    assert.equal(soloOggi.hoursPerDay, HOURS_PER_NODE_DAY);
+    assert.equal(soloOggi.observedDays, 0);
+  });
+
+  test('V42: con pochi giorni la misura si miscela col default, piena a 7 giorni', () => {
+    // Due giorni da 1 ora: peso 2/7 → 2/7·1 + 5/7·4,5 = 3,5 h (prima: 1 h secca).
+    const c = computeDailyCapacity(focusLog(2, 60));
+    assert.equal(c.measuredHoursPerDay, 1);
+    assert.equal(c.weight, Math.round((2 / CAPACITY_MIN_DAYS) * 100) / 100);
+    assert.equal(c.hoursPerDay, Math.round(((2 / 7) * 1 + (5 / 7) * HOURS_PER_NODE_DAY) * 10) / 10);
+    assert.equal(computeDailyCapacity(focusLog(7, 60)).hoursPerDay, 1);
+  });
+
+  test('V42: con due settimane di storico ogni giorno della settimana ha il suo fattore', () => {
+    // 28 giorni: 3 ore nei giorni feriali, zero la domenica.
+    const log = [];
+    for (let i = 28; i >= 1; i -= 1) {
+      const d = dayKey(-i);
+      if (isoWeekdayOfDateKey(d) !== 7) log.push({ type: 'FOCUS_MINUTES', dateKey: d, minutes: 180 });
+    }
+    const c = computeDailyCapacity(log);
+    assert.equal(c.weekdayConfident, true);
+    assert.ok(c.weekdayFactors[7] < 0.5, `domenica: ${c.weekdayFactors[7]}`);
+    assert.ok(c.weekdayFactors[2] > 1, `martedì: ${c.weekdayFactors[2]}`);
+    const media = c.weekdayFactors.slice(1).reduce((a, b) => a + b, 0) / 7;
+    assert.ok(Math.abs(media - 1) < 0.02, 'fattori normalizzati a media 1');
   });
 
   test('un valore assurdo viene comunque limitato al tetto di sicurezza', () => {
@@ -127,5 +172,50 @@ describe('calibratedNodeHours', () => {
 
   test('un fattore non valido non altera il valore', () => {
     assert.equal(calibratedNodeHours({ oreStimate: 4 }, NaN), 4);
+  });
+});
+
+describe('capacityForDate (V42)', () => {
+  const lunedi = '2026-10-05';
+  test('giorno di riposo dichiarato: zero; capacità manuale: vale quella', () => {
+    assert.equal(capacityForDate(lunedi, { restDays: [1], hoursPerDay: 4, capacityWeight: 1, measuredHoursPerDay: 4 }), 0);
+    assert.equal(capacityForDate(lunedi, { manualHours: 6, hoursPerDay: 2, capacityWeight: 1, measuredHoursPerDay: 2 }), 6);
+  });
+  test('la parte non ancora misurata cala nei giorni con lezioni in aula', () => {
+    const cal = { capacityWeight: 0, measuredHoursPerDay: null, hoursPerDay: HOURS_PER_NODE_DAY };
+    assert.equal(capacityForDate(lunedi, cal), HOURS_PER_NODE_DAY);
+    assert.equal(capacityForDate(lunedi, cal, { lectureHoursOf: () => 4 }), HOURS_PER_NODE_DAY - 0.5 * 4);
+    assert.equal(capacityForDate(lunedi, cal, { lectureHoursOf: () => 10 }), 1.5, 'mai sotto un’ora e mezza');
+    // Misurata al 100%: le lezioni sono già dentro la tua media.
+    assert.equal(capacityForDate(lunedi, { capacityWeight: 1, measuredHoursPerDay: 3, hoursPerDay: 3 }, { lectureHoursOf: () => 4 }), 3);
+  });
+  test('la media di fase, se misurata, vince sulla media generale', () => {
+    const cal = { capacityWeight: 1, measuredHoursPerDay: 3, hoursPerDay: 3, phaseHours: { SESSIONE: 5 } };
+    assert.equal(capacityForDate(lunedi, cal, { phaseOf: () => 'SESSIONE' }), 5);
+    assert.equal(capacityForDate(lunedi, cal, { phaseOf: () => 'LEZIONI' }), 3);
+  });
+  test('senza profilo settimanale, i giorni di riposo spalmano la media sugli altri', () => {
+    // 3 h di media su 7 giorni con la domenica libera: 3,5 h nei giorni di studio.
+    const cal = { capacityWeight: 1, measuredHoursPerDay: 3, hoursPerDay: 3, restDays: [7] };
+    assert.equal(capacityForDate(lunedi, cal), 3.5);
+  });
+  test('un pacchetto parziale (solo hoursPerDay) resta compatibile', () => {
+    assert.equal(capacityForDate(lunedi, { hoursPerDay: 2.5 }), 2.5);
+    assert.equal(capacityForDate(lunedi, null), HOURS_PER_NODE_DAY);
+  });
+});
+
+describe('computeReviewMinutes (V42)', () => {
+  const ripasso = (minutes, argomentiRipassati = 1) => ({ type: 'FOCUS_SESSION', workMode: 'RIPASSO', minutes, argomentiRipassati });
+  test('sotto i 3 campioni torna il default dichiarato non affidabile', () => {
+    const r = computeReviewMinutes([ripasso(20), ripasso(30)]);
+    assert.equal(r.minutes, DEFAULT_REVIEW_MINUTES);
+    assert.equal(r.confident, false);
+  });
+  test('mediana dei minuti per argomento ripassato; le sessioni brevissime non contano', () => {
+    const r = computeReviewMinutes([ripasso(20), ripasso(40, 2), ripasso(60, 3), ripasso(2), { type: 'FOCUS_SESSION', workMode: 'STUDIO', minutes: 90 }]);
+    assert.equal(r.confident, true);
+    assert.equal(r.sampleSize, 3);
+    assert.equal(r.minutes, 20);
   });
 });

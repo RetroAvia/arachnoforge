@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, Suspense } from 'react';
 import { ArachnoForgeProvider, useArachnoForge } from './context/ArachnoForgeContext.jsx';
 import { KarenBrainProvider, useKarenBrain } from './context/KarenBrainContext.jsx';
-import { readinessBand } from './services/karenEngine/useSuitTelemetry.js';
+import { readinessBand, isBriefingReadinessKnown } from './services/karenEngine/useSuitTelemetry.js';
 import { useAuthContext } from './context/AuthContext.jsx';
 import { useArachnoForgeRouter, ROUTES } from './hooks/useArachnoForgeRouter.js';
 import Sidebar from './components/Sidebar.jsx';
@@ -31,6 +31,7 @@ import { lazyPage } from './utils/lazyPage.js';
 const MissionControl = lazyPage(() => import('./pages/MissionControl.jsx'));
 const QuadrantHub = lazyPage(() => import('./pages/QuadrantHub.jsx'));
 const Campus = lazyPage(() => import('./pages/Campus.jsx'));
+const SessionPlan = lazyPage(() => import('./pages/SessionPlan.jsx'));
 const BossFight = lazyPage(() => import('./pages/BossFight.jsx'));
 const StarLog = lazyPage(() => import('./pages/StarLog.jsx'));
 const Armory = lazyPage(() => import('./pages/Armory.jsx'));
@@ -89,6 +90,8 @@ function PageSwitch({ currentPage }) {
       return <QuadrantHub />;
     case ROUTES.CAMPUS:
       return <Campus />;
+    case ROUTES.PIANO:
+      return <SessionPlan />;
     case ROUTES.BOSS_FIGHT:
       return <BossFight />;
     case ROUTES.STAR_LOG:
@@ -160,6 +163,8 @@ function KarenTrophyBridge() {
 
   useEffect(() => {
     if (!briefing || briefing.date !== todayStr) return;
+    // V42 — un giorno senza dati sufficienti non è un giorno "ottimale".
+    if (!isBriefingReadinessKnown(briefing)) return;
     actions.logReadinessSnapshot(todayStr, readinessBand(briefing.readiness_score));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [briefing, todayStr]);

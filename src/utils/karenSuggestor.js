@@ -1,97 +1,73 @@
-import { computeSpiderScore, computeDirectUnlockCount, getMissingPrerequisites, computePressure } from '../data/vanvitelliCourseMap.js';
+import { computeSpiderScore, computeDirectUnlockCount, computePressure, getPrerequisiteStatus } from '../data/vanvitelliCourseMap.js';
 import { computeRemainingHours } from './materiaMeta.js';
-import { daysUntilDateOnly, todayDateOnlyKey } from './dateUtils.js';
+import { daysUntilDateOnly, todayDateOnlyKey, formatHoursMinutes } from './dateUtils.js';
 
 /**
- * Karen's Tactical Suggestor — V20.0 "The Master Control" (Pillar 2).
+ * Karen's Tactical Suggestor — il "Primary Target".
  *
- * L'IA della tuta scansiona ogni Materia del Web-Matrix ancora NON
- * superata (`examPassed !== true`) e decreta il "Primary Target": la
- * materia con lo Spider-Score più alto secondo la Pressure Formula
- * (V36.0 — ore residue calibrate contro ore realmente disponibili prima
- * dell'esame, vedi data/vanvitelliCourseMap.js). Non è un secondo
- * algoritmo — riusa esattamente lo stesso Spider-Score già mostrato in
- * ogni card del Web-Matrix, e la stessa nozione di "ore residue" della
- * Quota Odierna: dalla V36.0 "Primary Target" e "In focus oggi" non
- * possono più indicare due materie diverse per criteri diversi.
+ * V39.0 — coincide con la prima materia "in focus oggi" del planner.
+ * V42 — il planner è globale (utils/studyPlanner.js): il Primary Target è
+ * la prima materia della giornata di oggi, e la motivazione parla con i
+ * numeri del piano — minimo di oggi, ore che mancano, margine — invece
+ * che con una pressione calcolata come se la materia fosse l'unica.
+ * Un appello già passato non è più "Event Horizon": è una materia senza
+ * data finché non registri l'esito o imposti il prossimo appello.
  */
-/**
- * V36.0 — la motivazione parla ora la stessa lingua del punteggio:
- * ore residue contro ore disponibili. "Mancano 12 giorni" da solo non
- * dice se sei in ritardo; "38 ore da fare in 12 giorni, ne hai 50
- * disponibili al tuo ritmo" sì.
- */
-function buildReason(materia, { unlocksCount, daysRemaining, remainingHours, pressure, capacityHours }) {
-  const difficulty = Number(materia.perceivedDifficulty) || 3;
-  const oreLabel = `${Math.round(remainingHours)}h di lavoro residuo`;
-
-  if (daysRemaining != null && daysRemaining <= 0) {
-    return `Event Horizon: l'esame di ${materia.nome} è oggi o già scaduto e restano ${oreLabel}. Nient'altro ha priorità.`;
-  }
-  if (pressure > 1) {
-    const disponibili = Math.round(daysRemaining * capacityHours);
-    return `In deficit: ${materia.nome} ha ${oreLabel} ma solo ~${disponibili}h disponibili in ${daysRemaining} giorni al tuo ritmo reale. Serve recuperare terreno adesso.`;
-  }
-  if (pressure > 0.7) {
-    return `Margine sottile: ${oreLabel} in ${daysRemaining} giorni — sei in pari, ma senza riserva. Un giorno saltato ti porta in deficit.`;
-  }
-  if (daysRemaining != null && daysRemaining <= 30) {
-    return `Scadenza vicina (${daysRemaining} giorni, ${oreLabel}): Karen la tiene in testa alla coda finché il margine non torna ampio.`;
+function buildReason(materia, { unlocksCount, daysRemaining, remainingHours, quota }) {
+  const ore = `${Math.round(remainingHours)}h`;
+  if (quota) {
+    const oggi = quota.todayTargetHours > 0 ? formatHoursMinutes(quota.todayTargetHours) : null;
+    if (quota.daysRemaining === 0) {
+      return `L'esame di ${materia.nome} è domani o oggi: ${oggi ? `oggi ${oggi} sugli ultimi argomenti e i ripassi,` : 'solo ripassi mirati,'} niente di nuovo.`;
+    }
+    if (quota.lateHours > 0.25) {
+      return `Non ci sta: al tuo ritmo a ${materia.nome} mancherebbero ~${Math.round(quota.lateHours)}h all'esame (${daysRemaining} giorni). Oggi ${oggi || '—'}, ma serve decidere: appello successivo o programma da tagliare.`;
+    }
+    if (quota.todayMinHours > 0.1) {
+      return `Minimo di oggi per restare in tempo: ${formatHoursMinutes(quota.todayMinHours)} su ${materia.nome} (${ore} di lavoro, esame fra ${daysRemaining} giorni).`;
+    }
+    if (quota.status === 'ATTENZIONE' && daysRemaining != null) {
+      return `Al limite: ${ore} di lavoro in ${daysRemaining} giorni, senza margine. Un giorno saltato ti porta fuori tempo.`;
+    }
+    if (daysRemaining != null && daysRemaining <= 30) {
+      return `Scadenza più vicina del piano (${daysRemaining} giorni, ${ore}): oggi ${oggi || 'un blocco'} per anticiparla e arrivare con margine.`;
+    }
+    if (quota.inizioEntroDateKey && daysRemaining != null) {
+      return `Esame fra ${daysRemaining} giorni: c'è margine, ma ogni ora anticipata ora è un'ora in meno in sessione. Oggi ${oggi || 'un blocco'}.`;
+    }
   }
   if (unlocksCount >= 2) {
-    return `Nodo strategico: ${materia.nome} sblocca ${unlocksCount} esami successivi del piano di studi (${oreLabel}).`;
+    return `Nodo strategico: ${materia.nome} sblocca ${unlocksCount} esami successivi del piano di studi (${ore} di lavoro).`;
   }
   if (daysRemaining == null) {
-    return 'Nessuna data d\'esame impostata: senza scadenza la pressione temporale è nulla e Karen può valutare solo CFU, difficoltà e propedeuticità. Imposta una data per attivare il calcolo completo.';
+    return "Nessuna data d'esame impostata: senza scadenza Karen può valutare solo CFU, difficoltà e propedeuticità. Aggiungi un appello per attivare il piano completo.";
   }
-  if (difficulty >= 4) {
-    return `Difficoltà elevata con ${daysRemaining} giorni di margine: affrontala ora, finché il margine esiste.`;
-  }
-  return `Pressione più alta del Web-Matrix: ${oreLabel} in ${daysRemaining} giorni.`;
+  return `Prossima scadenza del piano: ${ore} in ${daysRemaining} giorni.`;
 }
 
-/** V29.0 — Pillar 2 (Automatic Precedence Engine): una Materia con propedeuticità ufficiali del piano di studi non ancora superate è "congelata" per il planner automatico. */
 function isPrereqFrozen(materia, allMaterie) {
   if (!materia.courseId) return false;
-  return getMissingPrerequisites(materia.courseId, allMaterie, materia.id).length > 0;
+  return getPrerequisiteStatus(materia.courseId, allMaterie, { excludeMateriaId: materia.id, dependentExamDate: materia.examDate || null }).bloccanti.length > 0;
 }
 
 /**
- * @param {Array} materie - state.materie corrente
+ * @param {Array} materie materie con la data di pianificazione
  * @param {object|null} calibration pacchetto di utils/calibration.js
- * @param {string|null} preferredMateriaId la prima materia in focus del
- *        planner (utils/quotaEngine.js#computeDailyPlan), se c'è
- * @returns {null|{materia, spiderScore, unlocksCount, daysRemaining, reason}} null se non ci sono materie da superare (o se sono tutte congelate).
+ * @param {string|null} preferredMateriaId la prima materia della giornata del planner
+ * @param {Map|null} planByMateriaId le "quote" del planner, per le motivazioni
+ * @returns {null|{materia, spiderScore, unlocksCount, daysRemaining, remainingHours, pressure, reason}}
  */
-export function computePrimaryTarget(materie, calibration = null, preferredMateriaId = null) {
+export function computePrimaryTarget(materie, calibration = null, preferredMateriaId = null, planByMateriaId = null) {
   const safeMaterie = Array.isArray(materie) ? materie : [];
   const pending = safeMaterie.filter((m) => m && !m.examPassed);
   if (pending.length === 0) return null;
 
-  // V29.0 — Pillar 2: Karen non spinge MAI una Materia le cui
-  // propedeuticità ufficiali non sono ancora superate (es. Aerodinamica
-  // prima di Analisi 1) — resta comunque aperta e preparabile a mano nel
-  // Web-Matrix, ma esclusa dal Primary Target automatico finché non si
-  // sblocca. Se risultano TUTTE congelate, Karen non ha nulla da spingere
-  // (nessun fallback silenzioso su una materia bloccata).
-  // V40.0 — né una materia senza nodi e senza una data d'esame futura:
-  // le sue ore sono solo la stima dai CFU di un programma mai mappato
-  // (tipicamente un corso che segui a lezione e che darai più avanti),
-  // non qualcosa da "attaccare" oggi.
   const oggiKey = todayDateOnlyKey();
-  const mappata = (m) =>
-    (Array.isArray(m.sfide) && m.sfide.length > 0) || (typeof m.examDate === 'string' && m.examDate.slice(0, 10) >= oggiKey);
+  const dataValida = (m) => typeof m.examDate === 'string' && m.examDate.slice(0, 10) >= oggiKey;
+  const mappata = (m) => (Array.isArray(m.sfide) && m.sfide.length > 0) || dataValida(m);
   const eligible = pending.filter((m) => !isPrereqFrozen(m, safeMaterie) && mappata(m));
   if (eligible.length === 0) return null;
 
-  // V39.0 — Il Primary Target COINCIDE con la prima materia "in focus
-  // oggi" del planner, quando il planner ne indica una. Prima erano due
-  // classifiche diverse (Spider-Score da una parte, urgenza e
-  // fattibilità dall'altra) e potevano indicare due materie diverse nella
-  // stessa schermata — con A a 2 ore dalla fine ed esame fra 5 giorni, il
-  // focus diceva A e il Primary Target B. Lo Spider-Score resta sulla
-  // card di ogni materia come misura di pressione; la decisione su cosa
-  // fare oggi è una sola.
   let best = preferredMateriaId ? eligible.find((m) => m.id === preferredMateriaId) || null : null;
   let bestScore = best ? computeSpiderScore(best, calibration) : -Infinity;
   if (!best) {
@@ -107,9 +83,11 @@ export function computePrimaryTarget(materie, calibration = null, preferredMater
 
   const capacityHours = Number(calibration?.hoursPerDay) > 0 ? Number(calibration.hoursPerDay) : 4.5;
   const unlocksCount = computeDirectUnlockCount(best.courseId);
-  const daysRemaining = best.examDate ? daysUntilDateOnly(best.examDate) : null;
+  const raw = best.examDate ? daysUntilDateOnly(best.examDate) : null;
+  const daysRemaining = raw != null && raw >= 0 ? raw : null;
   const remainingHours = computeRemainingHours(best, calibration);
   const pressure = computePressure(remainingHours, best.examDate, capacityHours);
+  const quota = planByMateriaId && typeof planByMateriaId.get === 'function' ? planByMateriaId.get(best.id) || null : null;
 
   return {
     materia: best,
@@ -118,7 +96,7 @@ export function computePrimaryTarget(materie, calibration = null, preferredMater
     daysRemaining,
     remainingHours: Math.round(remainingHours * 10) / 10,
     pressure: Math.round(pressure * 100) / 100,
-    reason: buildReason(best, { unlocksCount, daysRemaining, remainingHours, pressure, capacityHours })
+    reason: buildReason(best, { unlocksCount, daysRemaining, remainingHours, quota })
   };
 }
 

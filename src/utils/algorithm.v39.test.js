@@ -4,17 +4,15 @@
 // Ogni blocco qui sotto riproduce un difetto trovato dalla revisione
 // dell'algoritmo con un input concreto, e fissa il comportamento
 // corretto. Se uno di questi test si rompe, un difetto reale è tornato.
+//
+// V42 — il piano del giorno è il piano GLOBALE (utils/studyPlanner.js,
+// dietro la facciata computeDailyPlan): le vecchie funzioni per materia
+// (computeMateriaQuota, applyCumulativeLoad, selectDailyFocus) non
+// esistono più. Gli stessi difetti si verificano sul piano vero.
 // =====================================================================
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  computeMateriaQuota,
-  applyCumulativeLoad,
-  compareByUrgency,
-  selectDailyFocus,
-  computeDailyPlan,
-  QUOTA_STATUS
-} from './quotaEngine.js';
+import { compareByUrgency, computeDailyPlan, QUOTA_STATUS } from './quotaEngine.js';
 import { computeEstimateBias, computePagesPerHour, computeDailyCapacity } from './calibration.js';
 import { computeResaSintesi, materiaSintesiPlan, RACCOMANDAZIONE } from './sintesiEngine.js';
 import { computeEstimatedCompletion } from './materiaMeta.js';
@@ -49,26 +47,29 @@ function nodo(over = {}) {
 }
 function materia(over = {}) {
   seq += 1;
-  return { id: `m${seq}`, nome: `Materia ${seq}`, cfu: 6, examDate: null, examPassed: false, courseId: null, sfide: [], ...over };
+  return { id: `m${seq}`, nome: `Materia ${seq}`, cfu: 6, examDate: null, examPassed: false, courseId: null, tipoPiano: 'PIANO', sfide: [], ...over };
 }
+
+const piano = (materie, extra = {}) => computeDailyPlan(materie, { calibration: CAL, todayKey: oggi(), ...extra });
+const quota = (materie, m, extra) => piano(materie, extra).byMateriaId.get(m.id);
 
 /* ------------------------------------------------------------------ */
 
 test('esame passato non verbalizzato: non è un\'emergenza', async (t) => {
   const m = materia({ examDate: fra(-20), sfide: [nodo({ oreStimate: 10 }), nodo({ oreStimate: 10 })] });
 
-  await t.test('la quota non esplode e lo stato non è CRITICO', () => {
-    const q = computeMateriaQuota(m, [m], CAL);
+  await t.test('niente scadenza, niente ritardo, stato non CRITICO', () => {
+    const q = quota([m], m);
     assert.equal(q.dataScaduta, true);
     assert.equal(q.daysRemaining, null);
-    assert.equal(q.dailyQuotaHours, null, 'prima: tutte le ore residue in un giorno');
+    assert.equal(q.lateHours, 0, 'prima: tutte le ore residue in un giorno');
     assert.notEqual(q.status, QUOTA_STATUS.CRITICO);
     assert.equal(q.overdue, false);
   });
 
   await t.test('non forza il monotask né prende il primo slot', () => {
     const b = materia({ examDate: fra(30), sfide: [nodo({ oreStimate: 20 })] });
-    const plan = computeDailyPlan([m, b], { calibration: CAL });
+    const plan = piano([m, b]);
     assert.equal(plan.monotaskActive, false);
     assert.equal(plan.dailyFocusQuotas[0].materiaId, b.id);
   });
@@ -88,129 +89,176 @@ test('esame passato non verbalizzato: non è un\'emergenza', async (t) => {
 
 test('esame oggi con lavoro aperto resta CRITICO', () => {
   const m = materia({ examDate: fra(0), sfide: [nodo({ oreStimate: 5 })] });
-  const q = computeMateriaQuota(m, [m], CAL);
+  const q = quota([m], m);
   assert.equal(q.overdue, true);
   assert.equal(q.status, QUOTA_STATUS.CRITICO);
+  assert.ok(q.lateHours > 0);
 });
 
 test('soglie uniche: stesso rapporto, stesso stato, con o senza nodi', () => {
   // 30 ore in 10 giorni a 4.5h/giorno = rapporto 0.67 -> OTTIMALE in entrambi i casi.
   const conNodi = materia({ examDate: fra(10), sfide: [nodo({ oreStimate: 30 })] });
   const senzaNodi = materia({ examDate: fra(10), cfu: 2 }); // 2 CFU × 15h = 30h
-  assert.equal(computeMateriaQuota(conNodi, [conNodi], CAL).status, QUOTA_STATUS.OTTIMALE);
-  assert.equal(computeMateriaQuota(senzaNodi, [senzaNodi], CAL).status, QUOTA_STATUS.OTTIMALE);
+  assert.equal(quota([conNodi], conNodi).status, QUOTA_STATUS.OTTIMALE);
+  assert.equal(quota([senzaNodi], senzaNodi).status, QUOTA_STATUS.OTTIMALE);
 });
 
 test('carico cumulativo: tre esami che da soli ci stanno, insieme no', () => {
   const tre = [1, 2, 3].map(() => materia({ examDate: fra(14), sfide: [nodo({ oreStimate: 55 })] }));
-  const singole = tre.map((m) => computeMateriaQuota(m, tre, CAL));
-  singole.forEach((q) => assert.equal(q.status, QUOTA_STATUS.OTTIMALE, 'ciascuna da sola ci sta (55h su 63)'));
+  tre.forEach((m) => assert.equal(quota([m], m).status, QUOTA_STATUS.OTTIMALE, 'ciascuna da sola ci sta (55h su 63)'));
 
-  const cumulate = applyCumulativeLoad(singole, CAL);
-  cumulate.forEach((q) => {
-    assert.equal(q.cumulativeOverload, true);
-    assert.equal(q.status, QUOTA_STATUS.CRITICO, '165h su 63 disponibili');
-  });
+  const plan = piano(tre);
+  const qs = tre.map((m) => plan.byMateriaId.get(m.id));
+  qs.forEach((q) => assert.equal(q.cumulativeOverload, true, '165h su 63 disponibili'));
+  // V42 — critiche quelle che arrivano all'esame con ore scoperte; quella
+  // che il piano porta in tempo è "al limite", schiacciata dalle altre.
+  const critiche = qs.filter((q) => q.status === QUOTA_STATUS.CRITICO);
+  assert.equal(critiche.length, 2);
+  critiche.forEach((q) => assert.ok(q.lateHours > 0));
+  const salva = qs.find((q) => q.status !== QUOTA_STATUS.CRITICO);
+  assert.equal(salva.status, QUOTA_STATUS.ATTENZIONE);
+  assert.equal(salva.pressioneDaAltri, true);
+  assert.equal(salva.lateHours, 0);
 });
 
 test('carico cumulativo: la materia che viene prima non viene penalizzata da quella dopo', () => {
   const prima = materia({ examDate: fra(10), sfide: [nodo({ oreStimate: 10 })] });
   const dopo = materia({ examDate: fra(20), sfide: [nodo({ oreStimate: 200 })] });
-  const qs = applyCumulativeLoad([prima, dopo].map((m) => computeMateriaQuota(m, [prima, dopo], CAL)), CAL);
-  const qPrima = qs.find((q) => q.materiaId === prima.id);
-  const qDopo = qs.find((q) => q.materiaId === dopo.id);
+  const plan = piano([prima, dopo]);
+  const qPrima = plan.byMateriaId.get(prima.id);
+  const qDopo = plan.byMateriaId.get(dopo.id);
   assert.equal(qPrima.cumulativeOverload, false);
+  assert.equal(qPrima.status, QUOTA_STATUS.OTTIMALE);
   assert.equal(qDopo.cumulativeOverload, true);
+  assert.equal(qDopo.status, QUOTA_STATUS.CRITICO);
 });
 
 test('focus: una materia senza data non ruba lo slot a una con scadenza', () => {
   const senzaData = materia({ sfide: [nodo({ oreStimate: 10 })] });
   const y = materia({ examDate: fra(20), sfide: [nodo({ oreStimate: 5 })] });
   const z = materia({ examDate: fra(25), sfide: [nodo({ oreStimate: 5 })] });
-  const plan = computeDailyPlan([senzaData, y, z], { calibration: CAL });
+  const plan = piano([senzaData, y, z]);
   const ids = plan.dailyFocusQuotas.map((q) => q.materiaId);
-  assert.deepEqual(ids.sort(), [y.id, z.id].sort());
+  assert.ok(!ids.includes(senzaData.id));
+  // V42 — dentro le tre settimane vale la scadenza più vicina: la giornata va a y.
+  assert.equal(ids[0], y.id);
 });
 
 test('focus: una materia senza data entra solo se avanza posto, e riceve l’avanzo', () => {
   const senzaData = materia({ sfide: [nodo({ oreStimate: 10 })] });
-  const y = materia({ examDate: fra(20), sfide: [nodo({ oreStimate: 10 })] });
-  const plan = computeDailyPlan([senzaData, y], { calibration: CAL });
+  const y = materia({ examDate: fra(20), sfide: [nodo({ oreStimate: 1 })] });
+  const plan = piano([senzaData, y]);
   const qSenza = plan.dailyFocusQuotas.find((q) => q.materiaId === senzaData.id);
-  assert.ok(qSenza, 'con un solo esame, il secondo slot va alla materia senza data');
+  assert.ok(qSenza, 'con l’esame coperto, il tempo che avanza va alla materia senza data');
   assert.ok(qSenza.assignedHours > 0, 'e riceve le ore avanzate invece di 0h');
+  const qy = plan.byMateriaId.get(y.id);
+  assert.ok(Math.abs(qy.todayTargetHours + qSenza.assignedHours - plan.today.capacityHours) < 0.02, 'la giornata è piena, non oltre');
 });
 
-test('focus: una materia già finita non occupa slot', () => {
+test('focus: una materia già studiata occupa solo il suo ripasso finale, non uno slot di studio', () => {
   const finita = materia({ examDate: fra(3), sfide: [nodo({ status: 'COMPLETED' })] });
   const b = materia({ examDate: fra(8), sfide: [nodo({ oreStimate: 30 })] });
-  const plan = computeDailyPlan([finita, b], { calibration: CAL });
-  assert.equal(plan.dailyFocusQuotas[0].materiaId, b.id);
-  assert.ok(plan.budget.totalNeedHours > 0);
+  const plan = piano([finita, b]);
+  const qf = plan.byMateriaId.get(finita.id);
+  assert.equal(qf.todayStudioHours + qf.todaySintesiHours, 0);
+  assert.ok(qf.todayFinalReviewHours > 0 && qf.todayFinalReviewHours <= 0.5, 'un passaggio di ripasso finale, a tre giorni dall’esame');
+  assert.ok(plan.byMateriaId.get(b.id).todayStudioHours > 3.5);
+  assert.ok(plan.budget.targetHours > 0);
 });
 
 test('V40 — le lezioni non rubano più uno slot agli esami', () => {
-  const a = materia({ examDate: fra(40), sfide: [nodo({ oreStimate: 150 })] }); // CRITICO
-  const b = materia({ examDate: fra(50), sfide: [nodo({ oreStimate: 150 })] });
-  const lezione = materia({ sfide: [nodo({ oreStimate: 5 })] }); // seguita a lezione, senza data
-  const plan = computeDailyPlan([a, b, lezione], { calibration: CAL, sintesiLezioni: [{ materiaId: lezione.id, ore: 2 }] });
+  const a = materia({ examDate: fra(40), sfide: [nodo({ oreStimate: 150 })] });
+  const b = materia({ examDate: fra(50), sfide: [nodo({ oreStimate: 150 })] }); // insieme: CRITICO
+  const lezione = materia({ sfide: [nodo({ oreStimate: 5, fonti: [{ id: 'f', tipo: 'ALTRO', pagine: 100, pagineFatte: 0 }] })] });
+  const plan = piano([a, b, lezione], { sintesiLezioni: [{ materiaId: lezione.id, ore: 2 }] });
   const ids = plan.dailyFocusQuotas.map((q) => q.materiaId);
-  assert.deepEqual(ids.sort(), [a.id, b.id].sort(), 'gli slot restano agli esami');
+  assert.ok(!ids.includes(lezione.id), 'gli slot restano agli esami');
+  assert.equal(plan.sintesi.esameARischio, true);
   assert.equal(plan.priorityApplied, null);
 });
 
-test('V40 — riserva di sintesi: solo il tempo libero dagli esami, massimo 40%, zero in monotask', () => {
+test('V42 — due esami: il parallelo non manda in ritardo il primo, che da solo ci sta', () => {
+  // 150h a 40 giorni + 150h a 50 giorni con 4,5h/giorno: il primo ci sta,
+  // il secondo no. Prima il tempo si divideva a metà per 17 giorni e il
+  // primo finiva 10 ore in ritardo; ora si lavora per scadenza.
+  const a = materia({ examDate: fra(40), sfide: [nodo({ oreStimate: 150 })] });
+  const b = materia({ examDate: fra(50), sfide: [nodo({ oreStimate: 150 })] });
+  const plan = piano([a, b]);
+  const qa = plan.byMateriaId.get(a.id);
+  const qb = plan.byMateriaId.get(b.id);
+  assert.equal(qa.lateHours, 0);
+  assert.equal(qa.status, QUOTA_STATUS.OTTIMALE);
+  assert.ok(qa.finePrevistaDateKey < a.examDate);
+  assert.equal(qb.status, QUOTA_STATUS.CRITICO);
+});
+
+test('V42 — lontano dagli esami e con margine, due materie in parallelo', () => {
+  const a = materia({ examDate: fra(60), sfide: [nodo({ oreStimate: 20 })] });
+  const b = materia({ examDate: fra(70), sfide: [nodo({ oreStimate: 20 })] });
+  const plan = piano([a, b]);
+  assert.ok(plan.byMateriaId.get(a.id).todayTargetHours > 0);
+  assert.ok(plan.byMateriaId.get(b.id).todayTargetHours > 0);
+});
+
+test('V40 — riserva per le lezioni: solo con tempo libero dagli esami, massimo 40%, zero in monotask', () => {
+  // V42 — le lezioni si sistemano con la SINTESI della loro materia: la
+  // riserva esiste solo per una materia con fonti da snellire.
+  const lez = materia({ sfide: [nodo({ oreStimate: 5, fonti: [{ id: 'f', tipo: 'ALTRO', pagine: 100, pagineFatte: 0 }] })] });
+  const coda = (ore) => ({ sintesiLezioni: [{ materiaId: lez.id, ore }] });
+
   const rischio = materia({ examDate: fra(40), sfide: [nodo({ oreStimate: 300 })] }); // 300h in 40gg: CRITICO
-  const r1 = computeDailyPlan([rischio], { calibration: CAL, sintesiLezioni: [{ materiaId: 'x', ore: 3 }] });
+  const r1 = piano([rischio, lez], coda(3));
   assert.equal(r1.sintesi.esameARischio, true);
   assert.equal(r1.sintesi.riservateOre, 0, 'un esame a rischio non cede tempo alle lezioni');
   assert.equal(r1.sintesi.prima, false);
 
-  const pieno = materia({ examDate: fra(40), sfide: [nodo({ oreStimate: 150 })] }); // 3.75h/giorno su 4.5
-  const r0 = computeDailyPlan([pieno], { calibration: CAL, sintesiLezioni: [{ materiaId: 'x', ore: 3 }] });
-  assert.equal(r0.sintesi.riservateOre, 0.75, 'prende solo i 45 minuti che l’esame lascia liberi');
-  assert.equal(r0.budget.overCapacity, false, 'la riserva non crea mai un deficit');
-
   const calmo = materia({ examDate: fra(90), sfide: [nodo({ oreStimate: 5 })] });
-  const r2 = computeDailyPlan([calmo], { calibration: CAL, sintesiLezioni: [{ materiaId: 'x', ore: 1 }] });
+  const r2 = piano([calmo, lez], coda(1));
   assert.equal(r2.sintesi.riservateOre, 1, 'serve 1h e c’è spazio');
   assert.equal(r2.sintesi.prima, true);
-  const r2b = computeDailyPlan([calmo], { calibration: CAL, sintesiLezioni: [{ materiaId: 'x', ore: 5 }] });
+  assert.equal(r2.budget.overCapacity, false, 'la riserva non crea mai un deficit');
+  const r2b = piano([calmo, lez], coda(5));
   assert.equal(r2b.sintesi.riservateOre, 1.8, 'mai oltre il 40% della giornata');
 
-  const r4 = computeDailyPlan([], { calibration: CAL, sintesiLezioni: [{ materiaId: 'x', ore: 3 }] });
-  assert.equal(r4.sintesi.riservateOre, 3, 'senza esami su cui lavorare, la giornata è delle lezioni');
+  const soloLezioni = piano([lez], coda(3));
+  assert.equal(soloLezioni.sintesi.riservateOre, 1.8);
+  assert.ok(soloLezioni.byMateriaId.get(lez.id).todaySintesiHours >= 3, 'senza esami la giornata va comunque alla sintesi');
 
   const imminente = materia({ examDate: fra(5), sfide: [nodo({ oreStimate: 10 })] });
-  const r3 = computeDailyPlan([imminente], { calibration: CAL, sintesiLezioni: [{ materiaId: 'x', ore: 1 }] });
+  const r3 = piano([imminente, lez], coda(1));
   assert.equal(r3.monotaskActive, true);
   assert.equal(r3.sintesi.riservateOre, 0);
+
+  const senzaFonti = materia({ sfide: [nodo({ oreStimate: 5 })] });
+  assert.equal(piano([calmo, senzaFonti], { sintesiLezioni: [{ materiaId: senzaFonti.id, ore: 2 }] }).sintesi.riservateOre, 0, 'niente fonti, niente sintesi da riservare');
 });
 
 test('V40 — materia senza nodi e senza data: nessuna ora finta nel piano del giorno', () => {
   const vuota = materia({ cfu: 9, sfide: [] });
   const esame = materia({ examDate: fra(60), sfide: [nodo({ oreStimate: 10 })] });
-  const plan = computeDailyPlan([vuota, esame], { calibration: CAL });
+  const plan = piano([vuota, esame]);
   assert.ok(!plan.dailyFocusIds.has(vuota.id), 'la stima dai CFU non è lavoro di oggi');
   // con una data d'esame, invece, la stima dai CFU serve a pianificare
   const conData = materia({ cfu: 9, examDate: fra(60), sfide: [] });
-  const p2 = computeDailyPlan([conData], { calibration: CAL });
+  const p2 = piano([conData]);
   assert.ok(p2.dailyFocusIds.has(conData.id));
 });
 
 test('V40 — l’avanzo del budget non supera il lavoro residuo della materia', () => {
   const pochissimo = materia({ sfide: [nodo({ oreStimate: 0.5 })] }); // senza data, 0.5h di lavoro
-  const plan = computeDailyPlan([pochissimo], { calibration: CAL });
+  const plan = piano([pochissimo]);
   const q = plan.dailyFocusQuotas.find((x) => x.materiaId === pochissimo.id);
   assert.ok(q.assignedHours <= 0.5 + 1e-9, `assegnate ${q.assignedHours}h a una materia con 0.5h di lavoro`);
 });
 
 test('ordinamento: una materia senza data non scavalca una con esame vero', () => {
-  const senzaData = { materiaId: 'x', daysRemaining: null, status: QUOTA_STATUS.ATTENZIONE, hoursRemaining: 10, frozen: false };
-  const conData = { materiaId: 'y', daysRemaining: 30, status: QUOTA_STATUS.OTTIMALE, hoursRemaining: 10, frozen: false };
+  const senzaData = { materiaId: 'x', daysRemaining: null, status: QUOTA_STATUS.ATTENZIONE, hoursRemaining: 10, haLavoro: true, frozen: false };
+  const conData = { materiaId: 'y', daysRemaining: 30, status: QUOTA_STATUS.OTTIMALE, hoursRemaining: 10, haLavoro: true, frozen: false };
   assert.equal([senzaData, conData].sort(compareByUrgency)[0].materiaId, 'y');
-  const { focusIds } = selectDailyFocus([senzaData, conData].sort(compareByUrgency));
-  assert.ok(focusIds.has('y'));
+  // Il piano vero: la giornata va alla materia con l'esame.
+  const x = materia({ sfide: [nodo({ oreStimate: 10 })] });
+  const y = materia({ examDate: fra(30), sfide: [nodo({ oreStimate: 10 })] });
+  assert.equal(piano([x, y]).dailyFocusQuotas[0].materiaId, y.id);
 });
 
 /* ------------------------------------------------------------------ */
@@ -277,16 +325,20 @@ test('Fine Prevista: una materia senza nodi non è "completata"', () => {
   assert.equal(e.totalHoursNeeded, 9 * 15);
 });
 
-test('Exam Readiness: copertura pesata sulle ore vere (fonti comprese)', () => {
+test('Exam Readiness: copertura pesata sulle ore vere di studio (fonti comprese)', () => {
+  // V42 — pesano le ore di STUDIO: le 300 pagine di fonte diventano
+  // appunti da studiare (resa misurata 0,2: 60 pagine, a 6/h = 10h), molto
+  // più delle 2h dichiarate. La sintesi da fare non è copertura.
   const m = materia({
     examDate: fra(30),
     sfide: [
       nodo({ status: 'COMPLETED', oreStimate: 4 }),
-      nodo({ oreStimate: 2, fonti: [{ id: 'f', pagine: 300, pagineFatte: 0 }] })
+      nodo({ oreStimate: 2, fonti: [{ id: 'f', tipo: 'ALTRO', pagine: 300, pagineFatte: 0 }] })
     ]
   });
   const r = computeExamReadiness(m, null, CAL);
-  assert.ok(r.parts.coverage < 0.2, `copertura ${r.parts.coverage}: prima risultava 0.67`);
+  assert.ok(Math.abs(r.parts.coverage - 4 / 14) < 0.01, `copertura ${r.parts.coverage}`);
+  assert.ok(r.parts.coverage < 4 / 6, 'le fonti pesano più delle ore dichiarate');
 });
 
 test('piano di sintesi: la sintesi dichiarata chiusa non genera quota né scadenza', () => {
@@ -334,7 +386,7 @@ test('stima di laurea: una sola sessione intensa non promette la laurea in inver
 test('Primary Target coincide con la prima materia in focus', () => {
   const vicina = materia({ examDate: fra(5), cfu: 3, sfide: [nodo({ oreStimate: 2 })] });
   const grossa = materia({ examDate: fra(30), cfu: 12, sfide: [nodo({ oreStimate: 200 })] });
-  const plan = computeDailyPlan([vicina, grossa], { calibration: CAL });
+  const plan = piano([vicina, grossa]);
   const pt = computePrimaryTarget([vicina, grossa], CAL, plan.dailyFocusQuotas[0].materiaId);
   assert.equal(pt.materia.id, plan.dailyFocusQuotas[0].materiaId);
   assert.equal(pt.materia.id, vicina.id);

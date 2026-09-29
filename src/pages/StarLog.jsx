@@ -4,6 +4,7 @@ import { Icon } from '../components/Icons.jsx';
 import Dropdown from '../components/Dropdown.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import PageHeader from '../components/PageHeader.jsx';
+import WeeklyReviewCard from '../components/WeeklyReviewCard.jsx';
 import { getDateKey, formatHoursMinutes, daysUntilDateOnly, formatDateOnlyHuman, monthKeyFromDateKey, currentMonthKey, formatMonthYearHuman } from '../utils/dateUtils.js';
 import { DIFFICULTY_META, FOCUS_QUALITY, FOCUS_QUALITY_META } from '../utils/xpEngine.js';
 import { REVIEW_RATING, REVIEW_RATING_META } from '../utils/spiderSense.js';
@@ -502,6 +503,9 @@ export default function StarLog() {
         subtitle="Cosa hai fatto, quanto e come: attività giorno per giorno, qualità del Focus, memoria e ripassi."
       />
 
+      {/* V42 — il bilancio settimanale di K.A.R.E.N., sui numeri veri. */}
+      <WeeklyReviewCard />
+
       {derived.burnoutRisk && (
         <div className="ds-card ds-card-alert !py-4 flex items-start gap-3 flex-wrap">
           <Icon name="alertTriangle" className="w-5 h-5 text-primary shrink-0 mt-0.5" />
@@ -521,7 +525,7 @@ export default function StarLog() {
       )}
 
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-        <Kpi icon="clock" iconTone="text-secondary" label="Focus totale" value={minutiLabel(totalMinutes)} hint={`${formatInt(totalSessions)} sessioni registrate`} />
+        <Kpi icon="clock" iconTone="text-secondary" label="Focus totale" value={minutiLabel(totalMinutes)} hint={`${formatInt(totalSessions)} ${totalSessions === 1 ? 'sessione registrata' : 'sessioni registrate'}`} />
         <Kpi
           icon="bolt"
           iconTone="text-primary"
@@ -686,7 +690,7 @@ export default function StarLog() {
                 );
               })}
               <p className="text-xs text-slate-500 pt-1">
-                {formatInt(focusQualityStats.ratedTotal)} sessioni valutate su {formatInt(focusQualityStats.totalSessions)} registrate.
+                {formatInt(focusQualityStats.ratedTotal)} {focusQualityStats.ratedTotal === 1 ? 'sessione valutata' : 'sessioni valutate'} su {formatInt(focusQualityStats.totalSessions)} registrate.
               </p>
             </div>
           )}
@@ -719,7 +723,7 @@ export default function StarLog() {
             className="grid gap-[3px] min-w-[640px]"
             style={{ gridTemplateColumns: `1.75rem repeat(${HEATMAP_WEEKS}, minmax(0, 1fr))` }}
             role="img"
-            aria-label={`Attività degli ultimi 12 mesi: ${heatmap.activeDays} giorni con almeno una sessione`}
+            aria-label={`Attività degli ultimi 12 mesi: ${heatmap.activeDays === 1 ? '1 giorno' : `${heatmap.activeDays} giorni`} con almeno una sessione`}
           >
             <span />
             {heatmap.monthLabels.map((m, i) => (

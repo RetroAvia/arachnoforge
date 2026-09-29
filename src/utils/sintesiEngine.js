@@ -60,10 +60,17 @@ export const FONTE_TIPO_META = {
   ALTRO: { label: 'Altra fonte', icon: 'archive', short: 'Altro' }
 };
 
-/** I due modi di lavorare su un nodo. */
+/**
+ * I modi di lavorare su un nodo.
+ * V42 — oltre a SINTESI e STUDIO: RIPASSO (richiamo di un argomento già
+ * studiato: i suoi minuti non devono falsare il ritmo di primo studio) ed
+ * ESERCIZI (problemi e temi d'esame: la parte che decide uno scritto).
+ */
 export const WORK_MODE = {
   SINTESI: 'SINTESI',
-  STUDIO: 'STUDIO'
+  STUDIO: 'STUDIO',
+  RIPASSO: 'RIPASSO',
+  ESERCIZI: 'ESERCIZI'
 };
 
 export const WORK_MODE_META = {
@@ -84,8 +91,30 @@ export const WORK_MODE_META = {
     color: 'text-secondary',
     border: 'border-secondary/40',
     bg: 'bg-secondary/10'
+  },
+  RIPASSO: {
+    label: 'Ripasso',
+    full: 'Ripasso — richiamo attivo',
+    hint: 'Ricostruisci a memoria un argomento già studiato, poi controlli gli appunti.',
+    icon: 'radar',
+    color: 'text-emerald-300',
+    border: 'border-emerald-400/40',
+    bg: 'bg-emerald-500/10'
+  },
+  ESERCIZI: {
+    label: 'Esercizi',
+    full: 'Esercizi — problemi e temi d’esame',
+    hint: 'Risolvi esercizi e tracce: è l’allenamento che decide lo scritto.',
+    icon: 'grid',
+    color: 'text-cyan-300',
+    border: 'border-cyan-400/40',
+    bg: 'bg-cyan-500/10'
   }
 };
+
+export function isWorkMode(v) {
+  return typeof v === 'string' && !!WORK_MODE[v];
+}
 
 /* ------------------------------------------------------------------ *
  * COSTANTI E FALLBACK DICHIARATI
@@ -93,20 +122,30 @@ export const WORK_MODE_META = {
 
 /**
  * Resa di sintesi: quante pagine di appunti TUOI escono da una pagina di
- * fonte. 0.18 = da 100 pagine di libro ne escono 18 tue.
+ * fonte. 0.04 = da 100 pagine di fonte ne escono 4 tue.
  *
- * Il valore viene dall'esempio reale che ha motivato la funzione (300
- * slide + 1000 pagine di libro -> 30/40 pagine di appunti è ~0.03, ma è
- * il caso estremo di un libro consultato e non lavorato tutto; 100
- * pagine lavorate -> 20 pagine è 0.20). Si parte volutamente vicino al
- * caso "materiale lavorato davvero", perché è quello che descrive il
- * lavoro pianificato; il valore misurato lo sostituisce appena esiste.
+ * È il valore NEUTRO (tipo "Altro") e il riferimento con cui si riscala
+ * la resa per tipo quando la tua resa globale è misurata. Il valore
+ * misurato sui tuoi argomenti chiusi lo sostituisce appena esiste.
  */
-export const DEFAULT_RESA_SINTESI = 0.18;
-export const RESA_MIN = 0.02;
+export const DEFAULT_RESA_SINTESI = 0.04;
+export const RESA_MIN = 0.01;
 export const RESA_MAX = 1;
 /** Nodi con sintesi conclusa necessari prima di fidarsi della resa. */
 export const RESA_MIN_SAMPLES = 3;
+
+/**
+ * V42 — La resa dipende dal TIPO di fonte. Il tuo metodo, dichiarato:
+ * 300 slide + 1000 pagine di libro diventano 30-40 pagine tue. Slide e
+ * libro raccontano gli stessi argomenti, quindi le rese sono basse e si
+ * sommano: 1000 × 0,02 + 300 × 0,05 = 35 pagine. Con un'unica resa del
+ * 18% la V41 ne proiettava 234 (sei volte tanto) e il piano di studio si
+ * gonfiava di conseguenza. Le dispense del prof sono già un riassunto e
+ * rendono di più. Sono default dichiarati: la resa misurata sui tuoi
+ * argomenti chiusi li sostituisce appena esiste, e le "pagine previste"
+ * scritte sul nodo vincono su qualunque stima.
+ */
+export const DEFAULT_RESA_PER_TIPO = { LIBRO: 0.02, SLIDE: 0.05, APPUNTI_PROF: 0.08, ALTRO: 0.04 };
 
 /**
  * Ritmo di sintesi di fallback, in pagine di FONTE all'ora.
@@ -121,6 +160,18 @@ export const SINTESI_PAGES_MIN = 1;
 export const SINTESI_PAGES_MAX = 120;
 /** Nodi con pagine snellite E tempo di sintesi tracciato. */
 export const SINTESI_MIN_SAMPLES = 3;
+
+/**
+ * V42 — Anche il RITMO dipende dal tipo: 40 slide si snelliscono nel tempo
+ * di 8 pagine di libro. Con una mediana unica tre sessioni di slide
+ * facevano pianificare 400 pagine di libro in 10 ore invece di 50.
+ */
+export const DEFAULT_SINTESI_RITMO_PER_TIPO = { LIBRO: 8, SLIDE: 30, APPUNTI_PROF: 15, ALTRO: 12 };
+
+const TIPI = Object.keys(FONTE_TIPO);
+function tipoValido(t) {
+  return FONTE_TIPO[t] ? t : FONTE_TIPO.ALTRO;
+}
 
 /** Sotto questa soglia di ore residue di studio la materia non merita
  * una "data di chiusura appunti" separata: sintesi e studio coincidono. */
@@ -188,10 +239,18 @@ export function nodeSources(sfida) {
   const fonti = Array.isArray(sfida?.fonti) ? sfida.fonti : [];
   let totali = 0;
   let fatte = 0;
+  // V42 — lo stesso bilancio, diviso per tipo di fonte.
+  const perTipo = {};
   fonti.forEach((f) => {
     const p = toPositiveInt(f?.pagine);
+    const done = clamp(toPositiveInt(f?.pagineFatte), 0, p);
     totali += p;
-    fatte += clamp(toPositiveInt(f?.pagineFatte), 0, p);
+    fatte += done;
+    const t = tipoValido(f?.tipo);
+    if (!perTipo[t]) perTipo[t] = { totali: 0, fatte: 0, residue: 0 };
+    perTipo[t].totali += p;
+    perTipo[t].fatte += done;
+    perTipo[t].residue += Math.max(0, p - done);
   });
   const residue = Math.max(0, totali - fatte);
   return {
@@ -199,6 +258,7 @@ export function nodeSources(sfida) {
     totali,
     fatte,
     residue,
+    perTipo,
     pct: totali > 0 ? Math.round((fatte / totali) * 100) : 0,
     // "Sintesi conclusa" è vero sia per spunta esplicita sia quando non
     // è rimasta una pagina: l'utente non deve ricordarsi di spuntare una
@@ -214,25 +274,61 @@ export function nodeSources(sfida) {
  * `pagine` è il campo V37 (che significava già "pagine dei miei
  * appunti"): viene letto come sinonimo così i dati salvati prima della
  * migrazione non valgono zero nemmeno per un istante.
+ *
+ * V42 — tre correzioni:
+ *  - resa per TIPO di fonte (vedi DEFAULT_RESA_PER_TIPO);
+ *  - pagine di fonte segnate come fatte SENZA pagine di appunti
+ *    dichiarate: gli appunti si stimano dalla resa. Prima valevano zero, e
+ *    snellire metà libro ACCORCIAVA il piano di studio (18h -> 10h);
+ *  - `pagineAppuntiPreviste`: se sai già quante pagine scriverai (il tuo
+ *    formato è 30-40 pagine), quel numero vince su qualunque stima.
+ *
+ * @param {object} sfida
+ * @param {number|object} [resa] resa globale (numero) oppure la
+ *        calibrazione risolta (vedi `resolveSintesiCalibration`).
  */
 export function nodeNotes(sfida, resa = DEFAULT_RESA_SINTESI) {
+  const cal = resa && typeof resa === 'object' ? resa : resolveSintesiCalibration({ resaSintesi: Number(resa) > 0 ? Number(resa) : null });
   const attuali = toPositiveInt(sfida?.pagineAppunti) || toPositiveInt(sfida?.pagine);
+  const previste = toPositiveInt(sfida?.pagineAppuntiPreviste);
   const src = nodeSources(sfida);
-  const resaSicura = clamp(Number(resa) || DEFAULT_RESA_SINTESI, RESA_MIN, RESA_MAX);
-  const daProdurre = src.conclusa ? 0 : Math.round(src.residue * resaSicura);
+  let daProdurre;
+  let proiettate;
+  let stimaAttuali = false;
+  if (previste > 0) {
+    proiettate = src.conclusa ? (attuali > 0 ? attuali : previste) : Math.max(attuali, previste);
+    daProdurre = Math.max(0, proiettate - attuali);
+  } else {
+    let base = attuali;
+    if (base === 0 && src.fatte > 0) {
+      base = Math.round(Object.entries(src.perTipo).reduce((sum, [t, v]) => sum + v.fatte * resaPerTipo(t, cal), 0));
+      stimaAttuali = base > 0;
+    }
+    daProdurre = src.conclusa
+      ? 0
+      : Math.round(Object.entries(src.perTipo).reduce((sum, [t, v]) => sum + v.residue * resaPerTipo(t, cal), 0));
+    proiettate = base + daProdurre;
+  }
   return {
     attuali,
     daProdurre,
-    proiettate: attuali + daProdurre,
+    proiettate,
+    stimaAttuali,
+    previste,
     // Nessuna pagina dichiarata e nessuna fonte: il nodo non sa niente
     // di pagine e deve ricadere sulle ore stimate.
-    dichiarate: attuali > 0 || src.totali > 0
+    dichiarate: attuali > 0 || src.totali > 0 || previste > 0
   };
 }
 
 /* ------------------------------------------------------------------ *
  * MISURA DEI DUE RITMI E DELLA RESA
  * ------------------------------------------------------------------ */
+
+function misura(values, min, max, minSamples, fallback, digits = 100) {
+  if (values.length < minSamples) return { value: fallback, confident: false, sampleSize: values.length };
+  return { value: clamp(Math.round(median(values) * digits) / digits, min, max), confident: true, sampleSize: values.length };
+}
 
 /**
  * Resa di sintesi misurata: mediana di (pagine di appunti prodotte /
@@ -241,9 +337,13 @@ export function nodeNotes(sfida, resa = DEFAULT_RESA_SINTESI) {
  * Solo nodi CONCLUSI: su un nodo a metà il rapporto è sistematicamente
  * falsato dal fatto che le pagine di appunti si scrivono spesso alla
  * fine, dopo aver letto tutto.
+ *
+ * V42 — anche per TIPO di fonte: un nodo le cui fonti sono tutte dello
+ * stesso tipo misura la resa di quel tipo.
  */
 export function computeResaSintesi(materie) {
   const rese = [];
+  const perTipoValori = {};
   (Array.isArray(materie) ? materie : []).forEach((m) => {
     (Array.isArray(m?.sfide) ? m.sfide : []).forEach((s) => {
       if (!s || s.chiusoDaVerbale === true) return;
@@ -251,18 +351,20 @@ export function computeResaSintesi(materie) {
       if (!src.conclusa || src.fatte <= 0) return;
       const appunti = toPositiveInt(s.pagineAppunti) || toPositiveInt(s.pagine);
       if (appunti <= 0) return;
-      rese.push(appunti / src.fatte);
+      const r = appunti / src.fatte;
+      rese.push(r);
+      const tipi = Object.keys(src.perTipo).filter((t) => src.perTipo[t].fatte > 0);
+      if (tipi.length === 1) (perTipoValori[tipi[0]] = perTipoValori[tipi[0]] || []).push(r);
     });
   });
 
-  if (rese.length < RESA_MIN_SAMPLES) {
-    return { resa: DEFAULT_RESA_SINTESI, confident: false, sampleSize: rese.length };
-  }
-  return {
-    resa: clamp(Math.round(median(rese) * 100) / 100, RESA_MIN, RESA_MAX),
-    confident: true,
-    sampleSize: rese.length
-  };
+  const g = misura(rese, RESA_MIN, RESA_MAX, RESA_MIN_SAMPLES, DEFAULT_RESA_SINTESI);
+  const perTipo = {};
+  TIPI.forEach((t) => {
+    const v = misura(perTipoValori[t] || [], RESA_MIN, RESA_MAX, RESA_MIN_SAMPLES, DEFAULT_RESA_PER_TIPO[t]);
+    perTipo[t] = { resa: v.value, confident: v.confident, sampleSize: v.sampleSize };
+  });
+  return { resa: g.value, confident: g.confident, sampleSize: g.sampleSize, perTipo };
 }
 
 /**
@@ -275,63 +377,116 @@ export function computeResaSintesi(materie) {
  * campo "fatte" e tutto ciò che avevi già snellito prima di misurare
  * qualunque cosa. `focusMinutesSintesi` invece parte da zero. Dividere
  * il primo per il secondo significa attribuire mesi di lavoro alla prima
- * mezz'ora tracciata — un libro con 500 pagine già dichiarate e una
- * sessione da 30 minuti darebbe "1020 pagine/ora". Il piano diventerebbe
- * dieci volte troppo ottimista, cioè l'esatto contrario di ciò per cui
- * questa funzione esiste.
+ * mezz'ora tracciata. Le voci FOCUS_SESSION portano invece minuti e
+ * pagine della STESSA sessione, sulla stessa riga: le due grandezze sono
+ * omogenee per costruzione. Mediana, non media: una sessione anomala non
+ * deve spostare la percezione di tutto il resto.
  *
- * Le voci FOCUS_SESSION portano invece minuti e pagine della STESSA
- * sessione, sulla stessa riga: le due grandezze sono omogenee per
- * costruzione. Mediana, non media, per lo stesso motivo del bias: una
- * sessione anomala non deve spostare la percezione di tutto il resto.
+ * V42 — per TIPO: le sessioni che hanno lavorato un solo tipo di fonte
+ * (`pagineFontePerTipo`) misurano il ritmo di quel tipo.
  */
 export function computeSintesiPagesPerHour(starLog) {
   const rates = [];
+  const perTipoValori = {};
   (Array.isArray(starLog) ? starLog : []).forEach((e) => {
     if (!e || e.type !== 'FOCUS_SESSION' || e.workMode !== WORK_MODE.SINTESI) return;
     const minuti = Number(e.minutes);
     const pagine = Number(e.pagineFonte);
     if (!Number.isFinite(minuti) || minuti <= 0) return;
     if (!Number.isFinite(pagine) || pagine <= 0) return;
-    rates.push(pagine / (minuti / 60));
+    const r = pagine / (minuti / 60);
+    rates.push(r);
+    const pt = e.pagineFontePerTipo && typeof e.pagineFontePerTipo === 'object' ? e.pagineFontePerTipo : null;
+    if (pt) {
+      const tipi = Object.keys(pt).filter((t) => FONTE_TIPO[t] && Number(pt[t]) > 0);
+      if (tipi.length === 1) (perTipoValori[tipi[0]] = perTipoValori[tipi[0]] || []).push(r);
+    }
   });
 
-  if (rates.length < SINTESI_MIN_SAMPLES) {
-    return { pagesPerHour: DEFAULT_SINTESI_PAGES_PER_HOUR, confident: false, sampleSize: rates.length };
-  }
-  return {
-    pagesPerHour: clamp(Math.round(median(rates) * 10) / 10, SINTESI_PAGES_MIN, SINTESI_PAGES_MAX),
-    confident: true,
-    sampleSize: rates.length
-  };
+  const g = misura(rates, SINTESI_PAGES_MIN, SINTESI_PAGES_MAX, SINTESI_MIN_SAMPLES, DEFAULT_SINTESI_PAGES_PER_HOUR, 10);
+  const perTipo = {};
+  TIPI.forEach((t) => {
+    const v = misura(perTipoValori[t] || [], SINTESI_PAGES_MIN, SINTESI_PAGES_MAX, SINTESI_MIN_SAMPLES, DEFAULT_SINTESI_RITMO_PER_TIPO[t], 10);
+    perTipo[t] = { pagesPerHour: v.value, confident: v.confident, sampleSize: v.sampleSize };
+  });
+  return { pagesPerHour: g.value, confident: g.confident, sampleSize: g.sampleSize, perTipo };
 }
 
 /* ------------------------------------------------------------------ *
  * IL BILANCIO DI UN NODO
  * ------------------------------------------------------------------ */
 
-function resolve(calibration) {
-  const biasFactor = Number(calibration?.biasFactor);
-  const studioPerOra = Number(calibration?.pagesPerHour);
-  const sintesiPerOra = Number(calibration?.sintesiPagesPerHour);
-  const resa = Number(calibration?.resaSintesi);
+function positiveOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * La calibrazione ridotta a ciò che serve a questo modulo. Accetta sia il
+ * pacchetto completo di utils/calibration.js sia uno parziale (test,
+ * chiamanti storici che passano solo `biasFactor` o `resaSintesi`).
+ */
+export function resolveSintesiCalibration(calibration) {
+  const biasFactor = positiveOrNull(calibration?.biasFactor) || 1;
+  const sintesiGlobale = positiveOrNull(calibration?.sintesiPagesPerHour);
+  const resaGlobale = positiveOrNull(calibration?.resaSintesi);
+  const ritmoTipo = {};
+  const resaTipo = {};
+  TIPI.forEach((t) => {
+    ritmoTipo[t] = positiveOrNull(calibration?.sintesiRitmoPerTipo?.[t]);
+    resaTipo[t] = positiveOrNull(calibration?.resaPerTipo?.[t]);
+  });
   return {
-    biasFactor: Number.isFinite(biasFactor) && biasFactor > 0 ? biasFactor : 1,
+    biasFactor,
     // `null` = non misurato: vedi il caso 3 della metà studio in
     // nodeWorkBreakdown per come viene trattato.
-    studioPerOra: Number.isFinite(studioPerOra) && studioPerOra > 0 ? studioPerOra : null,
-    // La sintesi invece un fallback deve averlo: non esiste una "stima
-    // in ore" alternativa per il lavoro di snellimento, quindi senza un
-    // ritmo di riserva quelle ore sparirebbero del tutto dal piano —
-    // che è esattamente l'errore da cui nasce questa funzione. Il
-    // risultato si marca `stimato`.
-    sintesiPerOra:
-      Number.isFinite(sintesiPerOra) && sintesiPerOra > 0 ? sintesiPerOra : DEFAULT_SINTESI_PAGES_PER_HOUR,
-    sintesiMisurato: Number.isFinite(sintesiPerOra) && sintesiPerOra > 0,
-    resa: Number.isFinite(resa) && resa > 0 ? clamp(resa, RESA_MIN, RESA_MAX) : DEFAULT_RESA_SINTESI,
-    resaMisurata: Number.isFinite(resa) && resa > 0
+    studioPerOra: positiveOrNull(calibration?.pagesPerHour),
+    sintesiPerOra: sintesiGlobale || DEFAULT_SINTESI_PAGES_PER_HOUR,
+    sintesiMisurato: !!sintesiGlobale,
+    resa: resaGlobale ? clamp(resaGlobale, RESA_MIN, RESA_MAX) : DEFAULT_RESA_SINTESI,
+    resaMisurata: !!resaGlobale,
+    ritmoTipo,
+    resaTipo,
+    _risolta: true
   };
 }
+
+function risolta(calibration) {
+  return calibration && calibration._risolta ? calibration : resolveSintesiCalibration(calibration);
+}
+
+/**
+ * Ritmo di sintesi per un tipo di fonte: misurato per quel tipo, oppure il
+ * default del tipo riscalato sul tuo ritmo globale misurato, oppure il
+ * default puro.
+ */
+export function ritmoPerTipo(tipo, calibration) {
+  const cal = risolta(calibration);
+  const t = tipoValido(tipo);
+  if (cal.ritmoTipo[t]) return cal.ritmoTipo[t];
+  const base = DEFAULT_SINTESI_RITMO_PER_TIPO[t];
+  if (cal.sintesiMisurato) return clamp(base * (cal.sintesiPerOra / DEFAULT_SINTESI_PAGES_PER_HOUR), SINTESI_PAGES_MIN, SINTESI_PAGES_MAX);
+  return base;
+}
+
+/** Resa per un tipo di fonte, con la stessa logica del ritmo. */
+export function resaPerTipo(tipo, calibration) {
+  const cal = risolta(calibration);
+  const t = tipoValido(tipo);
+  if (cal.resaTipo[t]) return clamp(cal.resaTipo[t], RESA_MIN, RESA_MAX);
+  const base = DEFAULT_RESA_PER_TIPO[t];
+  if (cal.resaMisurata) return clamp(base * (cal.resa / DEFAULT_RESA_SINTESI), RESA_MIN, RESA_MAX);
+  return base;
+}
+
+/**
+ * V42 — Un argomento aperto non costa mai zero. Chi ha già speso più ore
+ * della stima e non l'ha chiuso ha ancora qualcosa da fare: prima quel
+ * nodo valeva 0 ore, usciva dal piano e la Fine Prevista diventava
+ * "domani" con quattro argomenti ancora aperti.
+ */
+export const RESIDUO_MINIMO_ORE = 0.5;
+export const RESIDUO_MINIMO_QUOTA = 0.25;
 
 /**
  * Il bilancio completo di UN nodo: le due metà del lavoro, quanto ne
@@ -349,29 +504,30 @@ function resolve(calibration) {
  * semplicemente non veniva contato da nessuna parte.
  */
 export function nodeWorkBreakdown(sfida, calibration = null) {
-  const cal = resolve(calibration);
+  const cal = risolta(calibration);
   const src = nodeSources(sfida);
-  const notes = nodeNotes(sfida, cal.resa);
+  const notes = nodeNotes(sfida, cal);
   const completato = sfida?.status === PERSISTED_STATUS.COMPLETED;
 
-  // --- metà SINTESI -------------------------------------------------
-  const oreSintesiTotali = src.totali > 0 ? round2(src.totali / cal.sintesiPerOra) : 0;
-  const oreSintesiResidue = src.residue > 0 && !src.conclusa ? round2(src.residue / cal.sintesiPerOra) : 0;
+  // --- metà SINTESI (V42: per tipo di fonte) -------------------------
+  let oreSintesiTotali = 0;
+  let oreSintesiResidue = 0;
+  Object.entries(src.perTipo).forEach(([t, v]) => {
+    const ritmo = ritmoPerTipo(t, cal);
+    oreSintesiTotali += v.totali / ritmo;
+    if (!src.conclusa) oreSintesiResidue += v.residue / ritmo;
+  });
+  oreSintesiTotali = round2(oreSintesiTotali);
+  oreSintesiResidue = round2(oreSintesiResidue);
 
   // --- metà STUDIO --------------------------------------------------
   //
-  // V39.0 — Tre casi, e il terzo era sbagliato:
+  // Tre casi:
   //  1. ritmo di studio MISURATO e pagine note -> pagine / ritmo;
   //  2. nessuna pagina -> le "Ore previste" dichiarate, corrette dal bias;
-  //  3. pagine note ma ritmo NON ancora misurato. Qui la V38 ricadeva
-  //     sulle ore dichiarate e basta — che però valgono 4 per default e
-  //     non sanno nulla del volume. Un argomento con 160 pagine di
-  //     appunti previste risultava "4h di studio": un piano falso
-  //     proprio all'inizio, quando serve di più. Ora si prende la stima
-  //     più PRUDENTE fra le ore dichiarate e le pagine a un ritmo
-  //     standard (DEFAULT_PAGES_PER_HOUR): si rispetta chi ha dichiarato
-  //     tante ore su un argomento difficile, e non si sottostima chi ha
-  //     davanti un volume grande. Il risultato si marca `studioStimato`.
+  //  3. pagine note ma ritmo NON ancora misurato: la stima più PRUDENTE
+  //     fra le ore dichiarate e le pagine a un ritmo standard
+  //     (DEFAULT_PAGES_PER_HOUR). Il risultato si marca `studioStimato`.
   const oreDichiarate = round2(Math.max(0.5, Number(sfida?.oreStimate) || 0) * cal.biasFactor);
   let oreStudioTotali;
   let studioDaPagine = false;
@@ -389,23 +545,23 @@ export function nodeWorkBreakdown(sfida, calibration = null) {
   }
   const oreStudioResidue = completato ? 0 : oreStudioTotali;
 
-  // Ore di studio GIÀ fatte su questo nodo.
-  //
-  // Va sottratto solo il tempo speso studiando, mai quello speso a
-  // snellire: la sintesi già fatta è contata una volta, in pagine, e
-  // sottrarre anche le sue ore la conterebbe due volte facendo
-  // evaporare dal piano lavoro che esiste ancora. I nodi salvati prima
-  // della separazione non hanno il campo: se dichiarano fonti non si
-  // può sapere come quelle ore siano state spese e non si sottrae
-  // niente (prudente); se non ne dichiarano, il nodo lavora ancora col
-  // modello V37 e tutte le sue ore sono ore di studio.
+  // Ore di studio GIÀ fatte su questo nodo: solo il tempo speso
+  // studiando, mai quello speso a snellire (già contato in pagine) né a
+  // ripassare (V42: `minutiRipasso` vive a parte). I nodi salvati prima
+  // della separazione non hanno il campo: se dichiarano fonti non si può
+  // sapere come quelle ore siano state spese e non si sottrae niente
+  // (prudente); se non ne dichiarano, tutte le loro ore sono di studio.
   const minutiStudio = Number.isFinite(Number(sfida?.focusMinutesStudio))
     ? Math.max(0, Number(sfida.focusMinutesStudio))
     : src.totali > 0
     ? 0
     : Math.max(0, Number(sfida?.focusMinutes) || 0);
   const oreStudioTracciate = round2(minutiStudio / 60);
-  const oreStudioResidueNette = completato ? 0 : Math.max(0, round2(oreStudioResidue - oreStudioTracciate));
+  const residuoMinimo = Math.max(RESIDUO_MINIMO_ORE, round2(oreStudioTotali * RESIDUO_MINIMO_QUOTA));
+  const oreStudioResidueNette = completato
+    ? 0
+    : Math.max(Math.min(oreStudioResidue, residuoMinimo), round2(oreStudioResidue - oreStudioTracciate));
+  const oltreStima = !completato && oreStudioTracciate >= oreStudioResidue;
 
   const oreTotali = round2(oreSintesiTotali + oreStudioTotali);
   const oreResidue = round2(oreSintesiResidue + oreStudioResidueNette);
@@ -423,12 +579,15 @@ export function nodeWorkBreakdown(sfida, calibration = null) {
     fontiFatte: src.fatte,
     fontiResidue: src.residue,
     fontiPct: src.pct,
+    fontiPerTipo: src.perTipo,
     sintesiConclusa: src.conclusa,
     haFonti: src.totali > 0,
     // appunti
     pagineAppunti: notes.attuali,
     pagineAppuntiDaProdurre: notes.daProdurre,
     pagineAppuntiProiettate: notes.proiettate,
+    pagineAppuntiStimate: notes.stimaAttuali,
+    pagineAppuntiPreviste: notes.previste,
     pagineDichiarate: notes.dichiarate,
     // ore
     oreSintesiTotali,
@@ -439,11 +598,12 @@ export function nodeWorkBreakdown(sfida, calibration = null) {
     oreStudioResidueNette,
     oreTotali,
     oreResidue,
+    oltreStima,
     // provenienza dei numeri, per una UI che non finge precisione
     studioDaPagine,
     studioStimato,
-    sintesiStimata: src.totali > 0 && !cal.sintesiMisurato,
-    proiezioneStimata: notes.daProdurre > 0 && !cal.resaMisurata,
+    sintesiStimata: src.totali > 0 && !cal.sintesiMisurato && !Object.keys(src.perTipo).every((t) => cal.ritmoTipo[t]),
+    proiezioneStimata: notes.daProdurre > 0 && !cal.resaMisurata && notes.previste <= 0,
     modo,
     completato
   };
@@ -493,7 +653,7 @@ export const RACCOMANDAZIONE = {
  * da zero in sessione") non c'è scadenza: resta il bilancio delle ore e
  * il consiglio, che è comunque ciò che serve per decidere oggi.
  */
-export function materiaSintesiPlan(materia, calibration = null) {
+export function materiaSintesiPlan(materia, calibration = null, { chiusuraAppunti = undefined } = {}) {
   const vuoto = {
     attiva: false,
     haFonti: false,
@@ -522,7 +682,7 @@ export function materiaSintesiPlan(materia, calibration = null) {
   const sfide = Array.isArray(materia.sfide) ? materia.sfide : [];
   if (sfide.length === 0) return vuoto;
 
-  const cal = resolve(calibration);
+  const cal = risolta(calibration);
   const hoursPerDay = Number(calibration?.hoursPerDay) > 0 ? Number(calibration.hoursPerDay) : HOURS_PER_NODE_DAY;
 
   let fontiTotali = 0;
@@ -578,8 +738,16 @@ export function materiaSintesiPlan(materia, calibration = null) {
   // --- la scadenza interna degli appunti ----------------------------
   const giorniPerStudio =
     oreStudioResidue >= CHIUSURA_MIN_ORE_STUDIO ? Math.max(1, Math.ceil(oreStudioResidue / hoursPerDay)) : 0;
+  // V42 — con il piano globale (utils/studyPlanner.js) la data arriva da
+  // fuori: è l'ultimo giorno utile TENENDO CONTO di tutte le materie che
+  // si contendono le stesse giornate. Tre esami a gennaio con 40 ore di
+  // studio ciascuno chiudono gli appunti a fine dicembre, non ognuno
+  // "dieci giorni prima del suo esame" come se fosse l'unico.
+  const chiusuraGlobale = typeof chiusuraAppunti === 'string' && chiusuraAppunti.length === 10 ? chiusuraAppunti : null;
   const dataChiusuraAppunti =
-    materia.examDate && fontiResidue > 0 ? addDaysToDateOnly(materia.examDate, -giorniPerStudio) : null;
+    fontiResidue > 0
+      ? chiusuraGlobale || (materia.examDate ? addDaysToDateOnly(materia.examDate, -giorniPerStudio) : null)
+      : null;
   const giorniAllaChiusura = dataChiusuraAppunti ? daysUntilDateOnly(dataChiusuraAppunti) : null;
   // V39.0 — "in ritardo" anche quando la scadenza non è ancora passata ma
   // la sintesi che resta NON CI STA nei giorni che mancano: 600 pagine in
@@ -658,8 +826,10 @@ export function materiaSintesiPlan(materia, calibration = null) {
  * nodo. Serve al Tactical Debriefing (che deve preselezionare qualcosa
  * di giusto nel 90% dei casi senza chiedere nulla) e a Mission Control.
  */
-export function suggestedWorkMode(sfida) {
+export function suggestedWorkMode(sfida, { dueReview = false } = {}) {
   if (!sfida) return WORK_MODE.STUDIO;
+  // V42 — su un argomento già completato una sessione è un ripasso.
+  if (dueReview || sfida.status === PERSISTED_STATUS.COMPLETED) return WORK_MODE.RIPASSO;
   const src = nodeSources(sfida);
   if (src.totali > 0 && src.residue > 0 && !src.conclusa) return WORK_MODE.SINTESI;
   return WORK_MODE.STUDIO;
@@ -697,7 +867,7 @@ export function applySintesiProgress(fonti, pagine) {
  * congelerebbe il ritmo sul suo stesso valore di partenza.
  */
 export function suggestPagesForSession(minutes, calibration, mode = WORK_MODE.SINTESI) {
-  const cal = resolve(calibration);
+  const cal = risolta(calibration);
   const ore = Math.max(0, Number(minutes) || 0) / 60;
   if (ore <= 0) return 0;
   const ritmo = mode === WORK_MODE.SINTESI ? cal.sintesiPerOra : cal.studioPerOra;

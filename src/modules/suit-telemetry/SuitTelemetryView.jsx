@@ -4,6 +4,7 @@ import EmptyState from '../../components/EmptyState.jsx';
 import { formatHoursMinutes } from '../../utils/dateUtils.js';
 import { CARD, CARD_ALERT, BTN_PRIMARY, BTN_GHOST, INPUT, LABEL, BADGE } from '../../utils/designSystem.js';
 import { useKarenBrain } from '../../context/KarenBrainContext.jsx';
+import { useArachnoForge } from '../../context/ArachnoForgeContext.jsx';
 import PageHeader from '../../components/PageHeader.jsx';
 import { formatInt } from '../../utils/format.js';
 
@@ -73,11 +74,11 @@ function formatMinutesShort(minutes) {
 
 /** Anello SVG circolare del Readiness Score — stessa grammatica geometrica
  * dell'anello del Tactical Timer in MissionControl.jsx. */
-function ReadinessGauge({ score, band, pending = false }) {
+function ReadinessGauge({ score, band, pending = false, unknown = false }) {
   const meta = READINESS_BAND_META[band] || READINESS_BAND_META.OTTIMALE;
   const radius = 84;
   const circumference = 2 * Math.PI * radius;
-  const safeScore = pending ? 0 : Math.max(0, Math.min(100, Number(score) || 0));
+  const safeScore = pending || unknown ? 0 : Math.max(0, Math.min(100, Number(score) || 0));
   const dashOffset = circumference - (safeScore / 100) * circumference;
 
   return (
@@ -99,10 +100,10 @@ function ReadinessGauge({ score, band, pending = false }) {
       </svg>
       <div className="absolute flex flex-col items-center">
         <p className="text-[11px] text-slate-500">Readiness</p>
-        {pending ? (
+        {pending || unknown ? (
           <>
-            <p className="text-5xl font-bold ds-num leading-none mt-1 text-slate-600">—</p>
-            <p className="mt-1.5 text-xs font-semibold text-slate-500">Da calcolare</p>
+            <p className="text-5xl font-bold ds-num leading-none mt-1 text-slate-600">{unknown ? 'n/d' : '—'}</p>
+            <p className="mt-1.5 text-xs font-semibold text-slate-500">{unknown ? 'Non misurata' : 'Da calcolare'}</p>
           </>
         ) : (
           <>
@@ -267,6 +268,8 @@ export default function SuitTelemetryView() {
     briefing,
     readinessScore,
     readinessBand,
+    readinessKnown,
+    briefingFallback,
     dataCompleteness,
     loading,
     scanning,
@@ -276,6 +279,10 @@ export default function SuitTelemetryView() {
     saveSubjectiveLog,
     refresh
   } = useKarenBrain();
+  // V42 — ogni rigenerazione porta il piano di oggi (vedi planContext.js).
+  const { derived } = useArachnoForge();
+  const planContextRef = useRef(null);
+  planContextRef.current = derived.karenPlanContext;
 
   const bandMeta = READINESS_BAND_META[readinessBand] || READINESS_BAND_META.OTTIMALE;
   const hasBiometricsToday = !!biometrics;
@@ -317,7 +324,8 @@ export default function SuitTelemetryView() {
   }, []);
 
   const [saveFeedback, setSaveFeedback] = useState(null); // null | 'success' | 'error'
-  const [scanFeedback, setScanFeedback] = useState(null); // null | 'success' | 'cached' | 'error'
+  const [scanFeedback, setScanFeedback] = useState(null); // null | 'success' | 'cached' | 'fallback' | 'error'
+  const [scanMessage, setScanMessage] = useState(null);
   const saveFeedbackTimeoutRef = useRef(null);
   const scanFeedbackTimeoutRef = useRef(null);
 
@@ -345,16 +353,22 @@ export default function SuitTelemetryView() {
 
   const handleScan = useCallback(
     async (force) => {
-      const { data, error: scanError } = await triggerOracleScan({ force });
+      const { data, error: scanError } = await triggerOracleScan({ force, planContext: planContextRef.current });
+      setScanMessage(scanError || data?.warning || null);
       if (scanError) {
         setScanFeedback('error');
+      } else if (data?.fallback) {
+        setScanFeedback('fallback');
       } else if (data?.cached) {
         setScanFeedback('cached');
       } else {
         setScanFeedback('success');
       }
       if (scanFeedbackTimeoutRef.current) clearTimeout(scanFeedbackTimeoutRef.current);
-      scanFeedbackTimeoutRef.current = setTimeout(() => setScanFeedback(null), 3200);
+      scanFeedbackTimeoutRef.current = setTimeout(() => {
+        setScanFeedback(null);
+        setScanMessage(null);
+      }, scanError ? 6000 : 3200);
     },
     [triggerOracleScan]
   );
@@ -433,24 +447,27 @@ export default function SuitTelemetryView() {
             {/* V41 — senza la diagnostica di oggi il punteggio non esiste
                 ancora: prima si vedeva il valore di default (100, "ottimale")
                 come se fosse misurato. */}
-            <ReadinessGauge score={readinessScore} band={readinessBand} pending={!briefing} />
+            <ReadinessGauge score={readinessScore} band={readinessBand} pending={!briefing} unknown={!!briefing && !readinessKnown} />
             <div className="min-w-0 flex-1 space-y-3 text-center sm:text-left">
               <div className="flex items-center gap-2 flex-wrap justify-center sm:justify-start">
-                {briefing && (
+                {briefing && readinessKnown && (
                   <span className={bandMeta.badgeClass}>
                     <Icon name={bandMeta.icon} className="w-3 h-3" />
                     {bandMeta.label}
                   </span>
                 )}
+                {briefing && !readinessKnown && <span className={BADGE.slate}>Pochi dati: non misurata</span>}
                 <span className={BADGE.slate} title="Quota delle voci del punteggio disponibili oggi">
                   Dati disponibili {Math.round(dataCompleteness * 100)}%
                 </span>
                 {!briefing && <span className={BADGE.amber}>Diagnostica di oggi da fare</span>}
               </div>
               <p className="text-[15px] text-slate-200 leading-relaxed">
-                {briefing
-                  ? bandMeta.summary
-                  : 'Il Readiness di oggi si calcola con la diagnostica di Karen, dai dati dell’iPhone e dal log di come ti senti.'}
+                {!briefing
+                  ? 'Il Readiness di oggi si calcola con la diagnostica di Karen, dai dati dell’iPhone e dal log di come ti senti.'
+                  : readinessKnown
+                    ? bandMeta.summary
+                    : 'Con meno di due voci del punteggio il Readiness non è una misura: Karen resta neutra (nessuna riduzione del carico, il timer resta il tuo). Compila il Quick Log e rigenera la diagnostica.'}
               </p>
             </div>
           </div>
@@ -500,6 +517,15 @@ export default function SuitTelemetryView() {
 
           {briefing ? (
             <div className="space-y-3">
+              {briefingFallback && (
+                <div className="rounded-xl border border-accent/30 bg-accent/[0.06] px-3.5 py-2.5 flex items-start gap-2">
+                  <Icon name="alertTriangle" className="w-4 h-4 text-accent shrink-0 mt-0.5" />
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    <span className="font-semibold text-accent">Piano di ripiego.</span> Karen non era raggiungibile: direttive calcolate dall’app sul piano di
+                    oggi. Riprova fra qualche minuto per il briefing completo.
+                  </p>
+                </div>
+              )}
               <div className="ds-well p-3.5">
                 <p className="ds-eyebrow mb-1.5">Briefing</p>
                 <p className="text-[15px] text-slate-200 leading-relaxed">“{briefing.briefing_text}”</p>
@@ -511,13 +537,15 @@ export default function SuitTelemetryView() {
                 </div>
               )}
               <div className="flex items-center gap-3 flex-wrap">
-                <button type="button" onClick={() => handleScan(true)} disabled={scanning} className={`${BTN_GHOST} ds-btn-sm`}>
+                {/* Su un piano di ripiego "Rigenera" è un nuovo tentativo (non consuma le rigenerazioni). */}
+                <button type="button" onClick={() => handleScan(!briefingFallback)} disabled={scanning} className={`${BTN_GHOST} ds-btn-sm`}>
                   <Icon name="refresh" className={`w-3.5 h-3.5 ${scanning ? 'animate-spin' : ''}`} />
-                  {scanning ? 'Rigenerazione…' : 'Rigenera'}
+                  {scanning ? 'Rigenerazione…' : briefingFallback ? 'Riprova con Karen' : 'Rigenera'}
                 </button>
                 {scanFeedback === 'success' && <span className="text-xs text-secondary">Briefing rigenerato.</span>}
                 {scanFeedback === 'cached' && <span className="text-xs text-slate-500">Già presente per oggi: nessuna nuova chiamata all'IA.</span>}
-                {scanFeedback === 'error' && <span className="text-xs text-primary">Rigenerazione non riuscita. Riprova.</span>}
+                {scanFeedback === 'fallback' && <span className="text-xs text-accent">{scanMessage || 'Karen non ha risposto: piano di ripiego.'}</span>}
+                {scanFeedback === 'error' && <span className="text-xs text-primary">{scanMessage || 'Rigenerazione non riuscita. Riprova.'}</span>}
               </div>
             </div>
           ) : (
@@ -529,7 +557,7 @@ export default function SuitTelemetryView() {
                 <Icon name={scanning ? 'radar' : 'satellite'} className={`w-4 h-4 ${scanning ? 'animate-spin' : ''}`} />
                 {scanning ? 'Diagnostica in corso…' : 'Avvia la diagnostica'}
               </button>
-              {scanFeedback === 'error' && <p className="text-xs text-primary">Diagnostica non riuscita. Riprova.</p>}
+              {scanFeedback === 'error' && <p className="text-xs text-primary">{scanMessage || 'Diagnostica non riuscita. Riprova.'}</p>}
             </div>
           )}
         </section>

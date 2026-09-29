@@ -1,34 +1,34 @@
 /**
- * ArachnoForge — src/state/reducer.js (V37.0)
+ * ArachnoForge — src/state/reducer.js (V42)
  * =====================================================================
- * IL REDUCER, ESTRATTO.
+ * IL REDUCER: una funzione PURA, con input e output espliciti, testabile
+ * senza montare React. Nessun side-effect qui dentro: niente rete, niente
+ * LocalStorage, niente audio, niente Math.random() — i tiri casuali
+ * (Daily Web-Sling) avvengono nell'action creator e arrivano al reducer
+ * come risultato già deciso.
  *
- * Fino alla V36 queste ~1.000 righe vivevano dentro
- * `context/ArachnoForgeContext.jsx`, in mezzo a Provider, effetti e
- * azioni: un file da 1.919 righe in cui la macchina a stati — cioè il
- * posto dove nascono XP, streak, Stamina, Tech Token, scudi e quest —
- * era la parte più difficile da trovare e l'unica senza un solo test.
- *
- * Spostarla qui non cambia una riga di comportamento (è un taglio
- * meccanico, verificato dai test in reducer.test.js) ma la rende quello
- * che è sempre stata: una funzione PURA, con input e output espliciti,
- * testabile senza montare React.
- *
- * Regola che continua a valere: nessun side-effect qui dentro. Niente
- * rete, niente LocalStorage, niente audio, niente Math.random() — i tiri
- * casuali (Daily Web-Sling) avvengono nell'action creator e arrivano al
- * reducer come risultato già deciso.
+ * V42 — "XP solo per lavoro vero" e "piano unico":
+ *  - il completamento di un argomento paga UNA volta (e riaprirlo ritira
+ *    l'XP), i ripassi pagano solo se dovuti e una volta al giorno;
+ *  - la serie conta i giorni di studio veri (≥ 25 minuti) con i riposi
+ *    settimanali (utils/streakEngine.js);
+ *  - la Stamina segue la tua capacità e le pause la ricaricano;
+ *  - appelli, simulazioni, esercizi, interrogazioni, piano di domani e
+ *    bilancio della giornata sono azioni di prima classe.
  */
-import { createDefaultState } from '../data/defaultSchema.js';
+import { createDefaultState, normalizeTomorrowPlan, MAX_DAY_CLOSURES, sanitizeSettings } from '../data/defaultSchema.js';
 import {
   computeFocusXp,
   computeFocusStaminaCost,
+  computeBreakStaminaRestore,
   computeStreakMultiplier,
   applyXpDelta,
   applyXpDeltaWithTokens,
   computeTotalBankedXp,
   computeBloodPactPenalty,
   computeReviewXp,
+  computeNodeCompletionXp,
+  NODE_COMPLETION_MIN_MINUTES,
   LAST_STAND_SACRIFICE_RATE,
   FATIGUE_STAMINA_THRESHOLD,
   DIFFICULTY,
@@ -39,18 +39,28 @@ import {
 } from '../utils/xpEngine.js';
 import { NODE_STATUS, PERSISTED_STATUS, deriveNodeStatus, orphanChildren, createSfida, markFirstCompletion } from '../utils/skillTree.js';
 import { getSkillDef, canUnlockSkill, computeSkillEffects } from '../data/techTree.js';
-import { scheduleNextReview, REVIEW_RATING } from '../utils/spiderSense.js';
+import {
+  scheduleNextReview,
+  REVIEW_RATING,
+  REVIEW_RATING_META,
+  reviewLoadByDate,
+  rescheduleMateriaReviews,
+  reviewedToday
+} from '../utils/spiderSense.js';
 import { isGoblinProtocol } from '../utils/materiaMeta.js';
-import { WORK_MODE, applySintesiProgress, nodeSources, nodeNotes } from '../utils/sintesiEngine.js';
+import { WORK_MODE, isWorkMode, applySintesiProgress, nodeSources, nodeNotes } from '../utils/sintesiEngine.js';
 import { createSemestre, createLezione, normalizeCampus, esitoKey, ESITO_LEZIONE } from '../utils/campusEngine.js';
 import { computeWeightedAverage, isGradedMateria } from '../utils/gpaEngine.js';
-import { nowIso, getDateKey, isSameDay, daysBetween, currentMonthKey } from '../utils/dateUtils.js';
+import { nowIso, getDateKey, daysBetween, currentMonthKey, todayDateOnlyKey } from '../utils/dateUtils.js';
 import { applyQuestEvent, QUEST_EVENTS } from '../utils/dailyPatrol.js';
-import { isMaxCarnageActive, bumpCriticalActionStreak, deactivateMaxCarnage } from '../utils/maxCarnage.js';
+import { isMaxCarnageActive, bumpCriticalActionStreak, deactivateMaxCarnage, activateMaxCarnage } from '../utils/maxCarnage.js';
 import { canClaimWebSling, isHighTier } from '../utils/webSling.js';
 import { computePrimaryTarget } from '../utils/karenSuggestor.js';
 import { computeCalibration } from '../utils/calibration.js';
 import { computeDailyPlan } from '../utils/quotaEngine.js';
+import { syncAppelli, planningExamDate, withPlanningDates, nextAppelloAfter, ESITO_APPELLO } from '../utils/appelli.js';
+import { advanceStreak, restAllowance, STREAK_DAY_MIN_MINUTES } from '../utils/streakEngine.js';
+import { findDuplicateMateria, isUngradedMateria } from '../data/vanvitelliCourseMap.js';
 
 /** Tetto del Combat Log: 50 voci, tagliate in testa. È il motivo per
  * cui nessun edge-trigger può basarsi sulla LUNGHEZZA dell'array — vedi
@@ -59,6 +69,20 @@ export const MAX_COMBAT_LOG = 50;
 /** Minuti di Focus in un giorno oltre i quali l'app segnala un rischio
  * di burnout invece di continuare a incoraggiare. */
 export const BURNOUT_MINUTES_THRESHOLD = 300;
+/** V42 — Tetti giornalieri dei Daily Protocols (benessere, non farming). */
+export const PROTOCOL_STAMINA_DAY_CAP = 40;
+export const PROTOCOL_XP_DAY_CAP = 60;
+export const PROTOCOL_MAX_XP = 30;
+export const PROTOCOL_MAX_STAMINA = 40;
+/** V42 — Una simulazione d'esame paga XP solo da 20 minuti in su. */
+export const SIMULATION_MIN_MINUTES = 20;
+/** V42 — Azione critica da Overdrive: solo su una sessione vera. */
+const CRITICAL_OVERDRIVE_MIN_MINUTES = 20;
+const MAX_RIPASSI_LOG = 12;
+const MAX_ESERCIZI_LOG = 30;
+const MAX_QUIZ_LOG = 12;
+const MAX_SINTESI_MANUALE = 20;
+const MAX_SIMULAZIONI = 20;
 
 export function pushLog(combatLog, message, tag = 'INFO') {
   const entry = { id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, message, tag, timestamp: nowIso() };
@@ -87,42 +111,37 @@ function updateMateriaSfide(state, materiaId, updater) {
   };
 }
 
-/**
- * V27.0 — Pillar 3 (Maximum Carnage Mode): punto unico da cui le tre
- * "azioni critiche" (Nodo Hard completato, Focus in Overdrive, vittoria
- * Boss Fight) alimentano lo streak verso lo sblocco. Isolato in un
- * helper condiviso per evitare di duplicare tre volte la stessa logica
- * di attivazione/log nei rispettivi case del reducer.
- */
-function applyCriticalAction(profile, combatLog, isCriticalAction) {
-  if (!isCriticalAction) return { profile, combatLog };
-  const { justActivated, ...patch } = bumpCriticalActionStreak(profile, 1);
-  let nextProfile = { ...profile, ...patch };
-  if (!justActivated) return { profile: nextProfile, combatLog };
-  // V31.3 — Suit Unlock Gating: il primo trigger di Maximum Carnage sblocca
-  // per sempre la Symbiote Suit (flag one-way, mai revocato — coerente col
-  // resto dei traguardi "a vita" dell'app, es. Tech Tokens/Trofei).
-  let nextLog = combatLog;
-  if (!nextProfile.symbioteSuitUnlocked) {
-    nextProfile = { ...nextProfile, symbioteSuitUnlocked: true };
-    nextLog = pushLog(nextLog, 'Symbiote Suit sbloccata — disponibile in Karen OS Settings.', 'CARNAGE');
-  }
-  nextLog = pushLog(
-    nextLog,
-    'MAXIMUM CARNAGE MODE ATTIVATA — Il simbionte prende il sopravvento per le prossime 2 ore. XP raddoppiati, Stamina illimitata.',
-    'CARNAGE'
-  );
-  return { profile: nextProfile, combatLog: nextLog };
+function appendCapped(list, entry, max) {
+  return [...(Array.isArray(list) ? list : []), entry].slice(-max);
+}
+
+/** Minuti di studio tracciati su un argomento (studio + esercizi + sintesi). */
+function trackedMinutes(s) {
+  return (Number(s?.focusMinutesStudio) || 0) + (Number(s?.minutiEsercizi) || 0) + (Number(s?.focusMinutesSintesi) || 0);
 }
 
 /**
- * V35.0 — Ribilanciamento Economico: Tech Token legati anche alla
- * COSTANZA (giorni di streak consecutivi), non solo al level-up grezzo
- * (vedi applyXpDeltaWithTokens in xpEngine.js). Bonus one-shot LIFETIME
- * per soglia (mai retroattivo, mai ripetuto — stesso idioma "flag
- * one-way" già usato per Symbiote Suit in applyCriticalAction): un
- * Cadetto che interrompe e ricomincia la streak non può "grindare" lo
- * stesso traguardo più volte.
+ * V42 — Maximum Carnage: le azioni critiche di OGGI caricano il simbionte;
+ * alla quinta si guadagna una carica da attivare quando vuoi.
+ */
+function applyCriticalAction(profile, combatLog, isCriticalAction) {
+  if (!isCriticalAction) return { profile, combatLog };
+  const { chargeEarned, justActivated: _ignored, ...patch } = bumpCriticalActionStreak(profile, 1);
+  const nextProfile = { ...profile, ...patch };
+  if (!chargeEarned) return { profile: nextProfile, combatLog };
+  return {
+    profile: nextProfile,
+    combatLog: pushLog(
+      combatLog,
+      'Il simbionte è carico: Maximum Carnage pronta. Attivala quando vuoi (2 ore, XP ×2), fra le 6 e le 23.',
+      'CARNAGE'
+    )
+  };
+}
+
+/**
+ * V35.0 — Tech Token legati anche alla COSTANZA: bonus one-shot LIFETIME
+ * per soglia della serie (mai ripetuto).
  */
 export const STREAK_TOKEN_MILESTONES = [7, 14, 30, 60, 100];
 
@@ -135,111 +154,58 @@ function applyStreakTokenMilestone(profile, combatLog) {
     techTokens: (Number.isFinite(profile.techTokens) ? profile.techTokens : 0) + 1,
     streakTokenMilestonesAwarded: [...awarded, nextMilestone]
   };
-  const nextLog = pushLog(
-    combatLog,
-    `Costanza Premiata — ${nextMilestone} giorni di streak consecutivi: +1 Tech Token bonus.`,
-    'SYSTEM'
-  );
+  const nextLog = pushLog(combatLog, `Costanza Premiata — serie di ${nextMilestone} giorni di studio: +1 Tech Token bonus.`, 'SYSTEM');
   return { profile: nextProfile, combatLog: nextLog };
 }
 
-// V35.5 — Streak Shield ("Scudo Streak", stile Duolingo): cap
-// sull'accumulo — stesso valore del limite Duolingo storico (max 2 scudi
-// contemporaneamente), scelto apposta per restare un salvagente per le
-// emergenze occasionali, mai un "jolly" illimitato che azzera il valore
-// della streak stessa.
+// V35.5 — Streak Shield: massimo 2 in cassa, 1 a mese.
 export const STREAK_SHIELD_CAP = 2;
 
-/**
- * Assegna automaticamente 1 Streak Shield ad ogni nuovo mese solare
- * (edge-trigger su `currentMonthKey()`, stesso idioma di
- * `applyStreakTokenMilestone` — un flag "ultima chiave già premiata", mai
- * un doppio assegno nello stesso mese). Nessuna attivazione manuale:
- * protegge fin dal primo giorno del mese, silenziosamente, finché non
- * raggiunge il cap.
- */
 function grantMonthlyStreakShield(profile, combatLog) {
   const monthKey = currentMonthKey();
   if (profile.lastStreakShieldGrantMonthKey === monthKey) return { profile, combatLog };
   const current = Number.isFinite(profile.streakShields) ? profile.streakShields : 0;
   if (current >= STREAK_SHIELD_CAP) {
-    // Il mese è comunque "consumato" ai fini del trigger, anche se il
-    // cassetto è già pieno: evita di ricontrollare (e ri-loggare "pieno")
-    // ad ogni singola attività per il resto del mese.
     return { profile: { ...profile, lastStreakShieldGrantMonthKey: monthKey }, combatLog };
   }
-  const nextProfile = {
-    ...profile,
-    streakShields: current + 1,
-    lastStreakShieldGrantMonthKey: monthKey
-  };
+  const nextProfile = { ...profile, streakShields: current + 1, lastStreakShieldGrantMonthKey: monthKey };
   const nextLog = pushLog(
     combatLog,
-    `K.A.R.E.N. — Nuovo Streak Shield assegnato (${current + 1}/${STREAK_SHIELD_CAP}): copre automaticamente un giorno saltato senza spezzare la streak.`,
+    `K.A.R.E.N. — Nuovo Streak Shield (${current + 1}/${STREAK_SHIELD_CAP}): copre un giorno saltato oltre i riposi della settimana.`,
     'SYSTEM'
   );
   return { profile: nextProfile, combatLog: nextLog };
 }
 
-function updateStreakOnActivity(profile, combatLog) {
-  const now = nowIso();
-  if (isSameDay(profile.lastActiveDate, now)) return { profile, combatLog };
-  const gap = daysBetween(profile.lastActiveDate, now);
-
-  let bumped;
+/**
+ * V42 — La serie avanza quando OGGI diventa un giorno di studio valido
+ * (≥ 25 minuti di Focus). Prima avanzava con qualunque attività, anche un
+ * click su "completato".
+ */
+function applyStudyDayStreak(profile, combatLog, { todayMinutes, settings }) {
+  if (!(todayMinutes >= STREAK_DAY_MIN_MINUTES)) return { profile, combatLog };
+  const { patch, event, shieldsUsed, missed } = advanceStreak(profile, getDateKey(), { restDaysPerWeek: restAllowance(settings) });
+  if (event === 'GIA') return { profile, combatLog };
+  let nextProfile = { ...profile, ...patch };
   let nextLog = combatLog;
-
-  // V37.0 — due casi che prima finivano entrambi nel ramo "reset a 1":
-  //  - `gap` nullo: data precedente illeggibile (import manuale, campo
-  //    corrotto). Non è colpa del Cadetto: si riallinea la data senza
-  //    toccare la streak.
-  //  - `gap` negativo: l'orologio del dispositivo è andato indietro (fuso
-  //    cambiato, ora legale, data sistemata a mano). Azzerare una streak
-  //    di 40 giorni per un orologio sbagliato sarebbe la peggior
-  //    punizione possibile, e non recuperabile.
-  if (gap == null || gap <= 0) {
-    bumped = { ...profile, lastActiveDate: now };
-  } else if (gap === 1) {
-    bumped = { ...profile, streak: profile.streak + 1, lastActiveDate: now };
-  } else {
-    // V35.5 — Streak Shield: `gap - 1` giorni di calendario sono stati
-    // saltati del tutto. Se il Cadetto ha abbastanza scudi in cassa per
-    // coprirli TUTTI, la streak resta esattamente dov'era (mai un
-    // incremento indebito, mai un reset) e gli scudi usati vengono
-    // scalati; altrimenti (copertura solo parziale o nulla) si applica il
-    // normale reset a 1 — nessuna protezione "a metà" che complicherebbe
-    // silenziosamente la lettura del numero mostrato in Sidebar.
-    const skippedDays = Math.max(0, gap - 1);
-    const availableShields = Number.isFinite(profile.streakShields) ? profile.streakShields : 0;
-    if (skippedDays > 0 && availableShields >= skippedDays) {
-      bumped = {
-        ...profile,
-        streakShields: availableShields - skippedDays,
-        streakShieldsUsedTotal: (Number.isFinite(profile.streakShieldsUsedTotal) ? profile.streakShieldsUsedTotal : 0) + skippedDays,
-        lastActiveDate: now
-      };
-      nextLog = pushLog(
-        nextLog,
-        `K.A.R.E.N. — Streak Shield attivato: ${skippedDays} giorno/i saltato/i coperto/i, streak preservata a ${profile.streak}.`,
-        'SYSTEM'
-      );
-    } else {
-      bumped = { ...profile, streak: 1, lastActiveDate: now };
-    }
+  if (event === 'SCUDO') {
+    nextLog = pushLog(nextLog, `K.A.R.E.N. — Streak Shield usato (${shieldsUsed}): serie salva a ${nextProfile.streak} giorni.`, 'SYSTEM');
+  } else if (event === 'RIPOSO' && missed > 0) {
+    nextLog = pushLog(nextLog, `Serie di studio: ${nextProfile.streak} giorni (${missed} di riposo, dentro la settimana).`, 'SYSTEM');
+  } else if (event === 'RESET' && (Number(profile.streak) || 0) > 1) {
+    nextLog = pushLog(nextLog, `Serie ripartita da oggi: la precedente era di ${profile.streak} giorni.`, 'SYSTEM');
   }
-
-  const shieldGrant = grantMonthlyStreakShield(bumped, nextLog);
-  return applyStreakTokenMilestone(shieldGrant.profile, shieldGrant.combatLog);
+  const shieldGrant = grantMonthlyStreakShield(nextProfile, nextLog);
+  const milestone = applyStreakTokenMilestone(shieldGrant.profile, shieldGrant.combatLog);
+  nextProfile = milestone.profile;
+  nextLog = milestone.combatLog;
+  return { profile: nextProfile, combatLog: nextLog };
 }
 
 /**
- * Daily Patrol Engine — Auto-Tracking (V23.0, Modulo 2): punto unico da
- * cui OGNI azione rilevante del reducer aggiorna le missioni del giorno.
- * `applyQuestEvent` (pura, in dailyPatrol.js) incrementa `currentProgress`
- * sulle quest il cui `type` corrisponde all'evento; qui si rileva la
- * transizione false -> true e si assegna l'XP + il log in modo atomico,
- * nella STESSA azione che ha generato il progresso (mai un secondo giro
- * di dispatch, mai un "claim" separato: è auto-tracking vero).
+ * Daily Patrol Engine — Auto-Tracking: ogni azione rilevante aggiorna le
+ * missioni del giorno nella STESSA transizione. V42 — l'XP delle missioni
+ * passa dal calcolo dei Tech Token come ogni altro XP.
  */
 function applyQuestProgressAndProfile(state, profile, combatLog, eventType, payload) {
   const dailyPatrols = state.dailyPatrols;
@@ -252,12 +218,54 @@ function applyQuestProgressAndProfile(state, profile, combatLog, eventType, payl
   let nextCombatLog = combatLog;
   after.forEach((q, i) => {
     if (q.isCompleted && !before[i].isCompleted) {
-      nextProfile = applyXpDelta(nextProfile, q.xpReward);
+      nextProfile = applyXpDeltaWithTokens(nextProfile, q.xpReward);
       nextProfile = { ...nextProfile, dailyPatrolsCompleted: (nextProfile.dailyPatrolsCompleted || 0) + 1 };
       nextCombatLog = pushLog(nextCombatLog, `Daily Patrol completata: ${q.title}. +${q.xpReward} XP.`, 'SUCCESS');
     }
   });
   return { dailyPatrols: { ...dailyPatrols, quests: after }, profile: nextProfile, combatLog: nextCombatLog };
+}
+
+/** Minuti di Focus registrati OGGI (aggregato giornaliero dello Star Log). */
+function todayFocusMinutes(starLog, key = getDateKey()) {
+  return (Array.isArray(starLog) ? starLog : [])
+    .filter((e) => e && e.type === 'FOCUS_MINUTES' && e.dateKey === key)
+    .reduce((sum, e) => sum + (Number(e.minutes) || 0), 0);
+}
+
+/**
+ * V42 — Il ripasso di un argomento, in un punto solo (bottoni, quiz,
+ * interrogazione orale, blocco di Ripasso col timer).
+ * @returns {null|{sfide:Array, xp:number, wasDue:boolean, alreadyToday:boolean, schedule:object}}
+ */
+function reviewOutcome(materia, target, rating, { source = 'MANUALE' } = {}) {
+  if (!materia || !target || target.status !== PERSISTED_STATUS.COMPLETED) return null;
+  const safeRating = REVIEW_RATING[rating] ? rating : REVIEW_RATING.MEDIUM;
+  const oggi = todayDateOnlyKey();
+  const wasDue = deriveNodeStatus(target, materia.sfide) === NODE_STATUS.NEEDS_REVIEW;
+  const alreadyToday = reviewedToday(target, oggi);
+  const examDate = planningExamDate(materia, oggi);
+  const schedule = scheduleNextReview(target, safeRating, examDate, { todayKey: oggi, load: reviewLoadByDate(materia.sfide, target.id) });
+  const failed = safeRating === REVIEW_RATING.AGAIN || safeRating === REVIEW_RATING.HARD;
+  const sfide = materia.sfide.map((s) =>
+    s.id === target.id
+      ? {
+          ...s,
+          nextReviewDate: schedule.nextReviewDate,
+          srsStability: schedule.srsStability,
+          srsDifficulty: schedule.srsDifficulty,
+          srsIntervalDays: schedule.srsIntervalDays,
+          srsLapses: schedule.srsLapses,
+          lastReviewedAt: schedule.lastReviewedAt,
+          lastReviewRating: safeRating,
+          reviewCount: (s.reviewCount || 0) + 1,
+          ripassi: appendCapped(s.ripassi, { at: schedule.lastReviewedAt, voto: safeRating, r: schedule.retrievabilityAtReview, fonte: source }, MAX_RIPASSI_LOG),
+          tentativiSuccessi: (s.tentativiSuccessi || 0) + (failed ? 0 : 1),
+          tentativiFalliti: (s.tentativiFalliti || 0) + (failed ? 1 : 0)
+        }
+      : s
+  );
+  return { sfide, wasDue, alreadyToday, schedule, rating: safeRating };
 }
 
 export function reducer(state, action) {
@@ -271,30 +279,53 @@ export function reducer(state, action) {
     case 'UPDATE_SETTINGS':
       return {
         ...state,
-        settings: { ...state.settings, ...action.payload },
+        // V42 — le impostazioni del piano passano sempre dalla stessa
+        // pulizia del caricamento (giorni di riposo, capacità, orari).
+        settings: sanitizeSettings({ ...state.settings, ...action.payload }),
         combatLog: pushLog(state.combatLog, 'Parametri di sistema aggiornati.', 'CONFIG')
       };
 
+    // V42 — niente doppioni (stesso corso del piano o stesso nome), date
+    // valide, appelli e formato d'esame fin dalla creazione.
     case 'ADD_MATERIA': {
-      const materia = {
+      const p = action.payload || {};
+      const nome = typeof p.nome === 'string' ? p.nome.trim().slice(0, 80) : '';
+      if (!nome) return state;
+      const doppione = findDuplicateMateria(state.materie, { courseId: p.courseId || null, nome });
+      if (doppione) {
+        return { ...state, combatLog: pushLog(state.combatLog, `"${doppione.nome}" è già nel Web-Matrix: nessuna materia aggiunta.`, 'HUB') };
+      }
+      const cfu = Number.isFinite(Number(p.cfu)) && Number(p.cfu) > 0 ? Math.min(30, Number(p.cfu)) : 6;
+      const bozza = {
         id: `materia_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        nome: action.payload.nome,
-        examDate: action.payload.examDate,
-        cfu: action.payload.cfu,
+        nome,
+        examDate: typeof p.examDate === 'string' && p.examDate ? p.examDate.slice(0, 10) : null,
+        oralDate: typeof p.oralDate === 'string' && p.oralDate ? p.oralDate.slice(0, 10) : null,
+        appelli: Array.isArray(p.appelli) ? p.appelli : [],
+        appelloTargetId: typeof p.appelloTargetId === 'string' ? p.appelloTargetId : null,
+        cfu,
         createdAt: nowIso(),
         sfide: [],
         // V17.0 — Web-Path Planner (Vanvitelli Exam Engine).
-        courseId: action.payload.courseId || null,
-        perceivedDifficulty: Number.isFinite(action.payload.perceivedDifficulty) ? action.payload.perceivedDifficulty : 3,
-        urgency: Number.isFinite(action.payload.urgency) ? action.payload.urgency : 3,
-        examPassed: !!action.payload.examPassed,
-        // V37.0 — data reale di verbalizzazione, usata dallo storico
-        // della media e dalla stima del tempo di laurea.
-        examPassedDate: action.payload.examPassedDate || null,
-        // V18.0 — Multiverse Simulator (GPA Engine).
-        voto: Number.isFinite(action.payload.voto) && action.payload.voto >= 18 && action.payload.voto <= 30 ? action.payload.voto : null,
-        lode: !!action.payload.lode
+        courseId: p.courseId || null,
+        perceivedDifficulty: Number.isFinite(p.perceivedDifficulty) ? p.perceivedDifficulty : 3,
+        urgency: Number.isFinite(p.urgency) ? p.urgency : 3,
+        examPassed: !!p.examPassed,
+        // V37.0 — data reale di verbalizzazione.
+        examPassedDate: p.examPassedDate || null,
+        voto: null,
+        lode: false,
+        simulazioni: [],
+        focusMinutesLibere: 0,
+        ricostruzione: null,
+        tipoPiano: p.tipoPiano || (p.courseId ? 'PIANO' : 'SCELTA')
       };
+      bozza.formatoEsame = p.formatoEsame || (isUngradedMateria(bozza) ? 'IDONEITA' : 'SCRITTO_ORALE');
+      if (!isUngradedMateria(bozza) && Number.isFinite(p.voto) && p.voto >= 18 && p.voto <= 30) {
+        bozza.voto = p.voto;
+        bozza.lode = !!p.lode && p.voto === 30;
+      }
+      const materia = syncAppelli(bozza);
       return {
         ...state,
         materie: [...state.materie, materia],
@@ -302,25 +333,60 @@ export function reducer(state, action) {
       };
     }
 
+
     case 'UPDATE_MATERIA': {
       const prevMateria = findMateria(state, action.payload.id);
+      if (!prevMateria) return state;
       const wasGraded = isGradedMateria(prevMateria);
-      const wasPassed = !!prevMateria?.examPassed;
+      const wasPassed = !!prevMateria.examPassed;
+      const patch = action.payload.patch || {};
 
-      let nextMaterie = state.materie.map((m) => (m.id === action.payload.id ? { ...m, ...action.payload.patch } : m));
-      let updatedMateria = nextMaterie.find((m) => m.id === action.payload.id);
+      let merged = { ...prevMateria, ...patch };
+      // V42 — chi cambia solo `examDate` (form rapido, import) sposta la
+      // prima prova dell'appello obiettivo, invece di creare un doppione.
+      if ('examDate' in patch && !('appelli' in patch)) {
+        const data = typeof patch.examDate === 'string' && patch.examDate ? patch.examDate.slice(0, 10) : null;
+        const lista = Array.isArray(prevMateria.appelli) ? prevMateria.appelli : [];
+        const target = lista.find((a) => a.id === prevMateria.appelloTargetId) || null;
+        if (!data) {
+          merged = { ...merged, appelli: target ? lista.filter((a) => a.id !== target.id) : lista, appelloTargetId: null, examDate: null, oralDate: null };
+        } else if (target) {
+          merged = {
+            ...merged,
+            appelli: lista.map((a) =>
+              a.id === target.id
+                ? a.scritto || !a.orale
+                  ? { ...a, scritto: data, orale: a.orale && a.orale < data ? null : a.orale, esito: null, esitoAt: null }
+                  : { ...a, orale: data, esito: null, esitoAt: null }
+                : a
+            )
+          };
+        } else {
+          merged = { ...merged, appelli: [...lista, { id: `app_${Date.now()}`, scritto: data, orale: null, nota: '', esito: null, esitoAt: null }], appelloTargetId: null };
+        }
+      }
+      merged = syncAppelli(merged);
+      // V42 — un'idoneità non ha voto: niente 18 "per errore" in media.
+      if (isUngradedMateria(merged)) merged = { ...merged, voto: null, lode: false };
+      if (merged.lode && merged.voto !== 30) merged = { ...merged, lode: false };
+      // V42 — cambia la data della prossima prova: i ripassi si
+      // ripianificano sulle nuove finestre finali (prima restavano dopo
+      // l'esame anticipato).
+      const oggi = todayDateOnlyKey();
+      const prevPlan = planningExamDate(prevMateria, oggi);
+      const nextPlan = planningExamDate(merged, oggi);
+      if (prevPlan !== nextPlan && !merged.examPassed) {
+        merged = { ...merged, sfide: rescheduleMateriaReviews(merged.sfide, nextPlan, oggi) };
+      }
+
+      let nextMaterie = state.materie.map((m) => (m.id === merged.id ? merged : m));
+      let updatedMateria = merged;
       let extraLog = null;
 
-      // V37.0 — "Esame superato" chiude davvero la Materia.
-      // Prima il flag era puramente contabile: i nodi restavano aperti,
-      // quindi la materia continuava a pesare sul monte ore del piano e
-      // i suoi nodi tornavano a scadere nello Spider-Sense per ripassi
-      // di un esame già verbalizzato. Alla transizione NON superato ->
-      // superato tutti i nodi passano a COMPLETED e la loro curva SRS
-      // viene chiusa (`nextReviewDate: null`), così spariscono da
-      // entrambi i motori. È una transizione a senso unico: togliere la
-      // spunta NON riapre i nodi, perché non sapremmo quali erano
-      // davvero incompleti — restano completati e si riaprono a mano.
+      // V37.0 — "Esame superato" chiude davvero la Materia: tutti i nodi
+      // passano a COMPLETED e la loro curva di ripasso viene chiusa, così
+      // spariscono dal piano e dallo Spider-Sense. Transizione a senso
+      // unico: togliere la spunta NON riapre i nodi.
       if (!wasPassed && updatedMateria?.examPassed) {
         const sfide = Array.isArray(updatedMateria.sfide) ? updatedMateria.sfide : [];
         const daChiudere = sfide.filter((s) => s.status !== PERSISTED_STATUS.COMPLETED).length;
@@ -334,14 +400,17 @@ export function reducer(state, action) {
                 completionTimestamp: s.completionTimestamp || closedAt,
                 nextReviewDate: null,
                 srsIntervalDays: 0,
-                // V39.0 — chiuso dal verbale, non studiato in app: la
-                // calibrazione (fattore, ritmo, resa) NON deve usarlo come
-                // campione, o poche ore tracciate su un nodo mai studiato
-                // farebbero crollare ogni stima futura.
-                chiusoDaVerbale: true
+                // V39.0 — chiuso dal verbale, non studiato in app: fuori
+                // dalla calibrazione. V42 — e nessun XP di completamento.
+                chiusoDaVerbale: true,
+                xpAwarded: 0
               }
         );
-        updatedMateria = { ...updatedMateria, sfide: closedSfide };
+        // L'appello obiettivo è quello superato.
+        const appelli = (updatedMateria.appelli || []).map((a) =>
+          a.id === updatedMateria.appelloTargetId ? { ...a, esito: ESITO_APPELLO.SUPERATO, esitoAt: closedAt } : a
+        );
+        updatedMateria = { ...updatedMateria, sfide: closedSfide, appelli };
         nextMaterie = nextMaterie.map((m) => (m.id === updatedMateria.id ? updatedMateria : m));
         extraLog =
           daChiudere > 0
@@ -350,20 +419,8 @@ export function reducer(state, action) {
       }
 
       const isNowGraded = isGradedMateria(updatedMateria);
-      // V32.0 — Storico Media Ponderata: registra un punto SOLO alla
-      // transizione "non ancora votata -> votata" (mai su ogni singola
-      // modifica della Materia, altrimenti correggere un voto già
-      // registrato o toccare altri campi gonfierebbe lo storico con punti
-      // ridondanti/fuorvianti).
-      // V37.0 — il punto dello storico porta la data REALE di
-      // verbalizzazione (`examPassedDate`), non il giorno in cui hai
-      // spuntato la casella. Registrare un esame di due mesi fa
-      // schiacciava tutti i punti sulla data di inserimento e rendeva il
-      // grafico della media una scalinata senza alcun rapporto col
-      // tempo. Il fallback a oggi resta per chi non indica la data.
-      // Le voci vengono riordinate: inserendo esami vecchi in ritardo,
-      // un ledger puramente append-only produrrebbe una linea che torna
-      // indietro nel tempo.
+      // V32.0 — Storico Media Ponderata: un punto SOLO alla transizione
+      // "non ancora votata -> votata", con la data reale di verbalizzazione.
       let gradeHistory = state.gradeHistory;
       if (!wasGraded && isNowGraded) {
         const snapshot = computeWeightedAverage(nextMaterie);
@@ -383,6 +440,140 @@ export function reducer(state, action) {
         combatLog: extraLog ? pushLog(state.combatLog, extraLog, 'HUB') : state.combatLog
       };
     }
+
+    // V42 — ESITO DI UN APPELLO, dopo la data: superato (registra voto e
+    // chiude la materia), non superato (l'obiettivo passa al prossimo
+    // appello in calendario) o "aspetto l'esito" (la domanda si ripresenta
+    // fra qualche giorno).
+    case 'SET_APPELLO_ESITO': {
+      const { materiaId, appelloId, esito, voto, lode, examPassedDate } = action.payload || {};
+      const m = findMateria(state, materiaId);
+      if (!m || !ESITO_APPELLO[esito]) return state;
+      const lista = Array.isArray(m.appelli) ? m.appelli : [];
+      const app = lista.find((a) => a.id === appelloId) || lista.find((a) => a.id === m.appelloTargetId) || null;
+      if (!app) return state;
+      const at = nowIso();
+      const appelli = lista.map((a) => (a.id === app.id ? { ...a, esito, esitoAt: at } : a));
+      if (esito === ESITO_APPELLO.SUPERATO) {
+        const patch = { appelli, examPassed: true, examPassedDate: examPassedDate || app.orale || app.scritto || getDateKey() };
+        if (Number.isFinite(voto)) {
+          patch.voto = voto;
+          patch.lode = !!lode && voto === 30;
+        }
+        return reducer(state, { type: 'UPDATE_MATERIA', payload: { id: m.id, patch } });
+      }
+      if (esito === ESITO_APPELLO.NON_SUPERATO) {
+        const prossimo = nextAppelloAfter({ ...m, appelli }, app);
+        const next = reducer(state, { type: 'UPDATE_MATERIA', payload: { id: m.id, patch: { appelli, appelloTargetId: prossimo ? prossimo.id : null } } });
+        return {
+          ...next,
+          combatLog: pushLog(
+            next.combatLog,
+            prossimo
+              ? `${m.nome}: appello non superato. Obiettivo spostato al prossimo appello (${prossimo.scritto || prossimo.orale}). Il piano si ricalcola da qui.`
+              : `${m.nome}: appello non superato. Nessun altro appello in calendario: aggiungine uno per riattivare il piano.`,
+            'HUB'
+          )
+        };
+      }
+      const next = reducer(state, { type: 'UPDATE_MATERIA', payload: { id: m.id, patch: { appelli } } });
+      return { ...next, combatLog: pushLog(next.combatLog, `${m.nome}: in attesa dell'esito dell'appello. Te lo richiedo fra qualche giorno.`, 'HUB') };
+    }
+
+    // V42 — sostituzione integrale di una materia (Annulla di "Ricomincia da zero").
+    case 'REPLACE_MATERIA': {
+      const materia = action.payload?.materia;
+      if (!materia || !materia.id || !state.materie.some((m) => m.id === materia.id)) return state;
+      return { ...state, materie: state.materie.map((m) => (m.id === materia.id ? materia : m)) };
+    }
+
+    // V42 — "RICOMINCIO DA ZERO": per le materie che ricostruisci in
+    // sessione. Gli argomenti tornano da studiare (la memoria stimata resta:
+    // quello che sai non sparisce), lo studio già tracciato non conta più
+    // nel residuo e, se lo chiedi, anche gli appunti ripartono da capo.
+    case 'RICOSTRUISCI_MATERIA': {
+      const { materiaId, rifaiAppunti = false } = action.payload || {};
+      const m = findMateria(state, materiaId);
+      if (!m || m.examPassed) return state;
+      const sfide = (m.sfide || []).map((s) => {
+        const base = {
+          ...s,
+          status: PERSISTED_STATUS.PENDING,
+          completionTimestamp: null,
+          nextReviewDate: null,
+          lastReviewRating: null,
+          srsIntervalDays: 0,
+          storicoMinutiStudio: (Number(s.storicoMinutiStudio) || 0) + (Number(s.focusMinutesStudio) || 0),
+          focusMinutesStudio: 0,
+          // Il completamento era già stato premiato: rifarlo non paga di nuovo.
+          ...(s.status === PERSISTED_STATUS.COMPLETED ? { xpLegacyPaid: true } : {})
+        };
+        if (!rifaiAppunti) return base;
+        return {
+          ...base,
+          storicoPagineAppunti: (Number(s.storicoPagineAppunti) || 0) + (Number(s.pagineAppunti) || 0),
+          pagineAppunti: 0,
+          appuntiCompleti: false,
+          fonti: (Array.isArray(s.fonti) ? s.fonti : []).map((f) => ({ ...f, pagineFatte: 0 }))
+        };
+      });
+      return {
+        ...state,
+        materie: state.materie.map((x) => (x.id === m.id ? { ...m, sfide, ricostruzione: { dal: getDateKey() } } : x)),
+        combatLog: pushLog(
+          state.combatLog,
+          `${m.nome}: ricostruzione da zero avviata${rifaiAppunti ? ' (appunti compresi)' : ''}. Il piano conta di nuovo tutto il lavoro.`,
+          'HUB'
+        )
+      };
+    }
+
+    // V42 — una simulazione d'esame registrata (a mano o da Boss Fight).
+    case 'ADD_SIMULAZIONE': {
+      const { materiaId, simulazione } = action.payload || {};
+      const m = findMateria(state, materiaId);
+      const pct = Number(simulazione?.punteggioPct);
+      if (!m || !Number.isFinite(pct)) return state;
+      const record = {
+        id: `sim_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        at: typeof simulazione.at === 'string' ? simulazione.at : nowIso(),
+        tipo: simulazione.tipo === 'ORALE' ? 'ORALE' : 'SCRITTO',
+        punteggioPct: Math.max(0, Math.min(100, Math.round(pct))),
+        voto: Number.isFinite(Number(simulazione.voto)) ? Math.max(0, Math.min(31, Number(simulazione.voto))) : null,
+        durataMin: Math.max(0, Math.min(480, Math.round(Number(simulazione.durataMin) || 0))),
+        nota: typeof simulazione.nota === 'string' ? simulazione.nota.slice(0, 200) : '',
+        fonte: simulazione.fonte === 'BOSS_FIGHT' ? 'BOSS_FIGHT' : 'MANUALE'
+      };
+      const materie = state.materie.map((x) => (x.id === m.id ? { ...x, simulazioni: appendCapped(x.simulazioni, record, MAX_SIMULAZIONI) } : x));
+      return {
+        ...state,
+        materie,
+        combatLog: pushLog(
+          state.combatLog,
+          `Simulazione ${record.tipo === 'ORALE' ? 'orale' : 'scritta'} di ${m.nome}: ${record.punteggioPct}%${record.voto != null ? ` (≈ ${record.voto}/30)` : ''}.`,
+          'HUB'
+        )
+      };
+    }
+
+    // V42 — esercizi svolti fuori dal timer (su carta, a lezione).
+    case 'LOG_ESERCIZI': {
+      const { materiaId, sfidaId, fatti, corretti } = action.payload || {};
+      const m = findMateria(state, materiaId);
+      const f = Math.max(0, Math.min(100, Math.round(Number(fatti) || 0)));
+      if (!m || f <= 0) return state;
+      const c = Math.max(0, Math.min(f, Math.round(Number(corretti) || 0)));
+      const target = (m.sfide || []).find((s) => s.id === sfidaId) || null;
+      if (!target) return state;
+      const entry = { at: getDateKey(), fatti: f, corretti: c, minuti: 0 };
+      const next = updateMateriaSfide(state, m.id, (sfide) =>
+        sfide.map((s) => (s.id === target.id ? { ...s, esercizi: appendCapped(s.esercizi, entry, MAX_ESERCIZI_LOG) } : s))
+      );
+      const combatLog = pushLog(next.combatLog, `Esercizi su "${target.nome}": ${c}/${f} corretti.`, 'HUB');
+      const quest = applyQuestProgressAndProfile(next, next.profile, combatLog, QUEST_EVENTS.EXERCISES_LOGGED, { count: f });
+      return { ...next, profile: quest.profile, combatLog: quest.combatLog, dailyPatrols: quest.dailyPatrols };
+    }
+
 
     case 'DELETE_MATERIA': {
       const materia = findMateria(state, action.payload.id);
@@ -591,13 +782,22 @@ export function reducer(state, action) {
           if (s.id !== action.payload.sfidaId) return s;
           const next = { ...s, ...action.payload.patch };
           // V40.0 — la sintesi fatta FUORI dall'app e registrata a mano
-          // sul nodo (più pagine snellite, sintesi chiusa, più pagine dei
-          // tuoi appunti) lascia un segno temporale: la coda delle
-          // lezioni da sistemare lo usa per capire che la lezione di oggi
-          // è già stata sistemata, anche senza una sessione col timer.
-          return sintesiAvanzata(s, next) ? { ...next, sintesiAggiornataAt: nowIso() } : next;
+          // lascia un segno temporale per la coda delle lezioni.
+          // V42 — e QUANTO lavoro: pagine di fonte e di appunti in più.
+          // La coda lezioni lo converte in minuti al tuo ritmo, invece di
+          // considerare sistemata ogni lezione precedente per una pagina.
+          if (!sintesiAvanzata(s, next)) return next;
+          const pagine = Math.max(0, nodeSources(next).fatte - nodeSources(s).fatte);
+          const appunti = Math.max(0, nodeNotes(next).attuali - nodeNotes(s).attuali);
+          const at = nowIso();
+          return {
+            ...next,
+            sintesiAggiornataAt: at,
+            sintesiManuale: pagine + appunti > 0 ? appendCapped(s.sintesiManuale, { at, pagine, appunti }, MAX_SINTESI_MANUALE) : s.sintesiManuale || []
+          };
         })
       );
+
 
     case 'DELETE_SFIDA': {
       const materia = findMateria(state, action.payload.materiaId);
@@ -681,92 +881,88 @@ export function reducer(state, action) {
       const target = materia.sfide.find((s) => s.id === sfidaId);
       if (!target) return state;
       const displayStatus = deriveNodeStatus(target, materia.sfide);
-      // V35.5 — "In Corso": un nodo con Focus già investito (IN_PROGRESS)
-      // deve restare completabile esattamente come uno AVAILABLE — SENZA
-      // questa aggiunta un nodo su cui l'utente ha già studiato non
-      // potrebbe più essere chiuso (regressione severa: la Blindatura
-      // anti-doppio-click bloccherebbe anche il primo click legittimo).
-      if (displayStatus !== NODE_STATUS.AVAILABLE && displayStatus !== NODE_STATUS.IN_PROGRESS) return state; // Blindatura: doppio click non ridà XP.
-      const isFatigued = state.profile.stamina < FATIGUE_STAMINA_THRESHOLD;
+      // V35.5 — un nodo "In corso" resta completabile come uno disponibile;
+      // qualunque altro stato (bloccato, già completato) è un no-op.
+      if (displayStatus !== NODE_STATUS.AVAILABLE && displayStatus !== NODE_STATUS.IN_PROGRESS) return state;
       const isHard = target.difficulty === DIFFICULTY.HARD;
       const skillEffects = computeSkillEffects(state.profile.unlockedSkills);
       const isMaxCarnage = isMaxCarnageActive(state.profile);
+      const tracked = trackedMinutes(target);
+      const conStudio = tracked >= NODE_COMPLETION_MIN_MINUTES;
 
-      const xpGain = computeFocusXp({
-        focusMinutes: state.settings.focusTime,
-        cfu: materia.cfu,
-        isOverdrive: false,
-        isFatigued,
-        difficulty: target.difficulty,
-        streak: state.profile.streak,
-        xpBonusPct: skillEffects.xpBonusPct,
-        streakThresholdBonus: skillEffects.streakThresholdBonus,
-        isMaxCarnage
+      // V42 — il completamento è un TRAGUARDO pagato una volta sola: se il
+      // nodo era già stato premiato (completato prima della V42, poi
+      // riaperto), rifarlo non paga di nuovo.
+      const xpGain =
+        target.xpLegacyPaid === true
+          ? 0
+          : computeNodeCompletionXp({
+              difficulty: target.difficulty,
+              cfu: materia.cfu,
+              trackedMinutes: tracked,
+              streak: state.profile.streak,
+              streakThresholdBonus: skillEffects.streakThresholdBonus,
+              xpBonusPct: skillEffects.xpBonusPct,
+              isMaxCarnage
+            });
+
+      const now = nowIso();
+      const oggi = todayDateOnlyKey();
+      const completato = markFirstCompletion(target, planningExamDate(materia, oggi), {
+        load: reviewLoadByDate(materia.sfide, sfidaId),
+        todayKey: oggi,
+        nowIso: now
       });
+      const { xpLegacyPaid: _legacy, ...pulito } = completato;
+      const completedSfide = materia.sfide.map((s) => (s.id === sfidaId ? { ...pulito, xpAwarded: xpGain, xpAwardedAt: now } : s));
+      const firstReviewDate = pulito.nextReviewDate;
 
-      // V36.0 — la data d'esame entra nella schedulazione: nessun primo
-      // ripasso oltre l'esame (vedi capIntervalToExam in spiderSense.js).
-      const completedSfide = materia.sfide.map((s) => (s.id === sfidaId ? markFirstCompletion(s, materia.examDate) : s));
-      const firstReviewDate = completedSfide.find((s) => s.id === sfidaId)?.nextReviewDate;
-
-      let profile = applyXpDeltaWithTokens(state.profile, xpGain);
-      profile = { ...profile, hardNodesCompleted: profile.hardNodesCompleted + (isHard ? 1 : 0) };
+      let profile = xpGain > 0 ? applyXpDeltaWithTokens(state.profile, xpGain) : state.profile;
+      profile = { ...profile, hardNodesCompleted: (profile.hardNodesCompleted || 0) + (isHard && conStudio ? 1 : 0) };
 
       let combatLog = pushLog(
         state.combatLog,
-        `Nodo "${target.nome}" completato in ${materia.nome}. +${xpGain} XP${isMaxCarnage ? ' [MAXIMUM CARNAGE x2]' : ''}. Primo Spider-Sense il ${firstReviewDate}.`,
+        `Argomento "${target.nome}" completato in ${materia.nome}. +${xpGain} XP${isMaxCarnage && xpGain > 0 ? ' [MAXIMUM CARNAGE x2]' : ''}${
+          conStudio ? '' : ' (nessuno studio tracciato: premio minimo)'
+        }. Primo ripasso il ${firstReviewDate}.`,
         'SUCCESS'
       );
 
-      {
-        const streakUpdate = updateStreakOnActivity(profile, combatLog);
-        profile = streakUpdate.profile;
-        combatLog = streakUpdate.combatLog;
-      }
-
-      // Maximum Carnage Mode (V27.0, Pillar 3): un Nodo Hard completato è
-      // un'"azione critica" — alimenta lo streak verso il prossimo sblocco.
-      const carnageUpdate = applyCriticalAction(profile, combatLog, isHard);
+      // Maximum Carnage: un argomento Hard STUDIATO è un'azione critica.
+      const carnageUpdate = applyCriticalAction(profile, combatLog, isHard && conStudio);
       profile = carnageUpdate.profile;
       combatLog = carnageUpdate.combatLog;
 
-      // Daily Patrol Engine: "Node Hunter" e "Boss Hunter" si aggiornano
-      // da soli. Un nodo è un "Boss" se ha almeno un figlio diretto agganciato.
+      // Daily Patrol: "Node Hunter" e "Boss Hunter" (nodo con figli agganciati).
       const isBossNode = materia.sfide.some((s) => s.parentId === sfidaId);
-      const questUpdate = applyQuestProgressAndProfile(state, profile, combatLog, QUEST_EVENTS.NODE_COMPLETED, { isBoss: isBossNode });
-      profile = questUpdate.profile;
-      combatLog = questUpdate.combatLog;
+      const questUpdate = applyQuestProgressAndProfile(state, profile, combatLog, QUEST_EVENTS.NODE_COMPLETED, { isBoss: isBossNode, tracked: conStudio });
 
       return {
         ...updateMateriaSfide(state, materiaId, () => completedSfide),
-        profile,
-        combatLog,
+        profile: questUpdate.profile,
+        combatLog: questUpdate.combatLog,
         dailyPatrols: questUpdate.dailyPatrols
       };
     }
 
-    // V34.4 — "Riporta a da completare": undo di un COMPLETE_SFIDA per
-    // errori di click. Riporta il nodo a PERSISTED_STATUS.PENDING (torna
-    // così AVAILABLE/LOCKED secondo deriveNodeStatus, in base ai suoi
-    // figli) SENZA ritirare XP/Tech Token/streak/Daily Patrol già
-    // assegnati: replicare esattamente l'inverso di applyXpDeltaWithTokens,
-    // updateStreakOnActivity, applyCriticalAction e
-    // applyQuestProgressAndProfile richiederebbe di ricostruire uno stato
-    // "prima" che l'app non persiste — un tentativo approssimato
-    // rischierebbe di produrre XP negativa, streak incoerenti o Daily
-    // Patrol/Trofei "ritirati" a metà. Coerente col resto dell'app (i
-    // ripassi via Spider-Sense funzionano allo stesso modo: registrano
-    // nuovi eventi, non riscrivono la storia).
+
+    // V34.4 — "Riporta a da completare": undo di un COMPLETE_SFIDA.
+    // V42 — ritira l'XP del completamento (tracciato su `xpAwarded`): prima
+    // completa/riapri a ripetizione regalava migliaia di XP. La memoria
+    // stimata (stabilità, difficoltà) resta: quanto sai non cambia perché
+    // hai annullato un click. Per i nodi completati prima della V42
+    // l'importo non è noto: niente ritiro, e un nuovo completamento non paga.
     case 'REOPEN_SFIDA': {
       const { materiaId, sfidaId } = action.payload;
       const materia = findMateria(state, materiaId);
       if (!materia) return state;
       const target = materia.sfide.find((s) => s.id === sfidaId);
       if (!target) return state;
-      // Blindatura: si può riaprire solo un nodo davvero COMPLETED
-      // (persistito) — no-op su un nodo già PENDING.
       if (target.status !== PERSISTED_STATUS.COMPLETED) return state;
 
+      const pagato = Number(target.xpAwarded);
+      const revoca = target.xpAwarded != null && Number.isFinite(pagato) && pagato > 0 ? pagato : 0;
+      const legacy = target.xpAwarded == null && target.chiusoDaVerbale !== true;
       const reopenedSfide = materia.sfide.map((s) =>
         s.id === sfidaId
           ? {
@@ -775,140 +971,136 @@ export function reducer(state, action) {
               completionTimestamp: null,
               nextReviewDate: null,
               lastReviewRating: null,
-              // V36.0 — la curva SRS riparte da zero (nessun ripasso
-              // pendente su un nodo riaperto) ma l'ease appreso resta:
-              // quanto QUEL contenuto ti è facile non cambia perché hai
-              // annullato un click.
-              srsIntervalDays: 0
+              srsIntervalDays: 0,
+              xpAwarded: 0,
+              xpAwardedAt: null,
+              ...(legacy || s.xpLegacyPaid ? { xpLegacyPaid: true } : {})
             }
           : s
       );
 
+      let profile = state.profile;
+      if (revoca > 0) profile = applyXpDelta(profile, -revoca);
+      const eraHardStudiato = target.difficulty === DIFFICULTY.HARD && revoca > 0 && trackedMinutes(target) >= NODE_COMPLETION_MIN_MINUTES;
+      if (eraHardStudiato) profile = { ...profile, hardNodesCompleted: Math.max(0, (profile.hardNodesCompleted || 0) - 1) };
+
       return {
         ...updateMateriaSfide(state, materiaId, () => reopenedSfide),
+        profile,
         combatLog: pushLog(
           state.combatLog,
-          `Nodo "${target.nome}" riportato a "da completare" in ${materia.nome}. XP e progressi già assegnati non vengono ritirati.`,
+          revoca > 0
+            ? `Argomento "${target.nome}" riportato a "da completare" in ${materia.nome}: −${revoca} XP del completamento.`
+            : `Argomento "${target.nome}" riportato a "da completare" in ${materia.nome}.`,
           'HUB'
         )
       };
     }
 
+
+    // V42 — ripasso con quattro giudizi e memoria FSRS (utils/spiderSense.js).
+    // XP e missione solo se il ripasso era DOVUTO e non già fatto oggi: il
+    // ripasso anticipato resta possibile (aggiorna la memoria), ma non si
+    // "farma". Prima 20 ripassi dello stesso nodo davano 225 XP.
     case 'REVIEW_SFIDA': {
-      const { materiaId, sfidaId, rating } = action.payload;
+      const { materiaId, sfidaId, rating, source } = action.payload;
       const materia = findMateria(state, materiaId);
       if (!materia) return state;
       const target = materia.sfide.find((s) => s.id === sfidaId);
-      if (!target) return state;
-      // Un ripasso è valido su QUALSIASI nodo già completato almeno una
-      // volta (status persistito COMPLETED), sia che lo Spider-Sense lo
-      // segnali come scaduto (NEEDS_REVIEW) sia in caso di Forza Ripasso
-      // Manuale anticipato: l'utente può sempre rinforzare la memoria.
-      if (target.status !== PERSISTED_STATUS.COMPLETED) return state; // Blindatura: nessun ripasso su nodo non completato.
-      const wasDue = deriveNodeStatus(target, materia.sfide) === NODE_STATUS.NEEDS_REVIEW;
-
-      // V36.0 — SM-2 lite: l'intervallo non è più una costante per
-      // giudizio (4/2/1 giorni a vita) ma cresce moltiplicativamente
-      // sull'ease personale del nodo, e non supera mai la data d'esame.
-      const { nextReviewDate, srsEase, srsIntervalDays } = scheduleNextReview(target, rating, materia.examDate);
-      // V31.3 — Bounty Board (Friction Analytics): un giudizio "Difficile"
-      // conta come tentativo fallito (segnale di attrito reale sul nodo),
-      // "Facile"/"Medio" come tentativo riuscito — alimenta isBountyTarget
-      // in utils/friction.js senza toccarne la formula.
-      const reviewedSfide = materia.sfide.map((s) =>
-        s.id === sfidaId
-          ? {
-              ...s,
-              nextReviewDate,
-              srsEase,
-              srsIntervalDays,
-              lastReviewRating: rating,
-              reviewCount: (s.reviewCount || 0) + 1,
-              tentativiSuccessi: (s.tentativiSuccessi || 0) + (rating === REVIEW_RATING.HARD ? 0 : 1),
-              tentativiFalliti: (s.tentativiFalliti || 0) + (rating === REVIEW_RATING.HARD ? 1 : 0)
-            }
-          : s
-      );
+      const out = reviewOutcome(materia, target, rating, { source: source || 'MANUALE' });
+      if (!out) return state;
 
       const skillEffects = computeSkillEffects(state.profile.unlockedSkills);
-      const reviewXp = computeReviewXp(skillEffects.reviewXpBonus);
+      const pagato = out.wasDue && !out.alreadyToday;
+      const reviewXp = pagato ? computeReviewXp(skillEffects.reviewXpBonus) : 0;
+      let profile = reviewXp > 0 ? applyXpDeltaWithTokens(state.profile, reviewXp) : state.profile;
+      if (pagato) profile = { ...profile, reviewsCompleted: (profile.reviewsCompleted || 0) + 1 };
 
-      let profile = applyXpDeltaWithTokens(state.profile, reviewXp);
-      profile = { ...profile, reviewsCompleted: (profile.reviewsCompleted || 0) + 1 };
-
+      const meta = REVIEW_RATING_META[out.rating] || REVIEW_RATING_META.MEDIUM;
+      const giorni = Math.max(1, Math.round((Date.parse(out.schedule.nextReviewDate) - Date.parse(todayDateOnlyKey())) / 86400000));
       let combatLog = pushLog(
         state.combatLog,
-        wasDue
-          ? `Spider-Sense placato su "${target.nome}": prossimo ripasso fra ${srsIntervalDays}gg (${nextReviewDate}). +${reviewXp} XP.`
-          : `Ripasso Manuale forzato su "${target.nome}": prossimo ripasso fra ${srsIntervalDays}gg (${nextReviewDate}). +${reviewXp} XP.`,
+        pagato
+          ? `Ripasso di "${target.nome}" (${meta.label}): prossimo fra ${giorni} gg (${out.schedule.nextReviewDate}). +${reviewXp} XP.`
+          : `Ripasso ${out.alreadyToday ? 'ripetuto oggi' : 'anticipato'} di "${target.nome}" (${meta.label}): memoria aggiornata, nessun XP. Prossimo il ${out.schedule.nextReviewDate}.`,
         'SUCCESS'
       );
 
-      {
-        const streakUpdate = updateStreakOnActivity(profile, combatLog);
-        profile = streakUpdate.profile;
-        combatLog = streakUpdate.combatLog;
-      }
-
-      // Daily Patrol Engine: "Web-Shooter" (Ripassi Azzerati) si aggiorna da solo.
-      const questUpdate = applyQuestProgressAndProfile(state, profile, combatLog, QUEST_EVENTS.REVIEW_DONE, {});
+      const questUpdate = applyQuestProgressAndProfile(state, profile, combatLog, QUEST_EVENTS.REVIEW_DONE, { wasDue: pagato });
       profile = questUpdate.profile;
       combatLog = questUpdate.combatLog;
 
       return {
-        ...updateMateriaSfide(state, materiaId, () => reviewedSfide),
+        ...updateMateriaSfide(state, materiaId, () => out.sfide),
         profile,
         combatLog,
         dailyPatrols: questUpdate.dailyPatrols
       };
     }
 
+    // V42 — l'esito di un'interrogazione (quiz di K.A.R.E.N. o orale
+    // simulato): Sapevo / Parziale / Non lo sapevo, domanda per domanda.
+    // Diventa un ripasso vero del nodo (se completato) e alimenta il
+    // pilastro "Pratica" della prontezza.
+    case 'QUIZ_RESULT': {
+      const { materiaId, sfidaId, sapevo = 0, parziale = 0, no = 0, modo = 'QUIZ' } = action.payload || {};
+      const materia = findMateria(state, materiaId);
+      if (!materia) return state;
+      const target = materia.sfide.find((s) => s.id === sfidaId);
+      if (!target) return state;
+      const sv = Math.max(0, Math.round(Number(sapevo) || 0));
+      const pz = Math.max(0, Math.round(Number(parziale) || 0));
+      const nn = Math.max(0, Math.round(Number(no) || 0));
+      const tot = sv + pz + nn;
+      if (tot === 0) return state;
+      const esito = { at: nowIso(), sapevo: sv, parziale: pz, no: nn, modo: modo === 'ORALE' ? 'ORALE' : 'QUIZ' };
+      let next = updateMateriaSfide(state, materiaId, (sfide) =>
+        sfide.map((s) => (s.id === sfidaId ? { ...s, quizEsiti: appendCapped(s.quizEsiti, esito, MAX_QUIZ_LOG) } : s))
+      );
+      const ratio = (sv + pz * 0.5) / tot;
+      if (target.status === PERSISTED_STATUS.COMPLETED) {
+        const rating = ratio >= 0.85 ? REVIEW_RATING.EASY : ratio >= 0.6 ? REVIEW_RATING.MEDIUM : ratio >= 0.35 ? REVIEW_RATING.HARD : REVIEW_RATING.AGAIN;
+        next = reducer(next, { type: 'REVIEW_SFIDA', payload: { materiaId, sfidaId, rating, source: esito.modo } });
+      } else {
+        next = {
+          ...next,
+          combatLog: pushLog(next.combatLog, `Interrogazione su "${target.nome}": ${sv} sapute, ${pz} a metà, ${nn} da rivedere.`, 'HUB')
+        };
+      }
+      return next;
+    }
+
+
     case 'FOCUS_COMPLETED': {
-      const { wasOverdrive, materiaId, sfidaId } = action.payload;
-      // Tactical Timer: il payload porta il totale minuti accumulati per
-      // l'intera catena Focus + eventuali Overdrive concatenati (vedi
-      // endFocusSession in useFocusTimer), non il singolo blocco fisso.
-      const focusMinutes = action.payload.focusMinutes != null ? action.payload.focusMinutes : state.settings.focusTime;
-      // Tactical Debriefing: esito qualitativo scelto nel modal
-      // post-sessione ("Sessione Completata. Valuta il tuo Focus").
-      const quality = action.payload.quality || DEFAULT_FOCUS_QUALITY;
+      const p = action.payload || {};
+      const { wasOverdrive, materiaId, sfidaId } = p;
+      // Il payload porta il totale dei minuti dell'intera catena Focus +
+      // Overdrive (vedi endFocusSession in useFocusTimer).
+      const focusMinutes = Math.max(0, Math.round(Number(p.focusMinutes != null ? p.focusMinutes : state.settings.focusTime) || 0));
+      if (focusMinutes <= 0) return state;
+      // V42 — i minuti dei blocchi NON Overdrive: il bonus vale solo sul resto.
+      const baseMinutes = Number.isFinite(Number(p.baseMinutes)) ? Math.max(0, Math.min(focusMinutes, Number(p.baseMinutes))) : focusMinutes;
+      const quality = p.quality || DEFAULT_FOCUS_QUALITY;
       const qualityMeta = FOCUS_QUALITY_META[quality] || FOCUS_QUALITY_META[DEFAULT_FOCUS_QUALITY];
-      // V38.0 — "La Forgia degli Appunti": una sessione non è più solo
-      // tempo. Se è stata una sessione di SINTESI porta con sé quante
-      // pagine di fonte hai snellito e quante pagine dei tuoi appunti ne
-      // sono uscite, e quei due numeri sono l'unico modo in cui il piano
-      // di una materia può avanzare mentre il semestre va avanti: senza
-      // di loro l'app saprebbe quanto hai studiato ma non quanto
-      // materiale hai costruito, cioè proprio la metà del lavoro che
-      // questa versione esiste per misurare.
-      //
-      // Entrambi i numeri sono FACOLTATIVI. Saltare il campo non rompe
-      // niente: si registra solo il tempo, come prima.
-      // Il modo può anche NON essere dichiarato: succede quando la
-      // sessione viene recuperata automaticamente al boot dopo una
-      // chiusura imprevista (vedi useFocusTimer.js), dove nessuno ha
-      // risposto al Debriefing. In quel caso i minuti entrano nel
-      // totale — che alimenta XP, streak e bias come sempre — ma NON in
-      // uno dei due contatori separati: attribuirli d'ufficio allo
-      // studio inquinerebbe il ritmo misurato con ore che potevano
-      // benissimo essere di sintesi.
-      const workModeDichiarato =
-        action.payload.workMode === WORK_MODE.SINTESI || action.payload.workMode === WORK_MODE.STUDIO
-          ? action.payload.workMode
-          : null;
-      let pagineFonte = Math.max(0, Math.round(Number(action.payload.pagineFonte) || 0));
-      const pagineAppuntiProdotte = Math.max(0, Math.round(Number(action.payload.pagineAppuntiProdotte) || 0));
+      // V38.0/V42 — il modo della sessione (Sintesi, Studio, Ripasso,
+      // Esercizi). Non dichiarato (sessione recuperata al boot): i minuti
+      // entrano nel totale ma in nessun contatore separato.
+      const workMode = isWorkMode(p.workMode) ? p.workMode : null;
+      let pagineFonte = Math.max(0, Math.round(Number(p.pagineFonte) || 0));
+      const pagineAppuntiProdotte = workMode === WORK_MODE.SINTESI ? Math.max(0, Math.round(Number(p.pagineAppuntiProdotte) || 0)) : 0;
+      const eserciziFatti = workMode === WORK_MODE.ESERCIZI ? Math.max(0, Math.min(200, Math.round(Number(p.eserciziFatti) || 0))) : 0;
+      const eserciziCorretti = Math.max(0, Math.min(eserciziFatti, Math.round(Number(p.eserciziCorretti) || 0)));
 
       const materia = materiaId ? findMateria(state, materiaId) : null;
       const targetNode = materia && sfidaId ? materia.sfide.find((s) => s.id === sfidaId) : null;
 
-      // V40.2 — pagine snellite FONTE PER FONTE (Debriefing): ogni numero
-      // va sulla sua fonte, mai oltre le pagine che le restano. Il totale
-      // registrato è quello davvero applicato. Senza questo dettaglio si
-      // ripiega sul totale unico, distribuito in ordine come prima.
+      // V40.2 — pagine snellite FONTE PER FONTE (Debriefing), mai oltre le
+      // pagine che le restano. V42 — e per TIPO di fonte, per misurare i
+      // ritmi di sintesi di libro, slide e dispense separatamente.
       let fontiPerFonte = null;
-      const perFonte = action.payload.pagineFontePer;
-      if (workModeDichiarato === WORK_MODE.SINTESI && targetNode && perFonte && typeof perFonte === 'object') {
+      const pagineFontePerTipo = {};
+      const perFonte = p.pagineFontePer;
+      if (workMode === WORK_MODE.SINTESI && targetNode && perFonte && typeof perFonte === 'object') {
         let applicate = 0;
         fontiPerFonte = (Array.isArray(targetNode.fonti) ? targetNode.fonti : []).map((f) => {
           const richieste = Math.max(0, Math.round(Number(perFonte[f?.id]) || 0));
@@ -918,22 +1110,21 @@ export function reducer(state, action) {
           const quota = Math.min(richieste, totali - fatte);
           if (quota <= 0) return f;
           applicate += quota;
+          const tipo = f.tipo || 'ALTRO';
+          pagineFontePerTipo[tipo] = (pagineFontePerTipo[tipo] || 0) + quota;
           return { ...f, pagineFatte: fatte + quota };
         });
         pagineFonte = applicate;
       }
+      if (workMode !== WORK_MODE.SINTESI) pagineFonte = 0;
       const difficulty = targetNode ? targetNode.difficulty : DIFFICULTY.MEDIUM;
       const isFatigued = state.profile.stamina < FATIGUE_STAMINA_THRESHOLD;
-      const sessionHour = new Date().getHours();
       const skillEffects = computeSkillEffects(state.profile.unlockedSkills);
-      // "Simbiosi Notturna" (Skill Tree): +10% XP solo se l'abilità è
-      // sbloccata E la sessione è realmente notturna (00:00-04:00) — mai
-      // un bonus fantasma fuori dalla finestra oraria dichiarata.
-      const nightBonus = skillEffects.nightBonusEnabled && sessionHour >= 0 && sessionHour < 4;
       const isMaxCarnage = isMaxCarnageActive(state.profile);
 
       const xpGain = computeFocusXp({
         focusMinutes,
+        baseMinutes,
         cfu: materia ? materia.cfu : 0,
         isOverdrive: wasOverdrive,
         isFatigued,
@@ -941,19 +1132,15 @@ export function reducer(state, action) {
         streak: state.profile.streak,
         quality,
         xpBonusPct: skillEffects.xpBonusPct,
-        nightBonus,
         overdriveMultiplier: skillEffects.overdriveMultiplier,
         streakThresholdBonus: skillEffects.streakThresholdBonus,
         isMaxCarnage
       });
-      const staminaCost = computeFocusStaminaCost(focusMinutes, difficulty, skillEffects.staminaCostMultiplier, isMaxCarnage);
-      // V31.3 — Spider-Sense Surge XP calcolato QUI (anziché più sotto),
-      // così può essere allegato come campo dedicato `surgeXp` sulla stessa
-      // voce FOCUS_SESSION dello Star Log invece di restare impastato nel
-      // totale XP della sessione — StarLog.jsx può cosi' mostrarlo come
-      // riga a sé stante nelle statistiche storiche. Zero voci aggiuntive
-      // in starLog (nessun impatto sulla crescita dell'array).
-      const spiderSenseBonus = materia ? computeSpiderSenseSurgeXp(materia.perceivedDifficulty) : 0;
+      // V42 — Stamina tarata sulla capacità giornaliera (passata dal Provider).
+      const capacityHours = Number(p.capacityHours) > 0 ? Number(p.capacityHours) : 4.5;
+      const staminaCost = computeFocusStaminaCost(focusMinutes, difficulty, skillEffects.staminaCostMultiplier, false, capacityHours);
+      // V42 — bonus proporzionale ai minuti, solo per sessioni da almeno 20'.
+      const spiderSenseBonus = materia ? computeSpiderSenseSurgeXp(materia.perceivedDifficulty, focusMinutes) : 0;
 
       let profile = applyXpDeltaWithTokens(state.profile, xpGain);
       profile = {
@@ -965,9 +1152,6 @@ export function reducer(state, action) {
       const key = getDateKey();
       const starLog = [...state.starLog];
       const todayIdx = starLog.findIndex((e) => e.type === 'FOCUS_MINUTES' && e.dateKey === key);
-      // V16.0 (Pillar 4): l'aggregato giornaliero traccia anche l'XP
-      // guadagnato quel giorno (non solo i minuti), per alimentare i
-      // tooltip precisi "Data: X Focus, Y XP" della Heatmap Calendario.
       if (todayIdx >= 0) {
         starLog[todayIdx] = {
           ...starLog[todayIdx],
@@ -977,33 +1161,26 @@ export function reducer(state, action) {
       } else {
         starLog.push({ type: 'FOCUS_MINUTES', dateKey: key, minutes: focusMinutes, xp: xpGain });
       }
-      // Traccia la singola sessione con ora locale e valutazione qualitativa
-      // del Tactical Debriefing: alimenta sia il trofeo segreto "Tuta
-      // Simbionte" (Focus notturno 00:00-04:00) sia la sezione "Qualità del
-      // Focus" dello Star Log.
       starLog.push({
         type: 'FOCUS_SESSION',
         dateKey: key,
         minutes: focusMinutes,
+        baseMinutes,
         xp: xpGain,
-        // V31.3 — Spider-Sense Surge scorporato come campo dedicato (0
-        // quando la sessione non è agganciata a una Materia), cosi' resta
-        // visibile nella cronologia invece di sparire dentro `xp`.
         surgeXp: spiderSenseBonus,
         hour: new Date().getHours(),
         timestamp: nowIso(),
         quality,
-        // V20.0 — Daily Patrol (Pillar 5): la quest "Primary Target" deve
-        // verificare che la sessione di oggi sia stata fatta PROPRIO
-        // sull'esame suggerito da Karen, quindi il materiaId va tracciato
-        // anche quando è null (Focus generico, nessuna materia collegata).
         materiaId: materiaId || null,
-        // V38.0 — in che modo è stata spesa questa sessione, e quanto
-        // materiale ne è uscito. Due campi su una voce che già esiste:
-        // nessuna riga nuova nello Star Log, che è l'array che cresce.
-        workMode: workModeDichiarato,
-        pagineFonte: workModeDichiarato === WORK_MODE.SINTESI ? pagineFonte : 0,
-        pagineAppuntiProdotte: workModeDichiarato === WORK_MODE.SINTESI ? pagineAppuntiProdotte : 0
+        // V42 — anche l'argomento: serve a K.A.R.E.N. ("ieri: Integrali,
+        // in sintesi") e al bilancio settimanale.
+        sfidaId: targetNode ? targetNode.id : null,
+        workMode,
+        pagineFonte,
+        pagineFontePerTipo: Object.keys(pagineFontePerTipo).length > 0 ? pagineFontePerTipo : null,
+        pagineAppuntiProdotte,
+        eserciziFatti,
+        eserciziCorretti
       });
 
       let nextState = { ...state, profile, starLog };
@@ -1013,58 +1190,56 @@ export function reducer(state, action) {
             if (s.id !== sfidaId) return s;
             const aggiornato = {
               ...s,
-              focusMinutes: s.focusMinutes + focusMinutes,
-              // I due contatori separati alimentano i due ritmi misurati
-              // (vedi utils/sintesiEngine.js e utils/calibration.js):
-              // mescolarli darebbe due velocità entrambe sbagliate.
-              focusMinutesSintesi:
-                (Number(s.focusMinutesSintesi) || 0) +
-                (workModeDichiarato === WORK_MODE.SINTESI ? focusMinutes : 0),
+              focusMinutes: (Number(s.focusMinutes) || 0) + focusMinutes,
+              // I contatori separati alimentano ritmi diversi: mescolarli
+              // darebbe velocità sbagliate. V42 — gli ESERCIZI contano come
+              // studio (sono studio dell'argomento) e anche a parte; il
+              // RIPASSO mai come studio (non è primo apprendimento).
+              focusMinutesSintesi: (Number(s.focusMinutesSintesi) || 0) + (workMode === WORK_MODE.SINTESI ? focusMinutes : 0),
               focusMinutesStudio:
-                (Number(s.focusMinutesStudio) || 0) + (workModeDichiarato === WORK_MODE.STUDIO ? focusMinutes : 0)
+                (Number(s.focusMinutesStudio) || 0) + (workMode === WORK_MODE.STUDIO || workMode === WORK_MODE.ESERCIZI ? focusMinutes : 0),
+              minutiEsercizi: (Number(s.minutiEsercizi) || 0) + (workMode === WORK_MODE.ESERCIZI ? focusMinutes : 0),
+              minutiRipasso: (Number(s.minutiRipasso) || 0) + (workMode === WORK_MODE.RIPASSO ? focusMinutes : 0)
             };
-            if (workModeDichiarato !== WORK_MODE.SINTESI) return aggiornato;
-            const avanzata = pagineFonte > 0 || pagineAppuntiProdotte > 0;
+            if (workMode === WORK_MODE.ESERCIZI && eserciziFatti > 0) {
+              aggiornato.esercizi = appendCapped(s.esercizi, { at: key, fatti: eserciziFatti, corretti: eserciziCorretti, minuti: focusMinutes }, MAX_ESERCIZI_LOG);
+            }
+            if (workMode !== WORK_MODE.SINTESI) return aggiornato;
+            // V42 — una sessione col timer NON segna più `sintesiAggiornataAt`:
+            // i suoi minuti sistemano le lezioni per quello che valgono (una
+            // sessione da 5 minuti con una pagina sistemava 6 ore di lezioni).
             return {
               ...aggiornato,
               fonti: fontiPerFonte || applySintesiProgress(aggiornato.fonti, pagineFonte),
-              pagineAppunti: (Number(aggiornato.pagineAppunti) || 0) + pagineAppuntiProdotte,
-              // Stessa marca del salvataggio a mano (UPDATE_SFIDA): la
-              // sintesi di questo nodo è avanzata adesso.
-              ...(avanzata ? { sintesiAggiornataAt: nowIso() } : {})
+              pagineAppunti: (Number(aggiornato.pagineAppunti) || 0) + pagineAppuntiProdotte
             };
           })
         );
+      } else if (materia && workMode !== WORK_MODE.RIPASSO) {
+        // V42 — studio sulla materia senza un argomento scelto: accorcia la
+        // stima di una materia non ancora mappata.
+        nextState = {
+          ...nextState,
+          materie: nextState.materie.map((m) => (m.id === materia.id ? { ...m, focusMinutesLibere: (Number(m.focusMinutesLibere) || 0) + focusMinutes } : m))
+        };
       }
 
+      const modoLabel = workMode ? ` [${workMode.charAt(0)}${workMode.slice(1).toLowerCase()}]` : '';
       let combatLog = pushLog(
         nextState.combatLog,
-        `Sessione Focus completata${wasOverdrive ? ' [OVERDRIVE]' : ''}${isMaxCarnage ? ' [MAXIMUM CARNAGE x2]' : ''}${targetNode ? ` su "${targetNode.nome}"` : ''} — Debriefing: ${qualityMeta.label} (${qualityMeta.badge}). +${xpGain} XP, -${staminaCost} Stamina (${focusMinutes} min).`,
+        `Sessione Focus completata${modoLabel}${wasOverdrive ? ' [OVERDRIVE]' : ''}${isMaxCarnage ? ' [MAXIMUM CARNAGE x2]' : ''}${targetNode ? ` su "${targetNode.nome}"` : ''} — ${qualityMeta.shortLabel}. +${xpGain} XP, -${staminaCost} Stamina (${focusMinutes} min).`,
         wasOverdrive ? 'OVERDRIVE' : 'FOCUS'
       );
-
-      // V38.0 — la riga che racconta il lavoro di costruzione. Vale la
-      // pena di esistere perché è l'unico avanzamento che, guardando i
-      // soli minuti, non si vedrebbe: due ore di sintesi e due ore di
-      // studio sono identiche nel Combat Log della V37, e non lo sono
-      // affatto nel semestre.
-      if (workModeDichiarato === WORK_MODE.SINTESI && targetNode && (pagineFonte > 0 || pagineAppuntiProdotte > 0)) {
+      if (workMode === WORK_MODE.SINTESI && targetNode && (pagineFonte > 0 || pagineAppuntiProdotte > 0)) {
         const pezzi = [];
         if (pagineFonte > 0) pezzi.push(`${pagineFonte} pagine di fonte snellite`);
         if (pagineAppuntiProdotte > 0) pezzi.push(`+${pagineAppuntiProdotte} pagine dei tuoi appunti`);
-        combatLog = pushLog(
-          combatLog,
-          `Forgia degli Appunti — "${targetNode.nome}": ${pezzi.join(', ')}.`,
-          'SYSTEM'
-        );
+        combatLog = pushLog(combatLog, `Forgia degli Appunti — "${targetNode.nome}": ${pezzi.join(', ')}.`, 'SYSTEM');
       }
-
-      // V35.0 — "Sessione Blindata": una FOCUS_COMPLETED originata da un
-      // recupero automatico (checkpoint orfano ritrovato al boot, vedi
-      // useFocusTimer.js) riceve una riga di log distinta — stessa,
-      // identica pipeline XP/Stamina/StarLog di qualunque altra sessione,
-      // mai un trattamento numerico speciale.
-      if (action.payload.recovered) {
+      if (workMode === WORK_MODE.ESERCIZI && eserciziFatti > 0) {
+        combatLog = pushLog(combatLog, `Esercizi${targetNode ? ` su "${targetNode.nome}"` : ''}: ${eserciziCorretti}/${eserciziFatti} corretti.`, 'SYSTEM');
+      }
+      if (p.recovered) {
         combatLog = pushLog(
           combatLog,
           'K.A.R.E.N. — Sessione Focus recuperata automaticamente dopo una chiusura imprevista (tab chiusa/crash prima del Tactical Debriefing).',
@@ -1072,67 +1247,67 @@ export function reducer(state, action) {
         );
       }
 
+      // V42 — la serie avanza quando oggi arriva a 25 minuti veri.
       {
-        const streakUpdate = updateStreakOnActivity(profile, combatLog);
+        const streakUpdate = applyStudyDayStreak(nextState.profile, combatLog, { todayMinutes: todayFocusMinutes(starLog, key), settings: state.settings });
         profile = streakUpdate.profile;
         combatLog = streakUpdate.combatLog;
-        nextState = { ...nextState, profile };
       }
 
-      // Maximum Carnage Mode (V27.0, Pillar 3): una sessione conclusa in
-      // Overdrive è un'"azione critica" — alimenta lo streak verso il
-      // prossimo sblocco della modalità.
+      // Maximum Carnage: un Overdrive su una sessione vera è un'azione critica.
       {
-        const carnageUpdate = applyCriticalAction(profile, combatLog, wasOverdrive);
+        const carnageUpdate = applyCriticalAction(profile, combatLog, !!wasOverdrive && focusMinutes >= CRITICAL_OVERDRIVE_MIN_MINUTES);
         profile = carnageUpdate.profile;
         combatLog = carnageUpdate.combatLog;
-        nextState = { ...nextState, profile };
       }
 
-      // V28.1 — Pillar 3 (Spider-Sense Focus Surge): premia una sessione di
-      // Focus completata PULITA su una Materia universitaria. "Pulita" è
-      // garantito per costruzione — un'interruzione (Blood Pact) azzera
-      // `pendingFocus` PRIMA che questa azione possa mai essere
-      // dispatchata (vedi interruptFocus in useFocusTimer.js), quindi il
-      // solo fatto di essere qui dentro implica zero interruzioni sull'intera
-      // catena Focus/Overdrive. Bonus proporzionale alla Difficoltà
-      // Percepita della Materia (1-5, Web-Path Planner) — mai al singolo
-      // nodo, coerente con "difficoltà della materia" richiesta.
-      if (materia) {
+      if (spiderSenseBonus > 0) {
         profile = applyXpDeltaWithTokens(profile, spiderSenseBonus);
         combatLog = pushLog(
           combatLog,
-          `Spider-Sense Surge — sessione pulita su "${materia.nome}" senza interruzioni. Bonus +${spiderSenseBonus} XP (difficoltà ${Number.isFinite(materia.perceivedDifficulty) ? materia.perceivedDifficulty : 3}/5).`,
+          `Spider-Sense Surge — ${focusMinutes} minuti puliti su "${materia.nome}": +${spiderSenseBonus} XP (difficoltà ${Number.isFinite(materia.perceivedDifficulty) ? materia.perceivedDifficulty : 3}/5).`,
           'SPIDERSENSE'
         );
-        nextState = { ...nextState, profile };
+      }
+      nextState = { ...nextState, profile, combatLog };
+
+      // V42 — un blocco di RIPASSO col giudizio del Debriefing è un ripasso vero.
+      if (workMode === WORK_MODE.RIPASSO && targetNode && REVIEW_RATING[p.reviewRating]) {
+        nextState = reducer(nextState, { type: 'REVIEW_SFIDA', payload: { materiaId, sfidaId, rating: p.reviewRating, source: 'FOCUS' } });
+        profile = nextState.profile;
+        combatLog = nextState.combatLog;
       }
 
-      // Daily Patrol Engine: Focus Strike, Primary Target, Early Bird,
-      // Night Owl, Flow Seeker e Overdrive Master si aggiornano TUTTI da
-      // questo singolo evento — auto-tracking reale, nessun ricalcolo a
-      // parte lato UI. Il Primary Target va ricalcolato qui (stesso
-      // algoritmo di karenSuggestor.js) perché il reducer non ha accesso
-      // al valore già memoizzato a livello di Provider.
-      // V39.0 — stesso motore, stessi input della UI: calibrazione
-      // personale e prima materia in focus del planner. Prima qui si
-      // chiamava computePrimaryTarget SENZA calibrazione, e la missione
-      // poteva verificare una materia diversa da quella mostrata.
-      const calNow = computeCalibration(state);
-      const planNow = computeDailyPlan(state.materie, { calibration: calNow });
-      const primaryTargetNow = computePrimaryTarget(
-        state.materie,
-        calNow,
-        planNow.dailyFocusQuotas[0]?.materiaId ?? null
-      );
-      const questUpdate = applyQuestProgressAndProfile(nextState, nextState.profile, combatLog, QUEST_EVENTS.FOCUS_SESSION, {
+      // Daily Patrol: il bersaglio del piano arriva dal Provider (lo stesso
+      // mostrato in Mission Control); il ricalcolo qui è solo il ripiego.
+      let primaryTargetMateriaId = p.primaryTargetMateriaId;
+      if (primaryTargetMateriaId === undefined) {
+        const calNow = computeCalibration(state);
+        const plannable = withPlanningDates(state.materie);
+        const planNow = computeDailyPlan(plannable, { calibration: calNow });
+        const primaryTargetNow = computePrimaryTarget(plannable, calNow, planNow.dailyFocusQuotas[0]?.materiaId ?? null);
+        primaryTargetMateriaId = primaryTargetNow ? primaryTargetNow.materia.id : null;
+      }
+      let questUpdate = applyQuestProgressAndProfile(nextState, profile, combatLog, QUEST_EVENTS.FOCUS_SESSION, {
         minutes: focusMinutes,
         wasOverdrive,
         quality,
         hour: new Date().getHours(),
         materiaId: materiaId || null,
-        primaryTargetMateriaId: primaryTargetNow ? primaryTargetNow.materia.id : null
+        primaryTargetMateriaId: primaryTargetMateriaId || null,
+        workMode,
+        pagineAppuntiProdotte,
+        lessonMateriaIds: Array.isArray(p.lessonMateriaIds) ? p.lessonMateriaIds : []
       });
+      if (eserciziFatti > 0) {
+        questUpdate = applyQuestProgressAndProfile(
+          { ...nextState, dailyPatrols: questUpdate.dailyPatrols },
+          questUpdate.profile,
+          questUpdate.combatLog,
+          QUEST_EVENTS.EXERCISES_LOGGED,
+          { count: eserciziFatti }
+        );
+      }
 
       return {
         ...nextState,
@@ -1141,6 +1316,22 @@ export function reducer(state, action) {
         dailyPatrols: questUpdate.dailyPatrols
       };
     }
+
+    // V42 — una pausa fatta davvero (arrivata a zero) ricarica Stamina.
+    case 'BREAK_COMPLETED': {
+      const minutes = Math.max(0, Math.min(60, Number(action.payload?.minutes) || 0));
+      if (minutes <= 0) return state;
+      const skillEffects = computeSkillEffects(state.profile.unlockedSkills);
+      const gain = computeBreakStaminaRestore(minutes, skillEffects.breakStaminaBonus);
+      const stamina = Math.min(100, (Number(state.profile.stamina) || 0) + gain);
+      if (stamina === state.profile.stamina) return state;
+      return {
+        ...state,
+        profile: { ...state.profile, stamina },
+        combatLog: pushLog(state.combatLog, `Pausa di ${minutes} min completata: +${stamina - state.profile.stamina} Stamina.`, 'REFUEL')
+      };
+    }
+
 
     case 'BLOOD_PACT_INTERRUPT': {
       const skillEffects = computeSkillEffects(state.profile.unlockedSkills);
@@ -1159,33 +1350,49 @@ export function reducer(state, action) {
       if (!quest) return state;
       const usedToday = state.profile.dailyProtocolsCompletedToday || [];
       if (usedToday.includes(quest.id)) return state; // Daily Hero Duties: una volta al giorno, reset alle 03:00.
-      const stamina = Math.min(100, state.profile.stamina + quest.staminaReward);
+      // V42 — tetti giornalieri: i Daily Protocols sono benessere, non una
+      // fonte di XP o di Stamina infinita ("8 Ore di Sonno" alle 16 non
+      // cancella più la stanchezza di una giornata oltre il limite).
+      const oggi = getDateKey();
+      const stessoGiorno = state.profile.protocolDayKey === oggi;
+      const staminaGia = stessoGiorno ? Number(state.profile.protocolStaminaToday) || 0 : 0;
+      const xpGia = stessoGiorno ? Number(state.profile.protocolXpToday) || 0 : 0;
+      const staminaGain = Math.max(0, Math.min(Number(quest.staminaReward) || 0, PROTOCOL_STAMINA_DAY_CAP - staminaGia, 100 - state.profile.stamina));
+      const xpGain = Math.max(0, Math.min(Number(quest.xpReward) || 0, PROTOCOL_MAX_XP, PROTOCOL_XP_DAY_CAP - xpGia));
       let profile = {
         ...state.profile,
-        stamina,
+        stamina: state.profile.stamina + staminaGain,
         quickQuestsUsed: (state.profile.quickQuestsUsed || 0) + 1,
-        dailyProtocolsCompletedToday: [...usedToday, quest.id]
+        dailyProtocolsCompletedToday: [...usedToday, quest.id],
+        protocolDayKey: oggi,
+        protocolStaminaToday: staminaGia + staminaGain,
+        protocolXpToday: xpGia + xpGain
       };
-      if (quest.xpReward > 0) profile = applyXpDelta(profile, quest.xpReward);
+      if (xpGain > 0) profile = applyXpDeltaWithTokens(profile, xpGain);
+      const tetto = staminaGain < (Number(quest.staminaReward) || 0) || xpGain < (Number(quest.xpReward) || 0);
       return {
         ...state,
         profile,
         combatLog: pushLog(
           state.combatLog,
-          `Daily Protocol "${quest.nome}" completato. +${quest.staminaReward} Stamina${quest.xpReward > 0 ? `, +${quest.xpReward} XP` : ''}.`,
+          `Daily Protocol "${quest.nome}" completato. +${staminaGain} Stamina${xpGain > 0 ? `, +${xpGain} XP` : ''}${tetto ? ' (tetto giornaliero dei protocolli)' : ''}.`,
           'REFUEL'
         )
       };
     }
 
-    case 'ADD_QUICK_QUEST':
+    case 'ADD_QUICK_QUEST': {
+      const nome = typeof action.payload?.nome === 'string' ? action.payload.nome.trim().slice(0, 60) : '';
+      if (!nome) return state;
+      // V42 — un protocollo vale al massimo 40 Stamina e 30 XP (prima fino a 500).
+      const staminaReward = Math.max(0, Math.min(PROTOCOL_MAX_STAMINA, Math.round(Number(action.payload.staminaReward) || 0)));
+      const xpReward = Math.max(0, Math.min(PROTOCOL_MAX_XP, Math.round(Number(action.payload.xpReward) || 0)));
       return {
         ...state,
-        quickQuests: [
-          ...state.quickQuests,
-          { id: `qq_${Date.now()}`, nome: action.payload.nome, staminaReward: action.payload.staminaReward, xpReward: action.payload.xpReward || 0 }
-        ]
+        quickQuests: [...state.quickQuests, { id: `qq_${Date.now()}`, nome, staminaReward, xpReward }]
       };
+    }
+
 
     case 'DELETE_QUICK_QUEST':
       return { ...state, quickQuests: state.quickQuests.filter((q) => q.id !== action.payload.id) };
@@ -1193,9 +1400,17 @@ export function reducer(state, action) {
     case 'RESET_STAMINA':
       return {
         ...state,
-        profile: { ...state.profile, stamina: 100, lastStaminaResetDate: nowIso(), dailyProtocolsCompletedToday: [] },
+        profile: {
+          ...state.profile,
+          stamina: 100,
+          lastStaminaResetDate: nowIso(),
+          dailyProtocolsCompletedToday: [],
+          protocolStaminaToday: 0,
+          protocolXpToday: 0
+        },
         combatLog: pushLog(state.combatLog, 'Reset giornaliero (03:00): Stamina e Daily Protocols ripristinati.', 'SYSTEM')
       };
+
 
     // V41 — validazione: prima un nome vuoto o un costo NaN/negativo
     // (campo svuotato nel form) finivano nello Shop così com'erano, e una
@@ -1251,55 +1466,110 @@ export function reducer(state, action) {
       };
     }
 
+    // V42 — la Boss Fight è una SIMULAZIONE D'ESAME: XP in proporzione al
+    // tempo davvero passato sotto esame (prima 500-600 XP anche dichiarando
+    // la vittoria al primo secondo), niente XP sotto i 20 minuti, il tempo
+    // conta come studio della materia e — se registri il punteggio —
+    // diventa una simulazione che alimenta la prontezza.
     case 'BOSS_FIGHT_RESULT': {
-      const { win, hpRemaining, materiaNome, timeRemainingSeconds, totalSeconds } = action.payload;
+      const p = action.payload || {};
+      const win = !!p.win;
+      const hpRemaining = Math.max(0, Math.min(100, Number(p.hpRemaining) || 0));
+      const totalSeconds = Math.max(0, Number(p.totalSeconds) || 0);
+      const timeRemainingSeconds = Math.max(0, Number(p.timeRemainingSeconds) || 0);
+      const elapsedSeconds = Number.isFinite(Number(p.elapsedSeconds)) ? Math.max(0, Number(p.elapsedSeconds)) : Math.max(0, totalSeconds - timeRemainingSeconds);
+      const minuti = Math.floor(elapsedSeconds / 60);
+      const materia = p.materiaId ? findMateria(state, p.materiaId) : null;
       const skillEffects = computeSkillEffects(state.profile.unlockedSkills);
       const isMaxCarnage = isMaxCarnageActive(state.profile);
-      let xpGain = win
-        ? Math.round(500 * (0.5 + hpRemaining / 200) * computeStreakMultiplier(state.profile.streak, skillEffects.streakThresholdBonus))
-        : 0;
-      if (win && isMaxCarnage) xpGain = Math.round(xpGain * MAX_CARNAGE_MULTIPLIER);
-      let profile = state.profile;
-      if (win) profile = applyXpDeltaWithTokens(profile, xpGain);
+      const streakMult = computeStreakMultiplier(state.profile.streak, skillEffects.streakThresholdBonus);
+      let xpGain = 0;
+      if (minuti >= SIMULATION_MIN_MINUTES) {
+        xpGain = win ? minuti * 2.5 * (0.6 + (0.4 * hpRemaining) / 100) * streakMult : minuti * streakMult;
+        if (isMaxCarnage) xpGain *= MAX_CARNAGE_MULTIPLIER;
+        xpGain = Math.round(xpGain);
+      }
+      let profile = xpGain > 0 ? applyXpDeltaWithTokens(state.profile, xpGain) : state.profile;
+      const key = getDateKey();
       const starLog = [
         ...state.starLog,
         {
           type: win ? 'BOSS_WIN' : 'BOSS_LOSS',
-          dateKey: getDateKey(),
+          dateKey: key,
           hpRemaining,
           xp: xpGain,
-          timeRemainingSeconds: timeRemainingSeconds || 0,
-          totalSeconds: totalSeconds || 0,
+          timeRemainingSeconds,
+          totalSeconds,
+          elapsedSeconds,
           timestamp: nowIso(),
-          materiaNome: materiaNome || null
+          materiaId: materia ? materia.id : null,
+          materiaNome: materia ? materia.nome : p.materiaNome || null
         }
       ];
+      // Il tempo della simulazione è studio: entra nei minuti di oggi.
+      if (minuti > 0) {
+        const idx = starLog.findIndex((e) => e.type === 'FOCUS_MINUTES' && e.dateKey === key);
+        if (idx >= 0) starLog[idx] = { ...starLog[idx], minutes: starLog[idx].minutes + minuti, xp: (starLog[idx].xp || 0) + xpGain };
+        else starLog.push({ type: 'FOCUS_MINUTES', dateKey: key, minutes: minuti, xp: xpGain });
+        starLog.push({
+          type: 'FOCUS_SESSION',
+          dateKey: key,
+          minutes: minuti,
+          xp: xpGain,
+          hour: new Date().getHours(),
+          timestamp: nowIso(),
+          quality: DEFAULT_FOCUS_QUALITY,
+          materiaId: materia ? materia.id : null,
+          sfidaId: null,
+          workMode: WORK_MODE.ESERCIZI,
+          simulazione: true
+        });
+      }
+      let materie = state.materie;
+      if (materia && minuti > 0) {
+        materie = materie.map((m) => (m.id === materia.id && (!m.sfide || m.sfide.length === 0) ? { ...m, focusMinutesLibere: (Number(m.focusMinutesLibere) || 0) + minuti } : m));
+      }
       let combatLog = pushLog(
         state.combatLog,
-        win
-          ? `Supercriminale sconfitto (${hpRemaining} HP residui). +${xpGain} XP${isMaxCarnage ? ' [MAXIMUM CARNAGE x2]' : ''}.`
-          : 'Il Supercriminale ha avuto la meglio. Nessun XP guadagnato.',
+        minuti < SIMULATION_MIN_MINUTES
+          ? `Simulazione chiusa dopo ${minuti} min: sotto i ${SIMULATION_MIN_MINUTES} minuti non vale come prova d'esame, nessun XP.`
+          : win
+          ? `Simulazione superata${materia ? ` (${materia.nome})` : ''}: ${minuti} min sotto esame, ${hpRemaining} HP residui. +${xpGain} XP${isMaxCarnage ? ' [MAXIMUM CARNAGE x2]' : ''}.`
+          : `Simulazione persa${materia ? ` (${materia.nome})` : ''} dopo ${minuti} min: +${xpGain} XP per l'allenamento.`,
         win ? 'SUCCESS' : 'DANGER'
       );
-
-      let dailyPatrols = state.dailyPatrols;
-      if (win) {
-        // Daily Patrol Engine: "Sinister Six Slayer" si aggiorna solo sulle vittorie.
-        const questUpdate = applyQuestProgressAndProfile(state, profile, combatLog, QUEST_EVENTS.BOSS_FIGHT_WIN, {});
+      let next = { ...state, profile, starLog, combatLog, materie };
+      if (materia && Number.isFinite(Number(p.punteggioPct))) {
+        next = reducer(next, {
+          type: 'ADD_SIMULAZIONE',
+          payload: {
+            materiaId: materia.id,
+            simulazione: { tipo: p.tipo === 'ORALE' ? 'ORALE' : 'SCRITTO', punteggioPct: Number(p.punteggioPct), voto: p.voto, durataMin: minuti, nota: p.nota, fonte: 'BOSS_FIGHT' }
+          }
+        });
+      }
+      profile = next.profile;
+      combatLog = next.combatLog;
+      if (minuti > 0) {
+        const streakUpdate = applyStudyDayStreak(profile, combatLog, { todayMinutes: todayFocusMinutes(next.starLog, key), settings: state.settings });
+        profile = streakUpdate.profile;
+        combatLog = streakUpdate.combatLog;
+      }
+      let dailyPatrols = next.dailyPatrols;
+      if (minuti >= SIMULATION_MIN_MINUTES) {
+        const questUpdate = applyQuestProgressAndProfile(next, profile, combatLog, QUEST_EVENTS.BOSS_FIGHT_WIN, { minutes: minuti });
         profile = questUpdate.profile;
         combatLog = questUpdate.combatLog;
         dailyPatrols = questUpdate.dailyPatrols;
-
-        // Maximum Carnage Mode (V27.0, Pillar 3): una vittoria in Boss
-        // Fight è un'"azione critica" — alimenta lo streak verso il
-        // prossimo sblocco della modalità.
+      }
+      if (win && minuti >= SIMULATION_MIN_MINUTES) {
         const carnageUpdate = applyCriticalAction(profile, combatLog, true);
         profile = carnageUpdate.profile;
         combatLog = carnageUpdate.combatLog;
       }
-
-      return { ...state, profile, starLog, combatLog, dailyPatrols };
+      return { ...next, profile, combatLog, dailyPatrols };
     }
+
 
     case 'GAUNTLET_CLEARED': {
       // V33.1 — Sinister Six Gauntlet: dispatchata UNA sola volta da
@@ -1371,14 +1641,82 @@ export function reducer(state, action) {
       return { ...state, dailyPatrols: action.payload };
 
     // V27.0 — Pillar 3: scadenza naturale (o disattivazione esplicita)
-    // della finestra Maximum Carnage — dispatchata dall'effetto dedicato
-    // nel Provider non appena `isMaxCarnageActive` torna false.
+    // della finestra Maximum Carnage.
     case 'DEACTIVATE_MAX_CARNAGE':
       return {
         ...state,
         profile: { ...state.profile, ...deactivateMaxCarnage() },
-        combatLog: pushLog(state.combatLog, 'Maximum Carnage Mode esaurita. Il simbionte si ritira, in attesa della prossima furia.', 'CARNAGE')
+        combatLog: pushLog(state.combatLog, 'Maximum Carnage Mode esaurita. Il simbionte si ritira, in attesa della prossima carica.', 'CARNAGE')
       };
+
+    // V42 — attivazione VOLONTARIA della carica (mai di notte).
+    case 'ACTIVATE_MAX_CARNAGE': {
+      const esito = activateMaxCarnage(state.profile);
+      if (!esito.ok) return state;
+      let profile = { ...state.profile, ...esito.patch };
+      let combatLog = state.combatLog;
+      // V31.3 — la prima attivazione sblocca per sempre la Symbiote Suit.
+      if (!profile.symbioteSuitUnlocked) {
+        profile = { ...profile, symbioteSuitUnlocked: true };
+        combatLog = pushLog(combatLog, 'Symbiote Suit sbloccata — disponibile in Karen OS Settings.', 'CARNAGE');
+      }
+      combatLog = pushLog(combatLog, 'MAXIMUM CARNAGE MODE ATTIVATA — per le prossime 2 ore gli XP raddoppiano. La Stamina scende come sempre: ascoltala.', 'CARNAGE');
+      return { ...state, profile, combatLog };
+    }
+
+    // V42 — "CHIUDI LA GIORNATA": il bilancio di oggi e il piano di domani,
+    // preparato la sera (primo blocco e ora d'inizio compresi). La mattina
+    // Mission Control si apre su quel piano: decidere la sera prima è il
+    // modo più efficace di non rimandare.
+    case 'CLOSE_DAY': {
+      const p = action.payload || {};
+      const dateKey = typeof p.dateKey === 'string' ? p.dateKey : getDateKey();
+      const giaChiusa = (state.dayClosures || []).some((c) => c.dateKey === dateKey);
+      const voce = {
+        dateKey,
+        minuti: Math.max(0, Math.round(Number(p.minuti) || 0)),
+        obiettivoMin: Math.max(0, Math.round(Number(p.obiettivoMin) || 0)),
+        energia: Number.isInteger(p.energia) && p.energia >= 1 && p.energia <= 5 ? p.energia : null,
+        nota: typeof p.nota === 'string' ? p.nota.slice(0, 280) : ''
+      };
+      const dayClosures = [...(state.dayClosures || []).filter((c) => c.dateKey !== dateKey), voce]
+        .sort((a, b) => a.dateKey.localeCompare(b.dateKey))
+        .slice(-MAX_DAY_CLOSURES);
+      const tomorrowPlan = p.tomorrowPlan ? normalizeTomorrowPlan({ ...p.tomorrowPlan, createdAt: nowIso() }) : state.tomorrowPlan;
+      let next = {
+        ...state,
+        dayClosures,
+        tomorrowPlan,
+        combatLog: pushLog(
+          state.combatLog,
+          `Giornata chiusa: ${voce.minuti} min di studio${voce.obiettivoMin ? ` su ${voce.obiettivoMin} previsti` : ''}.${tomorrowPlan ? ` Piano di domani pronto${tomorrowPlan.oraInizio ? `, si parte alle ${tomorrowPlan.oraInizio}` : ''}.` : ''}`,
+          'SYSTEM'
+        )
+      };
+      if (!giaChiusa) {
+        const q = applyQuestProgressAndProfile(next, next.profile, next.combatLog, QUEST_EVENTS.DAY_CLOSED, {});
+        next = { ...next, profile: q.profile, combatLog: q.combatLog, dailyPatrols: q.dailyPatrols };
+      }
+      return next;
+    }
+
+    case 'SAVE_TOMORROW_PLAN':
+      return { ...state, tomorrowPlan: action.payload?.plan ? normalizeTomorrowPlan({ ...action.payload.plan, createdAt: nowIso() }) : null };
+
+    case 'MARK_TOMORROW_PLAN_STARTED':
+      if (!state.tomorrowPlan) return state;
+      return { ...state, tomorrowPlan: { ...state.tomorrowPlan, avviatoAt: nowIso() } };
+
+    // V42 — copia locale dell'ultimo bilancio settimanale di K.A.R.E.N.
+    case 'SAVE_KAREN_WEEKLY': {
+      const { weekKey, payload, generatedAt, weekClosed } = action.payload || {};
+      if (typeof weekKey !== 'string' || !payload || typeof payload !== 'object') return state;
+      // V42 — la data in cui K.A.R.E.N. l'ha scritto (un bilancio dalla cache
+      // non è "di oggi") e se la settimana era già chiusa allora.
+      const quando = typeof generatedAt === 'string' && Number.isFinite(Date.parse(generatedAt)) ? new Date(generatedAt).toISOString() : nowIso();
+      return { ...state, karenWeekly: { weekKey, payload, savedAt: quando, weekClosed: weekClosed === true } };
+    }
+
 
     // V27.0 — Pillar 4: "Il Forziere di Parker" — il roll pesato avviene
     // FUORI dal reducer (vedi actions.claimWebSling), cosi' che il reducer
