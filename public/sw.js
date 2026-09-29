@@ -21,7 +21,8 @@
 // nome vengono cancellate. Gli asset con hash si accumulavano deploy dopo
 // deploy nella stessa cache della V36; cambiarlo a ogni versione maggiore
 // la riporta pulita.
-const VERSION = 'af-v41-1';
+// V42 — nuova versione maggiore, cache nuova.
+const VERSION = 'af-v42-1';
 const SHELL_CACHE = `${VERSION}-shell`;
 const ASSET_CACHE = `${VERSION}-assets`;
 
