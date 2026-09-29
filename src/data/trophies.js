@@ -1,6 +1,6 @@
 import { isReviewDue } from '../utils/spiderSense.js';
 import { computeWeightedAverage, computeGraduationProjection } from '../utils/gpaEngine.js';
-import { VANVITELLI_COURSES } from './vanvitelliCourseMap.js';
+import { VANVITELLI_COURSES, computePlanCfu, CFU_A_SCELTA } from './vanvitelliCourseMap.js';
 
 /**
  * Definizioni statiche dei trofei (Trophy Room) — Spider-Verse Tier System.
@@ -63,10 +63,23 @@ function totalFocusMinutes(state) {
     .reduce((sum, e) => sum + e.minutes, 0);
 }
 
-/** Numero di sessioni FOCUS_SESSION la cui `hour` cade nella finestra [startHour, endHour) — con wrap-around su mezzanotte (es. 22 -> 4). */
-function countFocusSessionsInHourWindow(state, startHour, endHour) {
-  const inWindow = (hour) => (startHour < endHour ? hour >= startHour && hour < endHour : hour >= startHour || hour < endHour);
-  return (state.starLog || []).filter((e) => e.type === 'FOCUS_SESSION' && typeof e.hour === 'number' && inWindow(e.hour)).length;
+/**
+ * V42 — Giornate "sane": almeno 120 minuti di Focus e nessun blocco chiuso
+ * fra le 23:00 e le 5:00.
+ */
+function countRestedStudyDays(state) {
+  const minuti = new Map();
+  const tardi = new Set();
+  (state.starLog || []).forEach((e) => {
+    if (!e || typeof e.dateKey !== 'string') return;
+    if (e.type === 'FOCUS_MINUTES') minuti.set(e.dateKey, (minuti.get(e.dateKey) || 0) + (Number(e.minutes) || 0));
+    if (e.type === 'FOCUS_SESSION' && typeof e.hour === 'number' && (e.hour >= 23 || e.hour < 5)) tardi.add(e.dateKey);
+  });
+  let n = 0;
+  minuti.forEach((m, k) => {
+    if (m >= 120 && !tardi.has(k)) n += 1;
+  });
+  return n;
 }
 
 export const TROPHY_DEFINITIONS = [
@@ -103,7 +116,7 @@ export const TROPHY_DEFINITIONS = [
     nome: 'Riflessi Aracnidi',
     tier: TIER.NEIGHBORHOOD,
     secret: false,
-    descrizione: '3 giorni consecutivi di attività registrata.',
+    descrizione: 'Una serie di 3 giorni di studio (almeno 25 minuti ciascuno).',
     condizione: (state) => state.profile.streak >= 3,
     iconPath: 'M12 2 4 6v6c0 5 3.8 9.5 8 10 4.2-.5 8-5 8-10V6l-8-4Z'
   },
@@ -126,14 +139,16 @@ export const TROPHY_DEFINITIONS = [
     condizione: (state) => state.materie.some((m) => m.examPassed && m.sfide.length > 0 && m.sfide.every((s) => s.status === 'COMPLETED')),
     iconPath: 'M9 11l2 2 4-4 M12 2 4 6v6c0 5 3.8 9.5 8 10 4.2-.5 8-5 8-10V6l-8-4Z'
   },
-  // V23.0 — INIZIATIVA LIBERA (chicca): easter egg per chi studia all'alba.
+  // V23.0 — easter egg per chi comincia presto. V42 — presto, non di
+  // notte: dalle 6 alle 8 (prima era dalle 4 alle 6 del mattino).
   {
     id: 'alba_del_ragno',
     nome: "L'Alba Del Ragno",
     tier: TIER.NEIGHBORHOOD,
     secret: true,
-    descrizione: 'Completa una sessione di Focus fra le 4:00 e le 6:00 del mattino.',
-    condizione: (state) => (state.starLog || []).some((e) => e.type === 'FOCUS_SESSION' && e.hour >= 4 && e.hour < 6),
+    descrizione: 'Chiudi un blocco di Focus da almeno 20 minuti fra le 6:00 e le 8:00 del mattino.',
+    condizione: (state) =>
+      (state.starLog || []).some((e) => e.type === 'FOCUS_SESSION' && e.hour >= 6 && e.hour < 8 && (Number(e.minutes) || 0) >= 20),
     iconPath: 'M12 3v3 M4.5 12H2 M22 12h-2.5 M5.6 5.6l1.8 1.8 M16.6 7.4l1.8-1.8 M5 20h14 M8 20a4 4 0 0 1 8 0'
   },
   // V35.0 — famiglia "Nodi Hard" (Bronzo): primo contatto con la difficoltà
@@ -204,7 +219,7 @@ export const TROPHY_DEFINITIONS = [
     nome: 'Settimana Da Vendicatore',
     tier: TIER.AVENGER,
     secret: false,
-    descrizione: '7 giorni consecutivi di attività registrata.',
+    descrizione: 'Una serie di 7 giorni di studio, riposi settimanali compresi.',
     condizione: (state) => state.profile.streak >= 7,
     iconPath: 'M12 2c1 4-3 5-3 9a5 5 0 0 0 10 0c0-2-1-3-1-3s0 2-2 2c-2 0-1.5-2-1.5-4C14.5 3 12 2 12 2Z'
   },
@@ -255,16 +270,16 @@ export const TROPHY_DEFINITIONS = [
     condizione: (state) => state.materie.some((m) => m.examPassed && Number.isFinite(m.voto) && m.voto >= 28),
     iconPath: 'M12 3 3 8l9 5 9-5-9-5Z M3 8v6l9 5 9-5V8 M12 13v6'
   },
-  // V23.0 — INIZIATIVA LIBERA: 10 sessioni di Focus notturno (22:00-04:00),
-  // eco del trofeo segreto "Tuta Simbionte" ma sulla costanza, non
-  // sull'episodio singolo — e agganciato alla quest Night Owl Protocol.
+  // V42 — l'id resta, il senso si ribalta: premiava 10 sessioni fra le 22
+  // e le 4 del mattino. Ora premia chi studia bene E va a dormire: 10
+  // giornate da almeno 2 ore chiuse entro le 23.
   {
     id: 'notturno_recidivo',
-    nome: 'Il Ragno Notturno',
+    nome: 'Il Ragno Che Riposa',
     tier: TIER.AVENGER,
     secret: true,
-    descrizione: 'Completa 10 sessioni di Focus fra le 22:00 e le 4:00.',
-    condizione: (state) => countFocusSessionsInHourWindow(state, 22, 4) >= 10,
+    descrizione: 'Dieci giornate da almeno 2 ore di Focus chiuse entro le 23:00.',
+    condizione: (state) => countRestedStudyDays(state) >= 10,
     iconPath: 'M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z M15 3l1 2 2 1-2 1-1 2-1-2-2-1 2-1Z'
   },
   // V23.0 — INIZIATIVA LIBERA: una vera "Focus Marathon" in un solo giorno.
@@ -283,7 +298,7 @@ export const TROPHY_DEFINITIONS = [
     nome: 'Non-Stop Cadetto',
     tier: TIER.AVENGER,
     secret: false,
-    descrizione: '14 giorni consecutivi di attività registrata.',
+    descrizione: 'Una serie di 14 giorni di studio, riposi settimanali compresi.',
     condizione: (state) => state.profile.streak >= 14,
     iconPath: 'M12 2 4 6v6c0 5 3.8 9.5 8 10 4.2-.5 8-5 8-10V6l-8-4Z M9 12l2 2 4-4'
   },
@@ -332,14 +347,15 @@ export const TROPHY_DEFINITIONS = [
   },
 
   // ---------------------------------------------------------------- MULTIVERSE (segreti)
+  // V42 — non più "25 minuti fra mezzanotte e le 4": il simbionte si
+  // conquista con cinque azioni critiche in un giorno e si scatena di giorno.
   {
     id: 'symbiote_suit',
     nome: 'Tuta Simbionte',
     tier: TIER.MULTIVERSE,
     secret: true,
-    descrizione: 'Completa una sessione di Focus da almeno 25 minuti nel cuore della notte (00:00–04:00).',
-    condizione: (state) =>
-      (state.starLog || []).some((e) => e.type === 'FOCUS_SESSION' && e.minutes >= 25 && e.hour >= 0 && e.hour < 4),
+    descrizione: 'Attiva per la prima volta Maximum Carnage Mode.',
+    condizione: (state) => (Number(state.profile?.carnageActivations) || 0) >= 1,
     iconPath: 'M12 2c3 3 6 6 6 11a6 6 0 0 1-12 0c0-5 3-8 6-11Z M9 15c1 1 5 1 6 0'
   },
   {
@@ -366,7 +382,7 @@ export const TROPHY_DEFINITIONS = [
     nome: 'Streak Multiversale',
     tier: TIER.MULTIVERSE,
     secret: true,
-    descrizione: 'Mantieni una streak di 30 giorni consecutivi.',
+    descrizione: 'Una serie di 30 giorni di studio, riposi settimanali compresi.',
     condizione: (state) => state.profile.streak >= 30,
     iconPath: 'M6 12c0-2 1.5-3 3-3s3 2 3 3-1.5 3-3 3-3-1-3-3Zm9 0c0-2 1.5-3 3-3s3 2 3 3-1.5 3-3 3-3-1-3-3Z'
   },
@@ -402,10 +418,13 @@ export const TROPHY_DEFINITIONS = [
     nome: 'Ingegnere Aerospaziale',
     tier: TIER.MULTIVERSE,
     secret: true,
-    descrizione: 'Supera tutti gli esami ufficiali del piano di studi di Ingegneria Aerospaziale — Vanvitelli.',
+    descrizione: 'Supera tutti gli esami del piano di studi di Ingegneria Aerospaziale — Vanvitelli, con i 18 CFU a scelta.',
     condizione: (state) => {
-      const gradableCourses = VANVITELLI_COURSES.filter((c) => !c.ungraded);
-      return gradableCourses.every((c) => state.materie.some((m) => m.courseId === c.id && m.examPassed));
+      // V42 — i corsi del piano con voto, più i 18 CFU a scelta riempiti
+      // dagli esami scelti (il blocco "A scelta" non è un esame da solo).
+      const corsi = VANVITELLI_COURSES.filter((c) => !c.ungraded && !c.bucket);
+      const tutti = corsi.every((c) => state.materie.some((m) => m.courseId === c.id && m.examPassed));
+      return tutti && computePlanCfu(state.materie).sceltaValidi >= CFU_A_SCELTA;
     },
     iconPath: 'M12 2 2 7l10 5 10-5-10-5Z M6 9.5V15c0 1.5 2.7 3 6 3s6-1.5 6-3V9.5 M22 7v6'
   },
@@ -560,7 +579,7 @@ export const TROPHY_DEFINITIONS = [
     nome: 'Ragno Immortale',
     tier: TIER.VIBRANIUM,
     secret: true,
-    descrizione: 'Mantieni una streak di 100 giorni consecutivi.',
+    descrizione: 'Una serie di 100 giorni di studio, riposi settimanali compresi.',
     condizione: (state) => (state.profile.streak || 0) >= 100,
     iconPath: 'M6 12c0-2 1.5-3 3-3s3 2 3 3-1.5 3-3 3-3-1-3-3Zm9 0c0-2 1.5-3 3-3s3 2 3 3-1.5 3-3 3-3-1-3-3Z'
   },

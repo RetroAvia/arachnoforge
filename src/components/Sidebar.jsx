@@ -1,81 +1,210 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Icon } from './Icons.jsx';
 import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
 import { useKarenBrain } from '../context/KarenBrainContext.jsx';
 import { ROUTES } from '../hooks/useArachnoForgeRouter.js';
 import { SCHEMA_VERSION } from '../data/defaultSchema.js';
-import { BADGE } from '../utils/designSystem.js';
+import { APP_VERSION } from '../utils/appVersion.js';
+import { formatInt } from '../utils/format.js';
+import { openCommandPalette, shortcutLabel } from './CommandPalette.jsx';
 
-export const NAV_ITEMS = [
-  { route: ROUTES.MISSION_CONTROL, label: 'Stark-Web Terminal', icon: 'terminal' },
-  { route: ROUTES.QUADRANT_HUB, label: 'The Web-Matrix', icon: 'web' },
-  // V39.0 — subito sotto il Web-Matrix, da cui prende le materie: è
-  // l'università di Peter Parker, ed è dove vivono semestre e orario.
-  { route: ROUTES.CAMPUS, label: 'Empire State University', icon: 'calendar' },
-  { route: ROUTES.BOSS_FIGHT, label: 'Sinister Six Simulator', icon: 'crosshair' },
-  { route: ROUTES.STAR_LOG, label: 'Daily Bugle Archives', icon: 'newspaper' },
-  { route: ROUTES.ARMORY, label: 'Suit Lab & Trophies', icon: 'flask' },
-  { route: ROUTES.MULTIVERSE_SIMULATOR, label: 'Multiverse Simulator', icon: 'multiverse' },
-  // V37.0 — Suit Telemetry risale sopra le impostazioni: è una pagina che
-  // si consulta ogni giorno, mentre Karen OS Settings si apre di rado.
-  // Le impostazioni chiudono la lista, come in ogni applicazione seria.
-  { route: ROUTES.SUIT_TELEMETRY, label: 'Suit Telemetry', icon: 'heart' },
-  { route: ROUTES.CORE_CONFIG, label: 'Karen OS Settings', icon: 'chip' }
+/**
+ * V41 — Sidebar "premium": tre blocchi con un compito ciascuno.
+ *  1. Marchio + ricerca rapida (Ctrl K).
+ *  2. Il profilo di gioco, sempre in vista: livello, rango, XP, streak,
+ *     Stamina, Tech Token e scudi — la gamification resta in primo piano.
+ *  3. La navigazione, una riga per voce, con i contatori che contano.
+ * In fondo lo stato del sistema (Cloud, fase di studio, traiettoria) in
+ * una sola riga compatta, invece di quattro chip impilati sotto al logo.
+ */
+const NAV_ITEMS = [
+  { route: ROUTES.MISSION_CONTROL, label: 'Stark-Web Terminal', icon: 'terminal', key: '1' },
+  { route: ROUTES.QUADRANT_HUB, label: 'The Web-Matrix', icon: 'web', key: '2' },
+  // V42 — il piano della sessione, giorno per giorno.
+  { route: ROUTES.PIANO, label: 'Web-Swing Route', icon: 'trendUp', key: '0' },
+  { route: ROUTES.CAMPUS, label: 'Empire State University', icon: 'calendar', key: '3' },
+  { route: ROUTES.BOSS_FIGHT, label: 'Sinister Six Simulator', icon: 'crosshair', key: '4' },
+  { route: ROUTES.STAR_LOG, label: 'Daily Bugle Archives', icon: 'newspaper', key: '5' },
+  { route: ROUTES.ARMORY, label: 'Suit Lab & Trophies', icon: 'flask', key: '6' },
+  { route: ROUTES.MULTIVERSE_SIMULATOR, label: 'Multiverse Simulator', icon: 'multiverse', key: '7' },
+  { route: ROUTES.SUIT_TELEMETRY, label: 'Suit Telemetry', icon: 'heart', key: '8' },
+  { route: ROUTES.CORE_CONFIG, label: 'Karen OS Settings', icon: 'chip', key: '9' }
 ];
 
-const TRAJECTORY_BADGE = {
-  GREEN: BADGE.green,
-  YELLOW: BADGE.amber,
-  RED: BADGE.red
+export { NAV_ITEMS };
+
+const TRAJECTORY_META = {
+  GREEN: { label: 'In linea', dot: 'bg-emerald-400', text: 'text-emerald-300' },
+  YELLOW: { label: 'Attenzione', dot: 'bg-accent', text: 'text-accent' },
+  RED: { label: 'Critica', dot: 'bg-primary', text: 'text-primary' }
 };
 
-/** V26.0 — Pillar 4 (Cloud Sync UI): micro-HUD di stato, 3 varianti — mai un semplice testo nudo.
- * V28.1 — Pillar 2: la variante "synced" ora si adatta al `storageMode`
- * (Cloud reale / Guest locale / Sandbox Admin locale) — mai un "Connesso
- * al Nexus" fuorviante quando i dati non stanno affatto raggiungendo il
- * Cloud. `loading`/`syncing`/`error` restano invarianti sul backend. */
-const SYNC_META_BASE = {
-  loading: { icon: 'cloud', label: 'Sincronizzazione...', className: 'text-accent border-accent/30 bg-accent/10', spin: true },
-  syncing: { icon: 'cloud', label: 'Sincronizzazione...', className: 'text-accent border-accent/30 bg-accent/10', spin: true },
-  error: { icon: 'cloudOff', label: 'Nexus disconnesso', className: 'text-primary border-primary/40 bg-primary/10', spin: false, blink: true }
+const SYNC_META = {
+  loading: { icon: 'cloud', label: 'Sincronizzazione…', tone: 'text-slate-400', spin: true },
+  syncing: { icon: 'cloud', label: 'Salvataggio…', tone: 'text-slate-400', spin: true },
+  error: { icon: 'cloudOff', label: 'Non salvato — nuovo tentativo a breve', tone: 'text-primary', blink: true },
+  offline: { icon: 'wifiOff', label: 'Offline — salvato su questo dispositivo', tone: 'text-accent' },
+  conflict: { icon: 'alertTriangle', label: 'Conflitto da risolvere', tone: 'text-accent', blink: true }
 };
-const SYNCED_META_BY_MODE = {
-  cloud: { icon: 'cloudCheck', label: 'Connesso al Nexus', className: 'text-emerald-400 border-emerald-400/30 bg-emerald-900/20' },
-  guest: { icon: 'user', label: 'Modalità Ospite (Locale)', className: 'text-slate-300 border-white/20 bg-white/[0.04]' },
-  sandbox: { icon: 'chip', label: 'Sandbox Admin (Locale)', className: 'text-fuchsia-300 border-fuchsia-400/40 bg-fuchsia-500/10' }
+const SYNCED_META = {
+  cloud: { icon: 'cloudCheck', label: 'Sincronizzato col Nexus', tone: 'text-emerald-300' },
+  guest: { icon: 'user', label: 'Modalità Ospite · solo locale', tone: 'text-slate-400' },
+  sandbox: { icon: 'chip', label: 'Sandbox Admin · solo locale', tone: 'text-fuchsia-300' }
 };
 
 function getSyncMeta(syncStatus, storageMode) {
-  if (syncStatus === 'synced') return { ...SYNCED_META_BY_MODE[storageMode] || SYNCED_META_BY_MODE.cloud, spin: false, blink: false };
-  return SYNC_META_BASE[syncStatus] || SYNC_META_BASE.loading;
+  if (syncStatus === 'synced') return SYNCED_META[storageMode] || SYNCED_META.cloud;
+  return SYNC_META[syncStatus] || SYNC_META.loading;
 }
 
-// V35.0 — K.A.R.E.N. Daily Brain: stesso idioma visivo del chip Cloud
-// Sync — mai un chip vuoto o "n/d" quando la telemetria non è ancora
-// arrivata (default 100/OTTIMALE già gestito da useSuitTelemetry.js).
-const READINESS_CHIP_META = {
-  OTTIMALE: { icon: 'check', label: 'READINESS OTTIMALE', className: 'text-emerald-400 border-emerald-400/30 bg-emerald-900/20' },
-  ATTENZIONE: { icon: 'alertTriangle', label: 'READINESS ATTENZIONE', className: 'text-accent border-accent/30 bg-accent/10' },
-  CRITICO: { icon: 'alertTriangle', label: 'READINESS CRITICO', className: 'text-primary border-primary/40 bg-primary/10' }
+const READINESS_META = {
+  OTTIMALE: { label: 'Readiness ottimale', tone: 'text-emerald-300', dot: 'bg-emerald-400' },
+  ATTENZIONE: { label: 'Readiness in attenzione', tone: 'text-accent', dot: 'bg-accent' },
+  CRITICO: { label: 'Readiness critico', tone: 'text-primary', dot: 'bg-primary' }
 };
+
+function ProfileCard({ profile, derived }) {
+  const rankMeta = derived.rankMeta || { textClass: 'text-slate-300' };
+  const xpPct = derived.xpPct ?? 0;
+  const initial = (profile.username || 'C').trim().charAt(0).toUpperCase() || 'C';
+  const stamina = Math.max(0, Math.min(100, Math.round(Number(profile.stamina) || 0)));
+  const staminaTone = stamina < 20 ? 'bg-primary' : stamina < 50 ? 'bg-accent' : 'bg-secondary';
+  // Anello del livello attorno all'iniziale: la percentuale di XP del
+  // livello corrente, in un colpo d'occhio.
+  const ring = `conic-gradient(rgb(var(--af-refuel-rgb)) ${xpPct * 3.6}deg, rgb(255 255 255 / 0.08) 0deg)`;
+  return (
+    <div className="mx-3 rounded-xl border border-line bg-panel/70 p-3.5">
+      <div className="flex items-center gap-3">
+        <div className="relative w-11 h-11 shrink-0 rounded-full p-[2px]" style={{ background: ring }} aria-hidden="true">
+          <div className="w-full h-full rounded-full bg-panel-2 flex items-center justify-center text-[15px] font-bold text-white">
+            {initial}
+          </div>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-white truncate">{profile.username || 'Cadetto'}</p>
+            <span className="shrink-0 rounded-md bg-secondary/15 border border-secondary/25 px-1.5 py-0.5 text-[11px] font-bold text-secondary ds-num">
+              Lv {profile.level}
+            </span>
+          </div>
+          <p className={`text-xs font-semibold truncate mt-0.5 ${rankMeta.textClass}`}>{derived.rankTitle}</p>
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <div className="ds-progress" role="progressbar" aria-valuenow={xpPct} aria-valuemin={0} aria-valuemax={100} aria-label="Avanzamento del livello">
+          <span className="bg-secondary" style={{ width: `${xpPct}%` }} />
+        </div>
+        <div className="mt-1.5 flex items-center justify-between text-[11px] text-slate-500 ds-num">
+          <span>
+            {formatInt(profile.currentXp)} / {formatInt(derived.xpNeeded)} XP
+          </span>
+          <span>{xpPct}%</span>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-1.5">
+        <div
+          className={`rounded-lg bg-surface border px-2 py-1.5 ${derived.streak?.aRischio ? 'border-accent/50' : 'border-line'}`}
+          title={
+            derived.streak
+              ? `Serie di studio: giorni con almeno 25 minuti di Focus. ${derived.streak.validaOggi ? 'Oggi conta già.' : `Oggi mancano ${derived.streak.minutiMancanti} minuti.`} Riposi liberi questa settimana: ${derived.streak.riposiRimasti}/${derived.streak.riposiSettimana}.`
+              : 'Serie di studio'
+          }
+        >
+          <p className="flex items-center gap-1 text-[13px] font-bold text-accent ds-num">
+            <Icon name="flame" className="w-3.5 h-3.5" />
+            {derived.streak ? derived.streak.streak : profile.streak}
+            {derived.streak?.validaOggi && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 ml-0.5" aria-hidden="true" />}
+          </p>
+          <p className="text-[10px] text-slate-500 leading-tight">serie</p>
+        </div>
+        <div className="rounded-lg bg-surface border border-line px-2 py-1.5" title="Tech Token: si spendono nello Skill Tree della Suit Lab">
+          <p className="flex items-center gap-1 text-[13px] font-bold text-amber-200 ds-num">
+            <Icon name="chip" className="w-3.5 h-3.5" />
+            {profile.techTokens || 0}
+          </p>
+          <p className="text-[10px] text-slate-500 leading-tight">token</p>
+        </div>
+        <div className="rounded-lg bg-surface border border-line px-2 py-1.5" title="Stamina mentale: sotto il 20% gli XP vengono dimezzati">
+          <p className="flex items-center gap-1 text-[13px] font-bold text-slate-100 ds-num">
+            <Icon name="drop" className="w-3.5 h-3.5 text-secondary" />
+            {stamina}%
+          </p>
+          <div className="mt-1 h-1 rounded-full bg-white/10 overflow-hidden">
+            <div className={`h-full rounded-full ${staminaTone}`} style={{ width: `${stamina}%` }} />
+          </div>
+        </div>
+      </div>
+
+      {profile.streakShields > 0 && (
+        <p className="mt-2 flex items-center gap-1.5 text-[11px] text-cyan-300/90" title="Gli scudi coprono i giorni saltati oltre i riposi della settimana, senza spezzare la serie.">
+          <Icon name="shield" className="w-3.5 h-3.5" />
+          {profile.streakShields === 1 ? '1 Streak Shield pronto' : `${profile.streakShields} Streak Shield pronti`}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * V41 — La barra laterale resta fissa solo da 1024 px in su. Prima si
+ * agganciava già a 768: su tablet e finestre strette del PC i suoi 272 px
+ * lasciavano al contenuto meno spazio che su un telefono, e le pagine
+ * pensate per "schermo largo" si schiacciavano. Sotto i 1024 px è un
+ * pannello che si apre dal pulsante in alto a sinistra.
+ */
+const DOCKED_QUERY = '(min-width: 1024px)';
+
+function useDocked() {
+  const [docked, setDocked] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia(DOCKED_QUERY).matches : true
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+    const mq = window.matchMedia(DOCKED_QUERY);
+    const update = () => setDocked(mq.matches);
+    update();
+    if (mq.addEventListener) mq.addEventListener('change', update);
+    else mq.addListener(update);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', update);
+      else mq.removeListener(update);
+    };
+  }, []);
+  return docked;
+}
 
 export default function Sidebar({ currentPage, navigate }) {
   const { state, derived, sensoryZero, syncStatus, storageMode } = useArachnoForge();
   const karen = useKarenBrain();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const docked = useDocked();
+
+  // Allargando la finestra il pannello aperto diventa la barra fissa.
+  useEffect(() => {
+    if (docked) setMobileOpen(false);
+  }, [docked]);
+
+  // Esc chiude il menu su telefono.
+  useEffect(() => {
+    if (!mobileOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setMobileOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mobileOpen]);
 
   if (sensoryZero) return null;
 
   const { profile } = state;
-  const xpPct = derived.xpPct ?? 0;
-  const rankMeta = derived.rankMeta || { textClass: 'text-secondary', glowClass: '' };
   const syncMeta = getSyncMeta(syncStatus, storageMode);
-  // Chip visibile solo per chi ha una sessione Nexus reale (Modalità
-  // Ospite non ha telemetria biometrica — vedi SuitTelemetryView.jsx) e
-  // solo dopo il primo fetch, per non lampeggiare OTTIMALE per un istante
-  // prima che il default elegante di useSuitTelemetry venga confermato.
-  const readinessMeta = READINESS_CHIP_META[karen.readinessBand] || READINESS_CHIP_META.OTTIMALE;
-  const showReadinessChip = karen.hasSession && !karen.loading;
+  const readinessMeta = READINESS_META[karen.readinessBand] || READINESS_META.OTTIMALE;
+  const showReadiness = karen.hasSession && !karen.loading;
+  const trajectory = TRAJECTORY_META[derived.trajectory] || TRAJECTORY_META.GREEN;
+  const campus = derived.campus;
+  const reviewsDue = derived.upcomingReviews.length;
 
   const handleNavigate = (route) => {
     navigate(route);
@@ -84,199 +213,170 @@ export default function Sidebar({ currentPage, navigate }) {
 
   return (
     <>
-      {/* Hamburger mobile */}
+      {/* Hamburger (telefono) */}
       <button
         type="button"
         onClick={() => setMobileOpen(true)}
-        className="md:hidden fixed top-3 left-3 z-40 p-2.5 rounded-xl bg-surface/80 backdrop-blur-2xl border border-secondary/25 text-slate-200 hover:border-secondary/60 hover:text-secondary transition-all duration-300 shadow-[0_8px_24px_rgba(0,0,0,0.5)]"
+        className="lg:hidden fixed top-3 left-3 z-40 w-11 h-11 flex items-center justify-center rounded-xl bg-panel/95 backdrop-blur-xl border border-line text-slate-200 shadow-pop"
         aria-label="Apri menu"
       >
-        <Icon name="menu" className="w-7 h-7" />
+        <Icon name="menu" className="w-6 h-6" />
       </button>
 
-      {/* Overlay mobile */}
       {mobileOpen && (
-        <div
-          className="md:hidden fixed inset-0 bg-surface/80 backdrop-blur-sm z-40"
-          onClick={() => setMobileOpen(false)}
-        />
+        <div className="lg:hidden fixed inset-0 bg-black/60 backdrop-blur-[2px] z-40" onClick={() => setMobileOpen(false)} />
       )}
 
       <aside
-        className={`
-          fixed md:sticky top-0 left-0 h-[100dvh] w-[270px] shrink-0 z-50
-          bg-surface/85 backdrop-blur-2xl border-r border-secondary/15 flex flex-col
-          transition-transform duration-300
-          ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0
-        `}
+        className={`fixed lg:sticky top-0 left-0 h-[100dvh] w-[272px] shrink-0 z-50 bg-app/95 lg:bg-[rgb(var(--af-bg-rgb)/0.6)] backdrop-blur-xl border-r border-line flex flex-col transition-transform duration-300 ${
+          mobileOpen ? 'translate-x-0' : '-translate-x-full'
+        } lg:translate-x-0`}
+        aria-label="Navigazione principale"
+        // Chiuso fuori schermo: non raggiungibile col Tab né dai lettori di schermo.
+        inert={!docked && !mobileOpen ? '' : undefined}
+        aria-hidden={!docked && !mobileOpen ? true : undefined}
       >
-        {/* Bagliore d'ambiente in cima alla colonna — mai un pannello piatto. */}
-        <div className="absolute -top-24 -left-16 w-64 h-64 rounded-full bg-primary/10 blur-3xl pointer-events-none" />
-
-        <div className="relative flex items-center justify-between px-5 py-5 border-b border-secondary/15">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary to-primary-dark flex items-center justify-center text-white shadow-primary-glow border-t border-white/20">
-              <Icon name="target" className="w-5 h-5" />
+        {/* 1. Marchio */}
+        <div className="flex items-center justify-between gap-2 px-5 pt-5 pb-4">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-[rgb(var(--af-attack-solid-rgb))] flex items-center justify-center text-white shadow-primary-glow shrink-0">
+              <Icon name="web" className="w-[18px] h-[18px]" strokeWidth={1.9} />
             </div>
-            <div>
-              <p className="font-extrabold tracking-widest text-base leading-none bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
-                ARACHNOFORGE
-              </p>
-              {/* V37.0 — la versione era rimasta ferma a v26.0 mentre lo
-                  schema dati è alla 10.0.0: ora è derivata da
-                  SCHEMA_VERSION, così non può più divergere. */}
-              <p className="text-[10px] text-slate-500 tracking-wider mt-1">KAREN OS // WEB-PATH ENGINE v{SCHEMA_VERSION}</p>
-              {/* Cloud Sync Status — micro-HUD (Pillar 4). */}
-              <div className={`mt-1.5 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[9px] font-mono tracking-wide w-fit ${syncMeta.className} ${syncMeta.blink ? 'af-sync-error' : ''}`}>
-                <Icon name={syncMeta.icon} className={`w-3 h-3 ${syncMeta.spin ? 'af-cloud-syncing' : ''}`} />
-                {syncMeta.label}
-              </div>
-              {/* V39.0 — fase di studio (Empire State University), sempre
-                  visibile: dice in una parola come ragiona il planner oggi. */}
-              {derived.campus && (
-                <div
-                  className={`mt-1.5 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[9px] font-mono tracking-wide w-fit ${
-                    derived.campus.fase === 'LEZIONI'
-                      ? 'text-cyan-300 border-cyan-400/40 bg-cyan-500/10'
-                      : 'text-accent border-accent/40 bg-accent/10'
-                  }`}
-                >
-                  <Icon name={derived.campus.fase === 'LEZIONI' ? 'calendar' : 'target'} className="w-3 h-3" />
-                  {derived.campus.fase === 'LEZIONI'
-                    ? `LEZIONI${derived.campus.settimana ? ` · SETT. ${derived.campus.settimana}` : ''}`
-                    : 'SESSIONE'}
-                  {!derived.campus.automatica && ' (manuale)'}
-                </div>
-              )}
-              {/* V35.0 — K.A.R.E.N. Daily Brain: readiness sempre visibile,
-                  ogni pagina — non più confinata alla sola Suit Telemetry. */}
-              {showReadinessChip && (
-                <div className={`mt-1.5 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[9px] font-mono tracking-wide w-fit ${readinessMeta.className}`}>
-                  <Icon name={readinessMeta.icon} className="w-3 h-3" />
-                  {readinessMeta.label}
-                </div>
-              )}
-              {/* V27.0 — Pillar 3: chip Maximum Carnage, sempre visibile
-                  (anche nel drawer mobile) mentre la finestra è attiva. */}
-              {derived.isMaxCarnageActive && (
-                <div className="af-carnage-pulse mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-primary/60 bg-primary/15 text-primary px-2 py-0.5 text-[9px] font-mono tracking-wide w-fit">
-                  <Icon name="skull" className="w-3 h-3" />
-                  CARNAGE ATTIVO
-                </div>
-              )}
+            <div className="min-w-0">
+              <p className="text-[15px] font-bold tracking-tight text-white leading-none">ArachnoForge</p>
+              <p className="text-[11px] text-slate-500 mt-1 leading-none">K.A.R.E.N. OS · v{APP_VERSION || SCHEMA_VERSION}</p>
             </div>
           </div>
           <button
             type="button"
             onClick={() => setMobileOpen(false)}
-            className="md:hidden text-slate-500 hover:text-white transition-all duration-300"
+            className="lg:hidden ds-icon-btn"
             aria-label="Chiudi menu"
           >
-            <Icon name="close" className="w-6 h-6" />
+            <Icon name="close" className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="relative px-5 py-4 border-b border-secondary/15">
-          <div className="flex items-baseline justify-between">
-            <span className="text-base text-slate-400">{profile.username}</span>
-            <span className={BADGE.blue}>LV.{profile.level}</span>
-          </div>
-          {/* V25.0 — Dynamic Titles Engine: il titolo di rango cambia
-              tinta/glow/animazione in base alla banda di livello (vedi
-              RANK_TIERS in xpEngine.js). Il rango Lv.50+ usa un gradiente
-              animato via CSS (animate-gradient-shift) — mai un testo
-              statico per il traguardo più alto del gioco. */}
-          <p
-            className={`text-base font-bold tracking-wide mt-1.5 ${rankMeta.textClass} ${rankMeta.glowClass}`}
+        {/* Ricerca rapida / palette comandi */}
+        <div className="px-3 pb-3">
+          <button
+            type="button"
+            onClick={() => {
+              setMobileOpen(false);
+              openCommandPalette();
+            }}
+            className="w-full flex items-center gap-2.5 rounded-lg border border-line bg-panel/60 hover:bg-panel-2 hover:border-line-strong px-3 py-2 text-left text-[13px] text-slate-400 transition-colors"
           >
-            {derived.rankTitle}
-          </p>
-          <div className="mt-2.5 h-2 rounded-full bg-surface/80 border border-secondary/20 overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-secondary to-secondary-dark shadow-secondary-glow transition-all duration-500"
-              style={{ width: `${xpPct}%` }}
-            />
-          </div>
-          <div className="flex items-center justify-between mt-1.5">
-            <span className="text-[10px] font-mono text-slate-500 af-mono-nums">
-              {profile.currentXp} / {derived.xpNeeded} XP
-            </span>
-            <span className="text-[10px] font-mono text-accent flex items-center gap-1">
-              <Icon name="flame" className="w-4 h-4" />
-              {profile.streak}
-            </span>
-          </div>
-          {/* Tech Token counter (V25.0, Pillar 3) — sempre visibile, invita
-              a controllare lo Skill Tree in Suit Lab & Trophies appena si
-              accumula un token. */}
-          <div className="mt-3 flex items-center justify-between rounded-lg bg-accent/10 border border-accent/25 px-2.5 py-1.5">
-            <span className="text-[10px] tracking-widest text-accent/90 flex items-center gap-1.5">
-              <Icon name="chip" className="w-3.5 h-3.5" />
-              TECH TOKEN
-            </span>
-            <span className="text-sm font-mono font-bold text-accent af-mono-nums">{profile.techTokens || 0}</span>
-          </div>
-          {/* V35.5 — Streak Shield: indicatore condizionale, visibile SOLO
-              quando c'è almeno 1 scudo in cassa — un Cadetto a 0 scudi non
-              deve leggere un ennesimo contatore a zero fisso sotto la
-              streak, stessa filosofia "degrado con grazia" già in uso nel
-              resto della Sidebar. */}
-          {profile.streakShields > 0 && (
-            <div
-              className="mt-2 flex items-center justify-between rounded-lg bg-cyan-500/10 border border-cyan-400/25 px-2.5 py-1.5"
-              title="Scudi Streak: proteggono automaticamente la streak se salti un giorno."
-            >
-              <span className="text-[10px] tracking-widest text-cyan-300/90 flex items-center gap-1.5">
-                <Icon name="shield" className="w-3.5 h-3.5" />
-                STREAK SHIELD
-              </span>
-              <span className="text-sm font-mono font-bold text-cyan-300 af-mono-nums">{profile.streakShields}</span>
-            </div>
-          )}
+            <Icon name="search" className="w-4 h-4" />
+            <span className="flex-1 truncate">Cerca o vai a…</span>
+            <span className="ds-kbd">{shortcutLabel('K')}</span>
+          </button>
         </div>
 
-        <nav className="relative flex-1 overflow-y-auto af-scroll px-3 py-4 space-y-1">
-          {NAV_ITEMS.map((item) => {
-            const active = currentPage === item.route;
-            return (
-              <button
-                key={item.route}
-                type="button"
-                onClick={() => handleNavigate(item.route)}
-                className={`
-                  group w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-base text-left
-                  transition-all duration-300 border
-                  ${active
-                    ? 'bg-gradient-to-r from-primary/15 to-transparent border-primary/40 text-white shadow-primary-glow'
-                    : 'border-transparent text-slate-400 hover:text-white hover:bg-white/[0.04]'}
-                `}
-              >
-                <Icon
-                  name={item.icon}
-                  className={`w-6 h-6 shrink-0 group-hover:scale-110 transition-transform duration-300 ${active ? 'text-primary' : ''}`}
-                />
-                <span className="tracking-wide leading-snug min-w-0">{item.label}</span>
-                {item.route === ROUTES.CAMPUS && derived.campus?.lezioniInCoda > 0 && (
+        {/* 2. Profilo di gioco */}
+        <ProfileCard profile={profile} derived={derived} />
+
+        {derived.isMaxCarnageActive && (
+          <div className="af-carnage-pulse mx-3 mt-2 flex items-center gap-2 rounded-lg border border-primary/50 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary">
+            <Icon name="skull" className="w-4 h-4" />
+            Maximum Carnage attivo · XP ×2
+          </div>
+        )}
+        {!derived.isMaxCarnageActive && derived.carnageCharges > 0 && (
+          <button
+            type="button"
+            onClick={() => handleNavigate(ROUTES.MISSION_CONTROL)}
+            className="mx-3 mt-2 w-[calc(100%-1.5rem)] flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/[0.06] px-3 py-2 text-xs font-semibold text-primary/90 hover:bg-primary/10 text-left"
+            title="Una carica di Maximum Carnage: attivala da Mission Control quando hai davanti un blocco serio"
+          >
+            <Icon name="skull" className="w-4 h-4" />
+            Carica del simbionte pronta
+          </button>
+        )}
+
+        {/* 3. Navigazione */}
+        <nav className="flex-1 min-h-0 overflow-y-auto af-scroll px-3 pt-4 pb-3" aria-label="Sezioni">
+          <p className="ds-eyebrow px-2.5 mb-1.5">Sezioni</p>
+          <ul className="space-y-0.5">
+            {NAV_ITEMS.map((item) => {
+              const active = currentPage === item.route;
+              let counter = null;
+              if (item.route === ROUTES.CAMPUS && campus?.lezioniInCoda > 0) {
+                counter = (
                   <span
-                    className="ml-auto min-w-[1.25rem] h-5 px-1.5 rounded-full bg-accent/20 text-accent text-[11px] font-mono font-bold flex items-center justify-center shrink-0"
-                    aria-label={derived.campus.lezioniInCoda === 1 ? '1 lezione da sistemare' : `${derived.campus.lezioniInCoda} lezioni da sistemare`}
+                    className="ml-auto shrink-0 min-w-[1.25rem] h-5 px-1.5 rounded-md bg-accent/15 text-accent text-[11px] font-bold flex items-center justify-center ds-num"
+                    aria-label={campus.lezioniInCoda === 1 ? '1 lezione da sistemare' : `${campus.lezioniInCoda} lezioni da sistemare`}
+                    title="Lezioni da sistemare"
                   >
-                    {derived.campus.lezioniInCoda}
+                    {campus.lezioniInCoda}
                   </span>
-                )}
-                {item.route === ROUTES.QUADRANT_HUB && derived.upcomingReviews.length > 0 && (
-                  <span className="ml-auto w-2.5 h-2.5 rounded-full bg-accent shadow-accent-glow" />
-                )}
-              </button>
-            );
-          })}
+                );
+              } else if (item.route === ROUTES.QUADRANT_HUB && reviewsDue > 0) {
+                counter = (
+                  <span
+                    className="ml-auto shrink-0 min-w-[1.25rem] h-5 px-1.5 rounded-md bg-secondary/15 text-secondary text-[11px] font-bold flex items-center justify-center ds-num"
+                    aria-label={reviewsDue === 1 ? '1 ripasso Spider-Sense in scadenza' : `${reviewsDue} ripassi Spider-Sense in scadenza`}
+                    title="Ripassi Spider-Sense in scadenza"
+                  >
+                    {reviewsDue}
+                  </span>
+                );
+              }
+              return (
+                <li key={item.route}>
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate(item.route)}
+                    aria-current={active ? 'page' : undefined}
+                    title={`${item.label} (Alt+${item.key})`}
+                    className={`group relative w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[14px] font-medium transition-colors ${
+                      active ? 'bg-white/[0.07] text-white' : 'text-slate-400 hover:text-slate-100 hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    {active && <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full bg-primary" aria-hidden="true" />}
+                    <Icon
+                      name={item.icon}
+                      className={`w-[18px] h-[18px] shrink-0 ${active ? 'text-primary' : 'text-slate-500 group-hover:text-slate-300'}`}
+                    />
+                    <span className="truncate">{item.label}</span>
+                    {counter}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         </nav>
 
-        <div className="relative px-5 py-4 border-t border-secondary/15">
-          <div className="flex items-center justify-between text-[10px] text-slate-500">
-            <span className="tracking-widest">TRAIETTORIA</span>
-            <span className={TRAJECTORY_BADGE[derived.trajectory] || BADGE.green}>{derived.trajectory}</span>
+        {/* Stato del sistema */}
+        <div className="border-t border-line px-4 py-3 space-y-1.5 text-[12px]">
+          <div className={`flex items-center gap-2 ${syncMeta.tone} ${syncMeta.blink ? 'af-sync-error' : ''}`}>
+            <Icon name={syncMeta.icon} className={`w-4 h-4 shrink-0 ${syncMeta.spin ? 'af-cloud-syncing' : ''}`} />
+            <span className="truncate">{syncMeta.label}</span>
           </div>
+          <div className="flex items-center justify-between gap-2 text-slate-500">
+            {campus && (
+              <span className="flex items-center gap-1.5 min-w-0">
+                <Icon name={campus.fase === 'LEZIONI' ? 'calendar' : 'target'} className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">
+                  {campus.fase === 'LEZIONI' ? `Lezioni${campus.settimana ? ` · sett. ${campus.settimana}` : ''}` : 'Sessione d’esame'}
+                  {!campus.automatica && ' (manuale)'}
+                </span>
+              </span>
+            )}
+            <span className={`flex items-center gap-1.5 shrink-0 ${trajectory.text}`} title="Traiettoria degli esami dei prossimi 30 giorni, dal piano globale">
+              <span className={`w-1.5 h-1.5 rounded-full ${trajectory.dot}`} />
+              {trajectory.label}
+            </span>
+          </div>
+          {/* V41 — senza la diagnostica di oggi il Readiness non è
+              "ottimale": è da calcolare (prima si vedeva il valore di
+              default come se fosse misurato). */}
+          {showReadiness && (
+            <div className={`flex items-center gap-2 ${karen.briefing && karen.readinessKnown ? readinessMeta.tone : 'text-slate-500'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${karen.briefing && karen.readinessKnown ? readinessMeta.dot : 'bg-slate-600'}`} />
+              {!karen.briefing ? 'Readiness da calcolare oggi' : karen.readinessKnown ? readinessMeta.label : 'Readiness non misurata (pochi dati)'}
+            </div>
+          )}
         </div>
       </aside>
     </>

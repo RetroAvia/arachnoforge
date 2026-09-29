@@ -180,7 +180,7 @@ export const SKILL_DEFS = [
   },
 
   // ============================================================
-  // Corsia "Disciplina/Fisico" — bloodPactReduction + overdriveMultiplierBonus + nightBonus
+  // Corsia "Disciplina/Fisico" — bloodPactReduction + overdriveMultiplierBonus + breakStaminaBonus
   // ============================================================
   {
     id: 'nervi_acciaio',
@@ -206,17 +206,21 @@ export const SKILL_DEFS = [
     description: `Il moltiplicatore Overdrive sale da x${OVERDRIVE_MULTIPLIER} a x${(OVERDRIVE_MULTIPLIER + 0.15).toFixed(2)}: rischiare di più paga di più.`,
     effect: { overdriveMultiplierBonus: 0.15 }
   },
+  // V42 — l'id resta (è salvato in `unlockedSkills`), l'effetto cambia:
+  // l'abilità premiava lo studio fra mezzanotte e le 4, cioè esattamente
+  // quello che uno studente sotto esame deve evitare. Ora rende le pause
+  // più rigeneranti.
   {
     id: 'simbiosi_notturna',
-    title: 'Simbiosi Notturna',
+    title: 'Simbiosi Rigenerante',
     tier: SKILL_TIER.T3,
     path: SKILL_PATH.AGGRESSION,
     cost: 4,
     requires: ['adrenalina_combattimento'],
-    icon: 'moon',
-    tagline: '+10% XP notturno',
-    description: '+10% XP extra sulle sessioni di Focus completate fra le 00:00 e le 04:00 — il simbionte non dorme mai.',
-    effect: { nightBonus: true }
+    icon: 'drop',
+    tagline: 'Pause +50% Stamina',
+    description: 'Il simbionte recupera durante le pause: ogni pausa fra un blocco e l\'altro ricarica il 50% di Stamina in più.',
+    effect: { breakStaminaBonus: 0.5 }
   },
   {
     id: 'controllo_totale',
@@ -271,6 +275,8 @@ export function computeSkillEffects(unlockedSkills = []) {
     bloodPactReduction: 0,
     overdriveMultiplierBonus: 0,
     streakThresholdBonus: 0,
+    breakStaminaBonus: 0,
+    // V42 — sempre false: nessun premio per lo studio notturno.
     nightBonusEnabled: false
   };
   (Array.isArray(unlockedSkills) ? unlockedSkills : []).forEach((id) => {
@@ -284,7 +290,7 @@ export function computeSkillEffects(unlockedSkills = []) {
     if (e.bloodPactReduction) effects.bloodPactReduction = Math.min(0.9, effects.bloodPactReduction + e.bloodPactReduction);
     if (e.overdriveMultiplierBonus) effects.overdriveMultiplierBonus += e.overdriveMultiplierBonus;
     if (e.streakThresholdBonus) effects.streakThresholdBonus += e.streakThresholdBonus;
-    if (e.nightBonus) effects.nightBonusEnabled = true;
+    if (e.breakStaminaBonus) effects.breakStaminaBonus += e.breakStaminaBonus;
   });
   effects.overdriveMultiplier = OVERDRIVE_MULTIPLIER + effects.overdriveMultiplierBonus;
   return effects;

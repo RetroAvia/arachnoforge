@@ -26,20 +26,16 @@ export {
   RATIO_OK,
   RATIO_ATTENZIONE,
   statusFromRatio,
-  computeMateriaQuota,
-  applyCumulativeLoad,
   compareByUrgency,
-  selectDailyFocus,
-  allocateDailyBudget,
   computeDailyPlan
 } from '../utils/quotaEngine.js';
 
 /**
- * @param {Array} materie state.materie corrente
- * @param {{calibration?:object, loadAdjustmentPct?:number, sintesiLezioni?:Array<{materiaId:string, ore:number}>|null}} options
+ * @param {Array} materie materie con la data di pianificazione
+ * @param {object} options vedi quotaEngine.computeDailyPlan
  */
 export function useKarenAutoRouter(materie, options = {}) {
-  const { calibration = null, loadAdjustmentPct = 0, sintesiLezioni = null } = options;
+  const { calibration = null, loadAdjustmentPct = 0, sintesiLezioni = null, lessonPhase = null, calendar = null, doneToday = null, doneKey = '' } = options;
   const [dayKey, setDayKey] = useState(todayDateOnlyKey);
 
   // Battito leggero: ricontrolla la chiave del giorno ogni minuto, così il
@@ -60,9 +56,11 @@ export function useKarenAutoRouter(materie, options = {}) {
     : '';
 
   return useMemo(
-    () => computeDailyPlan(materie, { calibration, loadAdjustmentPct, sintesiLezioni }),
+    () => computeDailyPlan(materie, { calibration, loadAdjustmentPct, sintesiLezioni, lessonPhase, calendar, doneToday, todayKey: dayKey }),
+    // `doneKey`: il fatto di oggi per contenuto (cambia solo quando chiudi
+    // una sessione), non per identità della Map ricreata a ogni render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [materie, calibration, loadAdjustmentPct, sintesiKey, dayKey]
+    [materie, calibration, loadAdjustmentPct, sintesiKey, dayKey, lessonPhase, calendar, doneKey]
   );
 }
 

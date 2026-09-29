@@ -33,8 +33,12 @@ const KarenBrainContext = createContext(null);
 export function KarenBrainProvider({ children }) {
   const telemetry = useSuitTelemetry();
 
-  const directives = telemetry.briefing && telemetry.briefing.directives && typeof telemetry.briefing.directives === 'object'
-    ? telemetry.briefing.directives
+  // V42 — solo il briefing di OGGI guida timer e carico: un briefing
+  // rimasto in memoria da ieri (fetch fallito, app aperta a mezzanotte) non
+  // deve più impostare i minuti del Focus di oggi.
+  const briefingDiOggi = telemetry.briefing && telemetry.briefing.date === telemetry.todayStr ? telemetry.briefing : null;
+  const directives = briefingDiOggi && briefingDiOggi.directives && typeof briefingDiOggi.directives === 'object'
+    ? briefingDiOggi.directives
     : null;
 
   const value = useMemo(

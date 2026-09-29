@@ -1,6 +1,10 @@
 import { PERSISTED_STATUS } from '../utils/skillTree.js';
 import { DIFFICULTY } from '../utils/xpEngine.js';
-import { computeInitialReview, DEFAULT_EASE, INITIAL_REVIEW_INTERVAL_DAYS } from '../utils/spiderSense.js';
+import { computeInitialReview, DEFAULT_EASE, INITIAL_REVIEW_INTERVAL_DAYS, migrateSrsFields } from '../utils/spiderSense.js';
+import { syncAppelli, isFormatoEsame, FORMATO_ESAME } from '../utils/appelli.js';
+import { getCourseById, TIPO_PIANO } from './vanvitelliCourseMap.js';
+import { convertProfileToCurveV2, XP_CURVE_VERSION } from '../utils/xpEngine.js';
+import { isValidDateKey } from '../utils/dateUtils.js';
 import { HOURS_PER_NODE_DAY } from '../utils/materiaMeta.js';
 import { pruneStarLog } from '../utils/starLogMaintenance.js';
 import { normalizeFonti } from '../utils/sintesiEngine.js';
@@ -38,7 +42,11 @@ import { createDefaultCampus, normalizeCampus } from '../utils/campusEngine.js';
 // V40.0 (12.1.0): `campus.esiti` (lezioni segnate "già fatta" / "niente
 // da sistemare") e `sfida.sintesiAggiornataAt` (sintesi registrata a mano
 // sul nodo). La migrazione conserva ora anche `chiusoDaVerbale`.
-export const SCHEMA_VERSION = '12.1.0';
+// V42 (13.0.0): appelli scritto/orale e formato d'esame, simulazioni,
+// esercizi e memoria FSRS sui nodi, XP del completamento tracciati,
+// piano di domani e bilanci di fine giornata, serie con i giorni di
+// riposo, curva dei livelli nuova (vedi le singole migrazioni).
+export const SCHEMA_VERSION = '13.0.0';
 // V39.0 (12.0.0): `campus` — semestri, orario settimanale, fase di
 // studio (lezioni/sessione). Vedi utils/campusEngine.js. `sfida.
 // chiusoDaVerbale` marca i nodi chiusi d'ufficio dall'esame verbalizzato,
@@ -124,7 +132,22 @@ export function createDefaultState() {
       // scudi nello stesso mese solare).
       streakShields: 0,
       streakShieldsUsedTotal: 0,
-      lastStreakShieldGrantMonthKey: null
+      lastStreakShieldGrantMonthKey: null,
+      // V42 — serie con i giorni di riposo (utils/streakEngine.js): giorni
+      // saltati già "spesi" nella settimana dell'ultimo giorno valido.
+      streakWeekKey: null,
+      streakWeekMisses: 0,
+      // V42 — Tech Token per livello MASSIMO raggiunto, curva dei livelli v2.
+      maxLevelReached: 1,
+      xpCurveVersion: XP_CURVE_VERSION,
+      // V42 — Maximum Carnage a carica, contatore giornaliero.
+      carnageCharges: 0,
+      criticalActionDateKey: null,
+      carnageActivations: 0,
+      // V42 — tetto giornaliero di Stamina e XP dai Daily Protocols.
+      protocolDayKey: null,
+      protocolStaminaToday: 0,
+      protocolXpToday: 0
     },
     settings: {
       focusTime: 25,
@@ -167,7 +190,18 @@ export function createDefaultState() {
       carnageDrone: true,
       // V36.0 — data dell'ultimo export locale del profilo ("YYYY-MM-DD"),
       // usata solo per il promemoria di backup in Karen OS Settings.
-      lastExportDateKey: null
+      lastExportDateKey: null,
+      // V42 — il piano: giorni di riposo fissi (1 = lunedì … 7 = domenica),
+      // capacità decisa a mano (ore, null = misurata), riposi concessi a
+      // settimana dalla serie di studio.
+      giorniRiposo: [],
+      capacitaManuale: null,
+      streakRiposiSettimana: 2,
+      // V42 — per la stima del voto di laurea (regolamento del corso).
+      annoImmatricolazione: null,
+      erasmus: false,
+      // V42 — "Chiudi la giornata": da che ora Mission Control te lo propone.
+      chiusuraOra: 19
     },
     materie: [],
     starLog: [],
@@ -198,7 +232,7 @@ export function createDefaultState() {
     quickQuests: [
       { id: 'qq_palestra', nome: 'Allenamento Palestra', staminaReward: 50, xpReward: 25 },
       { id: 'qq_pasto', nome: 'Pasto Completo', staminaReward: 20, xpReward: 0 },
-      { id: 'qq_sonno', nome: '8 Ore di Sonno', staminaReward: 100, xpReward: 0 },
+      { id: 'qq_sonno', nome: '8 Ore di Sonno', staminaReward: 30, xpReward: 0 },
       { id: 'qq_passeggiata', nome: 'Passeggiata all’Aperto', staminaReward: 15, xpReward: 10 }
     ],
     // V23.0 — The Daily Patrol Engine (Modulo 2): 3 missioni vere e
@@ -215,8 +249,99 @@ export function createDefaultState() {
     // di lezione dei semestri, orario settimanale collegato alle materie
     // del Web-Matrix, forzatura manuale della fase (con scadenza) e
     // rapporto ore di sintesi / ore di lezione.
-    campus: createDefaultCampus()
+    campus: createDefaultCampus(),
+    // V42 — "Chiudi la giornata": il piano di domani preparato la sera
+    // (si apre la mattina in Mission Control) e lo storico dei bilanci.
+    tomorrowPlan: null,
+    dayClosures: [],
+    // V42 — ultimo bilancio settimanale di K.A.R.E.N. (copia locale).
+    karenWeekly: null
   };
+}
+
+/** V42 — Limiti dei piccoli storici per nodo (lo stato si salva intero). */
+const MAX_ESERCIZI_PER_NODO = 30;
+const MAX_RIPASSI_PER_NODO = 12;
+const MAX_QUIZ_ESITI_PER_NODO = 12;
+const MAX_SINTESI_MANUALE_PER_NODO = 20;
+const MAX_SIMULAZIONI_PER_MATERIA = 20;
+export const MAX_DAY_CLOSURES = 90;
+
+function nonNegInt(v) {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function recentList(raw, max, map) {
+  return (Array.isArray(raw) ? raw : [])
+    .filter((e) => e && typeof e === 'object' && typeof e.at === 'string')
+    .map(map)
+    .filter(Boolean)
+    .slice(-max);
+}
+
+function normalizeEsercizi(raw) {
+  return recentList(raw, MAX_ESERCIZI_PER_NODO, (e) => {
+    const fatti = nonNegInt(e.fatti);
+    if (fatti <= 0) return null;
+    return { at: e.at.slice(0, 10), fatti, corretti: Math.min(fatti, nonNegInt(e.corretti)), minuti: nonNegInt(e.minuti) };
+  });
+}
+
+function normalizeSimulazioni(raw) {
+  return recentList(raw, MAX_SIMULAZIONI_PER_MATERIA, (e) => {
+    const pct = Number(e.punteggioPct);
+    if (!Number.isFinite(pct)) return null;
+    return {
+      id: typeof e.id === 'string' && e.id ? e.id : `sim_${Date.parse(e.at) || 0}`,
+      at: e.at,
+      tipo: e.tipo === 'ORALE' ? 'ORALE' : 'SCRITTO',
+      punteggioPct: Math.max(0, Math.min(100, Math.round(pct))),
+      voto: Number.isFinite(Number(e.voto)) ? Math.max(0, Math.min(31, Number(e.voto))) : null,
+      durataMin: nonNegInt(e.durataMin),
+      nota: typeof e.nota === 'string' ? e.nota.slice(0, 200) : '',
+      fonte: e.fonte === 'BOSS_FIGHT' ? 'BOSS_FIGHT' : 'MANUALE'
+    };
+  });
+}
+
+/** V42 — Il piano di domani, se ben formato. */
+export function normalizeTomorrowPlan(raw) {
+  if (!raw || typeof raw !== 'object' || !isValidDateKey(raw.dateKey)) return null;
+  const items = (Array.isArray(raw.items) ? raw.items : [])
+    .filter((i) => i && typeof i.materiaId === 'string')
+    .slice(0, 6)
+    .map((i) => ({
+      materiaId: i.materiaId,
+      sfidaId: typeof i.sfidaId === 'string' ? i.sfidaId : null,
+      minuti: Math.max(5, Math.min(600, nonNegInt(i.minuti) || 25)),
+      modo: typeof i.modo === 'string' ? i.modo : null
+    }));
+  const pb = raw.primoBlocco && typeof raw.primoBlocco === 'object' ? raw.primoBlocco : null;
+  return {
+    dateKey: raw.dateKey,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
+    oraInizio: typeof raw.oraInizio === 'string' && /^\d{2}:\d{2}$/.test(raw.oraInizio) ? raw.oraInizio : null,
+    items,
+    primoBlocco: pb && typeof pb.materiaId === 'string'
+      ? { materiaId: pb.materiaId, sfidaId: typeof pb.sfidaId === 'string' ? pb.sfidaId : null, minuti: Math.max(5, Math.min(120, nonNegInt(pb.minuti) || 25)), modo: typeof pb.modo === 'string' ? pb.modo : null }
+      : null,
+    nota: typeof raw.nota === 'string' ? raw.nota.slice(0, 280) : '',
+    avviatoAt: typeof raw.avviatoAt === 'string' ? raw.avviatoAt : null
+  };
+}
+
+function normalizeDayClosures(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .filter((c) => c && isValidDateKey(c.dateKey))
+    .map((c) => ({
+      dateKey: c.dateKey,
+      minuti: nonNegInt(c.minuti),
+      obiettivoMin: nonNegInt(c.obiettivoMin),
+      energia: Number.isInteger(c.energia) && c.energia >= 1 && c.energia <= 5 ? c.energia : null,
+      nota: typeof c.nota === 'string' ? c.nota.slice(0, 280) : ''
+    }))
+    .slice(-MAX_DAY_CLOSURES);
 }
 
 /** Porta un nodo salvato con schemi precedenti (status LOCKED/AVAILABLE
@@ -323,6 +448,37 @@ function migrateSfida(raw, index, arr) {
     // Blindati a interi >= 0 anche da un import/salvataggio corrotto.
     tentativiSuccessi: Number.isFinite(raw.tentativiSuccessi) && raw.tentativiSuccessi >= 0 ? raw.tentativiSuccessi : 0,
     tentativiFalliti: Number.isFinite(raw.tentativiFalliti) && raw.tentativiFalliti >= 0 ? raw.tentativiFalliti : 0,
+    // V42 — memoria FSRS (stabilità, difficoltà, ultimo ripasso): per un
+    // nodo completato prima della V42 si ricava dalla vecchia curva SM-2.
+    srsLapses: nonNegInt(raw.srsLapses),
+    ...migrateSrsFields({ ...raw, status }),
+    // V42 — minuti di ripasso ed esercizi separati dallo studio, storici brevi.
+    minutiRipasso: nonNegInt(raw.minutiRipasso),
+    minutiEsercizi: nonNegInt(raw.minutiEsercizi),
+    ripassi: recentList(raw.ripassi, MAX_RIPASSI_PER_NODO, (e) => ({
+      at: e.at,
+      voto: typeof e.voto === 'string' ? e.voto : null,
+      r: Number.isFinite(Number(e.r)) ? Math.round(Number(e.r) * 100) / 100 : null,
+      fonte: typeof e.fonte === 'string' ? e.fonte : null
+    })),
+    esercizi: normalizeEsercizi(raw.esercizi),
+    quizEsiti: recentList(raw.quizEsiti, MAX_QUIZ_ESITI_PER_NODO, (e) => ({
+      at: e.at,
+      sapevo: nonNegInt(e.sapevo),
+      parziale: nonNegInt(e.parziale),
+      no: nonNegInt(e.no),
+      modo: e.modo === 'ORALE' ? 'ORALE' : 'QUIZ'
+    })),
+    sintesiManuale: recentList(raw.sintesiManuale, MAX_SINTESI_MANUALE_PER_NODO, (e) => ({
+      at: e.at,
+      pagine: nonNegInt(e.pagine),
+      appunti: nonNegInt(e.appunti)
+    })),
+    pagineAppuntiPreviste: nonNegInt(raw.pagineAppuntiPreviste),
+    // V42 — XP del completamento: `null` su un nodo completato prima della
+    // V42 (importo non noto: riaprirlo non ritira niente).
+    xpAwarded: Number.isFinite(Number(raw.xpAwarded)) && raw.xpAwarded !== null ? Math.max(0, Number(raw.xpAwarded)) : status === PERSISTED_STATUS.COMPLETED ? null : 0,
+    xpAwardedAt: typeof raw.xpAwardedAt === 'string' ? raw.xpAwardedAt : null,
     // V40.0 — FIX: questi due campi venivano scartati a ogni caricamento
     // (la migrazione elenca i campi uno per uno). `chiusoDaVerbale`
     // (V39) teneva fuori dalla calibrazione i nodi chiusi dall'esame
@@ -385,10 +541,32 @@ function withUniqueIds(list, prefix) {
 function migrateMateria(raw) {
   const sfideRaw = withUniqueIds((Array.isArray(raw.sfide) ? raw.sfide : []).filter(isRecord), `${raw.id}-s`);
   const cfu = typeof raw.cfu === 'number' ? raw.cfu : (raw.isCritical ? 9 : DEFAULT_CFU);
-  return {
+  const course = getCourseById(raw.courseId);
+  // V42 — una data d'esame non valida (campo sporcato, import) non entra:
+  // prima una quota NaN si prendeva l'intero budget della giornata.
+  const examDate = raw.examDate && isValidDateKey(String(raw.examDate).slice(0, 10)) ? String(raw.examDate).slice(0, 10) : null;
+  const formatoEsame = isFormatoEsame(raw.formatoEsame)
+    ? raw.formatoEsame
+    : course?.ungraded
+    ? FORMATO_ESAME.IDONEITA
+    : FORMATO_ESAME.SCRITTO_ORALE;
+  const base = {
     id: raw.id,
     nome: typeof raw.nome === 'string' && raw.nome.trim() ? raw.nome : 'Materia senza nome',
-    examDate: raw.examDate ? String(raw.examDate).slice(0, 10) : null,
+    examDate,
+    oralDate: raw.oralDate && isValidDateKey(String(raw.oralDate).slice(0, 10)) ? String(raw.oralDate).slice(0, 10) : null,
+    appelli: Array.isArray(raw.appelli) ? raw.appelli : [],
+    appelloTargetId: typeof raw.appelloTargetId === 'string' ? raw.appelloTargetId : null,
+    formatoEsame,
+    // V42 — PIANO (corso del piano), SCELTA (riempie i 18 CFU a scelta),
+    // EXTRA (sovrannumerario, fuori da media e CFU di laurea).
+    tipoPiano: TIPO_PIANO[raw.tipoPiano] ? raw.tipoPiano : raw.courseId ? TIPO_PIANO.PIANO : TIPO_PIANO.SCELTA,
+    // V42 — simulazioni d'esame (Boss Fight collegata o registrate a mano).
+    simulazioni: normalizeSimulazioni(raw.simulazioni),
+    // V42 — minuti di studio sulla materia senza un argomento scelto.
+    focusMinutesLibere: nonNegInt(raw.focusMinutesLibere),
+    // V42 — "Ricostruisco da zero in sessione": data di avvio, o null.
+    ricostruzione: raw.ricostruzione && typeof raw.ricostruzione === 'object' && typeof raw.ricostruzione.dal === 'string' ? { dal: raw.ricostruzione.dal } : null,
     cfu,
     createdAt: raw.createdAt || new Date().toISOString(),
     sfide: sfideRaw.map(migrateSfida),
@@ -414,6 +592,9 @@ function migrateMateria(raw) {
     voto: Number.isFinite(raw.voto) && raw.voto >= 18 && raw.voto <= 30 ? raw.voto : null,
     lode: !!raw.lode
   };
+  // Lista appelli normalizzata e date derivate (una materia pre-V42 con la
+  // sola `examDate` riceve l'appello equivalente).
+  return syncAppelli(base);
 }
 
 /**
@@ -430,10 +611,24 @@ export function hydrateState(rawState) {
   // corrotto) può non avere `techTokens`/`unlockedSkills`, oppure averli
   // in una forma inattesa (NaN, non-array). Mai propagare quei valori
   // "sporchi" nello stato idratato: fallback sicuro ai default neutri.
-  const rawProfile = rawState.profile || {};
+  const rawProfile = isRecord(rawState.profile) ? rawState.profile : {};
+  // V42 — ogni contatore numerico del profilo: un valore non numerico,
+  // negativo o infinito (salvataggio corrotto, import a mano) torna al
+  // default invece di propagarsi come NaN in XP, livello o Stamina.
+  const numeriSicuri = {};
+  Object.entries(defaults.profile).forEach(([k, def]) => {
+    if (typeof def !== 'number' || !(k in rawProfile) || k === 'xpCurveVersion') return;
+    const raw = rawProfile[k];
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
+    numeriSicuri[k] = Number.isFinite(n) && n >= 0 ? n : def;
+  });
+  if ('level' in numeriSicuri) numeriSicuri.level = Math.max(1, Math.round(numeriSicuri.level));
+  if ('maxLevelReached' in numeriSicuri) numeriSicuri.maxLevelReached = Math.max(1, Math.round(numeriSicuri.maxLevelReached));
+  if ('stamina' in numeriSicuri) numeriSicuri.stamina = Math.min(100, numeriSicuri.stamina);
   const safeProfile = {
     ...defaults.profile,
     ...rawProfile,
+    ...numeriSicuri,
     techTokens: Number.isFinite(rawProfile.techTokens) && rawProfile.techTokens >= 0 ? rawProfile.techTokens : 0,
     unlockedSkills: Array.isArray(rawProfile.unlockedSkills) ? rawProfile.unlockedSkills : [],
     // V27.0 — Blindatura Maximum Carnage / Web-Sling: mai propagare valori
@@ -466,19 +661,63 @@ export function hydrateState(rawState) {
     // contatori lifetime del profilo.
     streakShields: Number.isFinite(rawProfile.streakShields) && rawProfile.streakShields >= 0 ? rawProfile.streakShields : 0,
     streakShieldsUsedTotal: Number.isFinite(rawProfile.streakShieldsUsedTotal) && rawProfile.streakShieldsUsedTotal >= 0 ? rawProfile.streakShieldsUsedTotal : 0,
-    lastStreakShieldGrantMonthKey: typeof rawProfile.lastStreakShieldGrantMonthKey === 'string' ? rawProfile.lastStreakShieldGrantMonthKey : null
+    lastStreakShieldGrantMonthKey: typeof rawProfile.lastStreakShieldGrantMonthKey === 'string' ? rawProfile.lastStreakShieldGrantMonthKey : null,
+    // V42 — nuovi contatori, stessa blindatura.
+    streakWeekKey: typeof rawProfile.streakWeekKey === 'string' ? rawProfile.streakWeekKey : null,
+    streakWeekMisses: nonNegInt(rawProfile.streakWeekMisses),
+    carnageCharges: Math.min(1, nonNegInt(rawProfile.carnageCharges)),
+    criticalActionDateKey: typeof rawProfile.criticalActionDateKey === 'string' ? rawProfile.criticalActionDateKey : null,
+    carnageActivations: nonNegInt(rawProfile.carnageActivations),
+    protocolDayKey: typeof rawProfile.protocolDayKey === 'string' ? rawProfile.protocolDayKey : null,
+    protocolStaminaToday: nonNegInt(rawProfile.protocolStaminaToday),
+    protocolXpToday: nonNegInt(rawProfile.protocolXpToday)
   };
+  // V42 — la vecchia finestra Maximum Carnage dava Stamina gratis e
+  // partiva da sola; una finestra rimasta aperta dal salvataggio resta
+  // valida fino alla sua scadenza, il resto è la nuova regola.
+  // Curva dei livelli: conversione una tantum sugli XP totali.
+  const conversione = convertProfileToCurveV2({
+    ...safeProfile,
+    maxLevelReached: Number.isFinite(rawProfile.maxLevelReached) && rawProfile.maxLevelReached >= 1 ? Math.round(rawProfile.maxLevelReached) : safeProfile.level,
+    xpCurveVersion: rawProfile.xpCurveVersion
+  });
+  const profile = conversione.profile;
+  const curveLog =
+    conversione.toLevel !== conversione.fromLevel
+      ? [
+          {
+            id: `log_curve_${Date.now()}`,
+            message: `Curva dei livelli ribilanciata (V42): stessi XP totali, dal Lv.${conversione.fromLevel} al Lv.${conversione.toLevel}${conversione.tokens > 0 ? `, +${conversione.tokens} Tech Token` : ''}.`,
+            tag: 'SYSTEM',
+            timestamp: new Date().toISOString()
+          }
+        ]
+      : [];
 
   // V41 — solo voci che sono oggetti, con id presenti e unici (vedi
   // withUniqueIds): una voce `null` in un backup fermava l'avvio.
-  const materie = Array.isArray(rawState.materie)
-    ? withUniqueIds(rawState.materie.filter(isRecord), 'materia').map(migrateMateria)
+  const rawStarLog = Array.isArray(rawState.starLog) ? rawState.starLog.filter((e) => e && typeof e === 'object' && !Array.isArray(e)) : [];
+  const materieRaw = Array.isArray(rawState.materie) ? withUniqueIds(rawState.materie.filter(isRecord), 'materia') : null;
+  const materie = materieRaw
+    ? materieRaw.map((raw) => {
+        const m = migrateMateria(raw);
+        // V42 — minuti "liberi" di una materia senza argomenti, ricostruiti
+        // una volta dallo Star Log (prima non esistevano): lo studio fatto
+        // su una materia non ancora mappata ora accorcia la sua stima.
+        if (raw.focusMinutesLibere == null && (!Array.isArray(m.sfide) || m.sfide.length === 0)) {
+          const minuti = rawStarLog
+            .filter((e) => e.type === 'FOCUS_SESSION' && e.materiaId === m.id)
+            .reduce((sum, e) => sum + (Number(e.minutes) || 0), 0);
+          return minuti > 0 ? { ...m, focusMinutesLibere: Math.round(minuti) } : m;
+        }
+        return m;
+      })
     : defaults.materie;
 
   return {
     metadata: { ...defaults.metadata, ...(rawState.metadata || {}), version: SCHEMA_VERSION },
-    profile: safeProfile,
-    settings: { ...defaults.settings, ...(rawState.settings || {}) },
+    profile,
+    settings: sanitizeSettings({ ...defaults.settings, ...(rawState.settings || {}) }),
     materie,
     // V37.0 — Potatura al boot. Era l'unico array dello stato senza
     // tetto: ogni salvataggio riscrive l'INTERO app_state, quindi un
@@ -490,20 +729,20 @@ export function hydrateState(rawState) {
     // V40.1 — solo voci che sono oggetti: un `null` finito in un backup
     // importato a mano faceva crollare la valutazione dei trofei (e con
     // lei l'intera app) al primo render.
-    starLog: Array.isArray(rawState.starLog)
-      ? pruneStarLog(rawState.starLog.filter((e) => e && typeof e === 'object' && !Array.isArray(e))).starLog
-      : defaults.starLog,
+    starLog: Array.isArray(rawState.starLog) ? pruneStarLog(rawStarLog).starLog : defaults.starLog,
     // V32.0 — Storico Media Ponderata: blindato voce per voce (mai un
     // punto con data/average corrotti che romperebbe il grafico).
     gradeHistory: Array.isArray(rawState.gradeHistory)
       ? rawState.gradeHistory.filter((e) => e && typeof e.dateKey === 'string' && Number.isFinite(e.average))
       : defaults.gradeHistory,
-    combatLog: Array.isArray(rawState.combatLog) ? rawState.combatLog : defaults.combatLog,
-    shopRewards: Array.isArray(rawState.shopRewards) ? rawState.shopRewards : defaults.shopRewards,
-    inventory: Array.isArray(rawState.inventory) ? rawState.inventory : defaults.inventory,
-    trophies: Array.isArray(rawState.trophies) ? rawState.trophies : defaults.trophies,
-    quickQuests: Array.isArray(rawState.quickQuests) && rawState.quickQuests.length > 0
-      ? rawState.quickQuests.map((q) => ({ xpReward: 0, ...q }))
+    combatLog: [...(Array.isArray(rawState.combatLog) ? rawState.combatLog : defaults.combatLog), ...curveLog].slice(-50),
+    // V42 — solo voci che sono oggetti: un `null` in una lista (backup
+    // corrotto) non deve arrivare ai componenti che leggono i suoi campi.
+    shopRewards: Array.isArray(rawState.shopRewards) ? rawState.shopRewards.filter(isRecord) : defaults.shopRewards,
+    inventory: Array.isArray(rawState.inventory) ? rawState.inventory.filter(isRecord) : defaults.inventory,
+    trophies: Array.isArray(rawState.trophies) ? rawState.trophies.filter(isRecord) : defaults.trophies,
+    quickQuests: Array.isArray(rawState.quickQuests) && rawState.quickQuests.some(isRecord)
+      ? rawState.quickQuests.filter(isRecord).map((q) => ({ xpReward: 0, ...q }))
       : defaults.quickQuests,
     // V23.0 — Daily Patrol Engine: la struttura `{ claimed }` della V20 è
     // stata sostituita da `{ quests: [] }` (motore event-driven). Un
@@ -513,11 +752,39 @@ export function hydrateState(rawState) {
     // immediatamente al prossimo mount — nessun crash, nessuna quest
     // fantasma con struttura obsoleta.
     dailyPatrols: rawState.dailyPatrols && Array.isArray(rawState.dailyPatrols.quests)
-      ? { dateKey: rawState.dailyPatrols.dateKey || null, quests: rawState.dailyPatrols.quests }
+      ? {
+          dateKey: typeof rawState.dailyPatrols.dateKey === 'string' ? rawState.dailyPatrols.dateKey : null,
+          quests: rawState.dailyPatrols.quests.filter((q) => isRecord(q) && typeof q.type === 'string')
+        }
       : defaults.dailyPatrols,
     // V39.0 — normalizzato contro le materie REALI del profilo: una
     // lezione che punta a una materia cancellata non sopravvive alla
     // reidratazione (integrità referenziale in un punto solo).
-    campus: normalizeCampus(rawState.campus, new Set(materie.map((m) => m.id)))
+    campus: normalizeCampus(rawState.campus, new Set(materie.map((m) => m.id))),
+    // V42 — "Chiudi la giornata" e bilancio settimanale.
+    tomorrowPlan: normalizeTomorrowPlan(rawState.tomorrowPlan),
+    dayClosures: normalizeDayClosures(rawState.dayClosures),
+    karenWeekly: rawState.karenWeekly && typeof rawState.karenWeekly === 'object' && typeof rawState.karenWeekly.weekKey === 'string' ? rawState.karenWeekly : null
+  };
+}
+
+/** V42 — Impostazioni del piano con valori sempre sensati. */
+export function sanitizeSettings(settings) {
+  const riposo = (Array.isArray(settings.giorniRiposo) ? settings.giorniRiposo : [])
+    .map(Number)
+    .filter((n, i, arr) => Number.isInteger(n) && n >= 1 && n <= 7 && arr.indexOf(n) === i)
+    .slice(0, 3);
+  const cap = Number(settings.capacitaManuale);
+  const riposiSett = Number(settings.streakRiposiSettimana);
+  const anno = Number(settings.annoImmatricolazione);
+  const ora = Number(settings.chiusuraOra);
+  return {
+    ...settings,
+    giorniRiposo: riposo,
+    capacitaManuale: Number.isFinite(cap) && cap >= 0.5 && cap <= 12 ? Math.round(cap * 4) / 4 : null,
+    streakRiposiSettimana: Number.isInteger(riposiSett) && riposiSett >= 0 && riposiSett <= 3 ? riposiSett : 2,
+    annoImmatricolazione: Number.isInteger(anno) && anno >= 2000 && anno <= 2100 ? anno : null,
+    erasmus: settings.erasmus === true,
+    chiusuraOra: Number.isInteger(ora) && ora >= 15 && ora <= 23 ? ora : 19
   };
 }

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Icon } from './Icons.jsx';
-import { CARD_ALERT, CARD_BARE, BTN_PRIMARY, BTN_SECONDARY, BTN_GHOST } from '../utils/designSystem.js';
+import { CARD, CARD_ALERT, BTN_PRIMARY, BTN_SECONDARY, BTN_GHOST } from '../utils/designSystem.js';
 import { reportClientError } from '../utils/errorReporter.js';
 import { isChunkLoadError } from '../utils/lazyPage.js';
 
@@ -92,22 +92,21 @@ export default class PageErrorBoundary extends React.Component {
   renderDownloadFallito() {
     const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
     return (
-      <div className={`${CARD_BARE} border-secondary/35 max-w-lg mx-auto mt-10 md:mt-16 text-center space-y-5`}>
-        <div className="relative w-16 h-16 mx-auto rounded-2xl bg-secondary/10 border border-secondary/40 flex items-center justify-center text-secondary">
-          <Icon name={offline ? 'cloudOff' : 'download'} className="w-8 h-8" />
+      <div role="alert" className={`${CARD} max-w-lg mx-auto mt-10 md:mt-16 text-center`}>
+        <div className="w-12 h-12 mx-auto rounded-xl bg-secondary/10 border border-secondary/30 flex items-center justify-center text-secondary">
+          <Icon name={offline ? 'cloudOff' : 'download'} className="w-6 h-6" />
         </div>
-        <h2 className="relative text-xl font-extrabold text-secondary tracking-wide">
-          {offline ? 'Pagina non ancora scaricata' : 'Nuova versione disponibile'}
-        </h2>
-        <p className="relative text-base text-slate-400 leading-relaxed">
+        <h2 className="text-lg font-bold text-white mt-4">{offline ? 'Pagina non ancora scaricata' : 'Nuova versione disponibile'}</h2>
+        <p className="text-sm text-slate-400 leading-relaxed mt-2">
           {offline
             ? 'Sei offline e questa pagina non è ancora stata scaricata su questo dispositivo. Torna online e ricarica l’app.'
             : 'Mentre l’app era aperta è uscito un aggiornamento e questa pagina appartiene ormai alla versione nuova. Ricarica l’app per passare alla nuova versione.'}{' '}
           I tuoi dati sono al sicuro.
         </p>
-        <p className="relative text-sm text-slate-500">Se hai un blocco Focus in corso, ricarica quando è finito.</p>
-        <div className="relative flex flex-wrap justify-center gap-3">
+        <p className="text-xs text-slate-500 mt-2">Se hai un blocco Focus in corso, ricarica quando è finito.</p>
+        <div className="flex flex-wrap justify-center gap-2.5 mt-5">
           <button type="button" onClick={() => window.location.reload()} className={BTN_SECONDARY}>
+            <Icon name="refresh" className="w-4 h-4" />
             Ricarica l’app
           </button>
           {this.props.onRecover && (
@@ -124,18 +123,18 @@ export default class PageErrorBoundary extends React.Component {
     if (!this.state.hasError) return this.props.children;
     if (isChunkLoadError(this.state.error)) return this.renderDownloadFallito();
     return (
-      <div className={`${CARD_ALERT} max-w-lg mx-auto mt-10 md:mt-16 text-center space-y-5`}>
-        <div className="absolute -top-16 left-1/2 -translate-x-1/2 w-48 h-48 rounded-full bg-primary/20 blur-3xl pointer-events-none" />
-        <div className="relative w-16 h-16 mx-auto rounded-2xl bg-primary/10 border border-primary/40 flex items-center justify-center text-primary">
-          <Icon name="alertTriangle" className="w-8 h-8" />
+      <div role="alert" className={`${CARD_ALERT} max-w-lg mx-auto mt-10 md:mt-16 text-center`}>
+        <div className="w-12 h-12 mx-auto rounded-xl bg-primary/10 border border-primary/30 flex items-center justify-center text-primary">
+          <Icon name="alertTriangle" className="w-6 h-6" />
         </div>
-        <h2 className="relative text-xl font-extrabold text-primary tracking-wide">Web-Shooter Inceppato</h2>
-        <p className="relative text-base text-slate-400 leading-relaxed">
-          Questa pagina ha incontrato un errore imprevisto e si è fermata prima di rompere il resto
-          dell'app. I tuoi dati sono al sicuro: puoi riprovare o tornare allo Stark-Web Terminal.
+        <h2 className="text-lg font-bold text-white mt-4">Web-Shooter inceppato</h2>
+        <p className="text-sm text-slate-400 leading-relaxed mt-2">
+          Questa pagina ha incontrato un errore imprevisto e si è fermata prima di rompere il resto dell’app. I tuoi dati sono al
+          sicuro: puoi riprovare o tornare allo Stark-Web Terminal.
         </p>
-        <div className="relative flex flex-wrap justify-center gap-3">
+        <div className="flex flex-wrap justify-center gap-2.5 mt-5">
           <button type="button" onClick={this.reset} className={BTN_PRIMARY}>
+            <Icon name="refresh" className="w-4 h-4" />
             Riprova
           </button>
           {this.props.onRecover && (
@@ -144,12 +143,11 @@ export default class PageErrorBoundary extends React.Component {
             </button>
           )}
         </div>
-        <details className="relative text-left rounded-xl border border-white/10 bg-black/30 p-3">
-          <summary className="cursor-pointer text-sm text-slate-400 select-none">Dettagli tecnici</summary>
-          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs text-slate-400 font-mono">
-            {this.dettagli()}
-          </pre>
-          <button type="button" onClick={this.copiaDettagli} className={`${BTN_GHOST} mt-2 w-full sm:w-auto`}>
+        <details className="ds-well text-left p-3 mt-5">
+          <summary className="cursor-pointer text-[13px] text-slate-400 select-none">Dettagli tecnici</summary>
+          <pre className="mt-2 max-h-48 overflow-auto af-scroll whitespace-pre-wrap break-words text-xs text-slate-400 font-mono">{this.dettagli()}</pre>
+          <button type="button" onClick={this.copiaDettagli} className={`${BTN_GHOST} ds-btn-sm mt-2.5 w-full sm:w-auto`}>
+            <Icon name={this.state.copiato ? 'check' : 'note'} className="w-3.5 h-3.5" />
             {this.state.copiato ? 'Copiati' : 'Copia dettagli'}
           </button>
         </details>

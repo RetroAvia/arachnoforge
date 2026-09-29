@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useArachnoForge } from '../context/ArachnoForgeContext.jsx';
 import { Icon } from './Icons.jsx';
+import { BADGE } from '../utils/designSystem.js';
 import { maxCarnageMsRemaining, formatMsRemaining, CRITICAL_ACTION_THRESHOLD } from '../utils/maxCarnage.js';
 
 /**
  * V27.0 — Pillar 3: banner globale "MAXIMUM CARNAGE MODE", montato in cima
+ * (V42: la finestra si apre solo quando attivi una carica, e la Stamina
+ * non è più gratis) 
  * a ogni pagina (App.jsx) quando la finestra da 2 ore è attiva. Il
  * countdown vive in un timer LOCALE da 1s (non nel Context/`nowTick`, che
  * tikka ogni 60s) per restare fluido senza forzare un re-render globale
@@ -32,57 +35,58 @@ export default function MaxCarnageBanner() {
   if (!derived.isMaxCarnageActive) return null;
 
   return (
-    <div className="af-carnage-in af-carnage-pulse mb-5 rounded-2xl border border-primary/60 bg-[rgb(3_3_3_/_0.85)] backdrop-blur-2xl px-4 py-3 sm:px-5 sm:py-3.5 flex flex-col sm:flex-row sm:flex-wrap items-start sm:items-center gap-2.5 sm:gap-4 relative overflow-hidden">
-      <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-primary/20 blur-3xl pointer-events-none" />
-      <div className="relative flex items-center gap-2.5 shrink-0">
-        <div className="w-9 h-9 rounded-xl bg-primary/20 border border-primary/60 flex items-center justify-center text-primary shrink-0">
-          <Icon name="skull" className="w-5 h-5" />
+    <div className="af-carnage-in af-carnage-pulse ds-card-nopad !border-primary/45 mb-5">
+      <div className="px-4 py-3 sm:px-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          <div className="w-9 h-9 rounded-lg bg-primary/10 border border-primary/35 flex items-center justify-center text-primary shrink-0">
+            <Icon name="skull" className="w-[18px] h-[18px]" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-primary">Maximum Carnage Mode</p>
+            <p className="text-xs text-slate-400 mt-0.5">Il simbionte ha il controllo: XP raddoppiati per due ore. La Stamina si consuma come sempre.</p>
+          </div>
         </div>
-        <div>
-          <p className="text-xs sm:text-sm font-extrabold tracking-widest text-primary">MAXIMUM CARNAGE MODE</p>
-          <p className="text-[11px] sm:text-xs text-slate-400">Il simbionte ha il controllo — XP x2, Stamina illimitata.</p>
+        <div className="flex items-center gap-2 justify-between sm:justify-end">
+          <span className={BADGE.red}>
+            <Icon name="bolt" className="w-3.5 h-3.5" />
+            XP ×2
+          </span>
+          <span className="ds-num font-mono text-base font-semibold text-white min-w-[4.5rem] text-right" aria-label="Tempo rimasto">
+            {formatMsRemaining(msRemaining)}
+          </span>
+          <div className="flex items-center">
+            {/* V40.3 — il drone simbionte si zittisce da qui, senza spegnere
+                tutti gli effetti sonori e senza cercare l'interruttore nelle
+                Impostazioni mentre stai studiando. */}
+            <button
+              type="button"
+              onClick={() => actions.updateSettings({ carnageDrone: !droneAcceso })}
+              aria-pressed={!droneAcceso}
+              aria-label={droneAcceso ? 'Zittisci il drone simbionte' : 'Riattiva il drone simbionte'}
+              title={droneAcceso ? 'Zittisci il drone simbionte' : 'Riattiva il drone simbionte'}
+              className={`ds-icon-btn ${droneAcceso ? '!text-primary' : ''}`}
+            >
+              <Icon name="speaker" className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setSpiegazioneAperta((v) => !v)}
+              aria-expanded={spiegazioneAperta}
+              aria-label="Come funziona Maximum Carnage"
+              title="Come funziona Maximum Carnage"
+              className="ds-icon-btn"
+            >
+              <Icon name={spiegazioneAperta ? 'chevronUp' : 'info'} className="w-4 h-4" />
+            </button>
+          </div>
         </div>
-      </div>
-      <div className="relative flex items-center gap-2 ml-0 sm:ml-auto w-full sm:w-auto justify-between sm:justify-end">
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/50 bg-primary/10 px-3 py-1 text-[11px] font-mono text-primary">
-          <Icon name="bolt" className="w-3.5 h-3.5" />
-          XP x2
-        </span>
-        <span className="font-mono text-base sm:text-lg font-bold text-white af-mono-nums tabular-nums">
-          {formatMsRemaining(msRemaining)}
-        </span>
-        {/* V40.3 — il drone simbionte si zittisce da qui, senza spegnere
-            tutti gli effetti sonori e senza cercare l'interruttore in
-            Karen OS Settings mentre stai studiando. */}
-        <button
-          type="button"
-          onClick={() => actions.updateSettings({ carnageDrone: !droneAcceso })}
-          aria-pressed={!droneAcceso}
-          title={droneAcceso ? 'Zittisci il drone simbionte' : 'Riattiva il drone simbionte'}
-          className={`w-9 h-9 shrink-0 flex items-center justify-center rounded-xl border transition-all duration-300 active:scale-95 ${
-            droneAcceso
-              ? 'border-primary/40 text-primary hover:bg-primary/10'
-              : 'border-white/15 text-slate-500 hover:text-slate-300 hover:bg-white/[0.05]'
-          }`}
-        >
-          <Icon name="speaker" className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => setSpiegazioneAperta((v) => !v)}
-          aria-expanded={spiegazioneAperta}
-          title="Come funziona Maximum Carnage"
-          className="w-9 h-9 shrink-0 flex items-center justify-center rounded-xl border border-white/15 text-slate-400 hover:text-white hover:bg-white/[0.05] transition-all duration-300 active:scale-95"
-        >
-          <Icon name={spiegazioneAperta ? 'chevronUp' : 'chevronDown'} className="w-4 h-4" />
-        </button>
       </div>
       {spiegazioneAperta && (
-        <p className="relative w-full text-[11px] sm:text-xs text-slate-400 leading-relaxed border-t border-white/10 pt-2.5 sm:basis-full">
-          Si attiva da sola dopo {CRITICAL_ACTION_THRESHOLD} "azioni critiche" di fila: nodi Hard completati, sessioni di
-          Focus chiuse in Overdrive e Boss Fight vinte. Dura 2 ore: XP raddoppiati e nessun costo di Stamina. Il ronzio
-          grave di sottofondo è il drone simbionte — l'icona dell'altoparlante qui accanto lo zittisce (anche in Karen OS
-          Settings).
+        <p className="px-4 sm:px-5 py-3 border-t border-line text-xs text-slate-400 leading-relaxed">
+          Con {CRITICAL_ACTION_THRESHOLD} «azioni critiche» nella stessa giornata (argomenti Hard completati con studio tracciato, blocchi di
+          Focus in Overdrive da almeno 20 minuti, simulazioni d’esame vinte) guadagni una carica, che attivi tu da Mission Control quando vuoi,
+          fra le 6 e le 23. Dura 2 ore: XP raddoppiati, Stamina normale — il simbionte non ti fa studiare oltre il limite. Il ronzio grave di
+          sottofondo è il drone simbionte: l’altoparlante qui accanto lo zittisce (anche dalle Impostazioni › Suoni e notifiche).
         </p>
       )}
     </div>

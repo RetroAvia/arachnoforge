@@ -29,8 +29,13 @@ export const VANVITELLI_COURSES = [
   { id: 'analisi2', nome: 'Analisi Matematica 2', cfu: 9, anno: 2, semestre: '1', prereq: ['analisi1'] },
   { id: 'meccanica', nome: 'Elementi di Meccanica', cfu: 6, anno: 2, semestre: '1', prereq: ['analisi1', 'algebra'] },
   { id: 'elettrotecnica', nome: 'Elettrotecnica', cfu: 6, anno: 2, semestre: '1', prereq: ['analisi1', 'algebra', 'fisica', 'chimica'] },
-  { id: 'inglese', nome: 'Inglese', cfu: 3, anno: 2, semestre: '1', prereq: [] },
-  { id: 'aerodinamica', nome: 'Aerodinamica', cfu: 15, anno: 2, semestre: '1-2', prereq: ['analisi1', 'algebra', 'fisica', 'chimica'] },
+  // V42 — Inglese è un'IDONEITÀ (regolamento didattico: "giudizio di
+  // idoneità"): dà i 3 CFU ma nessun voto, quindi non entra nella media.
+  { id: 'inglese', nome: 'Inglese', cfu: 3, anno: 2, semestre: '1', prereq: [], ungraded: true },
+  // V42 — FIX: il piano di studi chiede per Aerodinamica SOLO Analisi 1 e
+  // Algebra. Con Fisica e Chimica in più i suoi 15 CFU risultavano
+  // "congelati" e sparivano da focus, Primary Target e carico cumulativo.
+  { id: 'aerodinamica', nome: 'Aerodinamica', cfu: 15, anno: 2, semestre: '1-2', prereq: ['analisi1', 'algebra'] },
   { id: 'materiali', nome: "Materiali per l'Aeronautica e lo Spazio", cfu: 6, anno: 2, semestre: '2', prereq: ['analisi1', 'fisica', 'chimica'] },
   { id: 'calcoloNumerico', nome: 'Calcolo Numerico', cfu: 6, anno: 2, semestre: '2', prereq: [] },
   { id: 'scienzaCostruzioni', nome: 'Scienza delle Costruzioni', cfu: 9, anno: 2, semestre: '2', prereq: ['meccanica'] },
@@ -41,7 +46,9 @@ export const VANVITELLI_COURSES = [
   { id: 'sistemiAvionici', nome: 'Sistemi Avionici di Navigazione Aerospaziale', cfu: 6, anno: 3, semestre: '1', prereq: ['meccanica', 'analisi2'] },
   { id: 'propulsione', nome: 'Propulsione Aerospaziale', cfu: 6, anno: 3, semestre: '2', prereq: ['aerodinamica', 'fisica'] },
   { id: 'trasmissioneCalore', nome: 'Trasmissione del Calore', cfu: 6, anno: 3, semestre: '2', prereq: ['analisi2', 'fisica'] },
-  { id: 'sceltaLibera', nome: 'A scelta dello studente', cfu: 18, anno: 3, semestre: '-', prereq: [], ungraded: false },
+  // V42 — `bucket`: i 18 CFU "a scelta" sono un contenitore che si riempie
+  // con gli esami scelti (materie di tipo SCELTA), mai sommato a loro.
+  { id: 'sceltaLibera', nome: 'A scelta dello studente', cfu: 18, anno: 3, semestre: '-', prereq: [], ungraded: false, bucket: true },
   { id: 'altreAttivita', nome: 'Altre attività', cfu: 9, anno: 3, semestre: '-', prereq: [], ungraded: true },
   { id: 'provaFinale', nome: 'Prova Finale', cfu: 3, anno: 3, semestre: '-', prereq: [], ungraded: true }
 ];
@@ -104,6 +111,128 @@ export function getMissingPrerequisites(courseId, materie, excludeMateriaId = nu
     .filter((pid) => !isPrereqSatisfied(pid, safeMaterie, excludeMateriaId))
     .map((pid) => getCourseById(pid))
     .filter(Boolean);
+}
+
+function normalizzaNome(nome) {
+  return String(nome || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+/** La materia dell'utente che corrisponde a un corso del piano (per id o per nome). */
+function materiaDelCorso(course, materie, excludeMateriaId) {
+  const nome = normalizzaNome(course?.nome);
+  return (
+    materie.find((m) => m && m.id !== excludeMateriaId && !m.examPassed && m.courseId === course.id) ||
+    materie.find((m) => m && m.id !== excludeMateriaId && !m.examPassed && normalizzaNome(m.nome) === nome) ||
+    null
+  );
+}
+
+/**
+ * V42 — PROPEDEUTICITÀ CONDIZIONALI.
+ *
+ * Fino alla V41 una propedeutica contava solo quando l'esame era già
+ * verbalizzato: Aerodinamica (appello a febbraio) restava "congelata"
+ * finché Analisi 1 (appello a gennaio) non era registrata, e il suo
+ * carico spariva dai conti proprio nei mesi in cui andava preparata.
+ * Ma se la propedeutica ha un appello in calendario PRIMA di quello della
+ * materia che la richiede, il piano è coerente: si preparano entrambe,
+ * nell'ordine giusto. Solo quando la propedeutica non ha una data, o ne ha
+ * una che viene dopo, la materia è davvero bloccata.
+ *
+ * @returns {{missing: Array, pianificate: Array<{course, materia, dataKey}>, bloccanti: Array<{course, materia, dataKey}>}}
+ */
+export function getPrerequisiteStatus(courseId, materie, { excludeMateriaId = null, dependentExamDate = null, todayKey = null } = {}) {
+  const vuoto = { missing: [], pianificate: [], bloccanti: [] };
+  const course = getCourseById(courseId);
+  if (!course || course.prereq.length === 0) return vuoto;
+  const safe = Array.isArray(materie) ? materie : [];
+  const missing = getMissingPrerequisites(courseId, safe, excludeMateriaId);
+  if (missing.length === 0) return vuoto;
+  const oggi = typeof todayKey === 'string' ? todayKey : new Date().toISOString().slice(0, 10);
+  const pianificate = [];
+  const bloccanti = [];
+  missing.forEach((c) => {
+    const m = materiaDelCorso(c, safe, excludeMateriaId);
+    // La propedeutica va CHIUSA prima: conta l'ultimo evento del suo
+    // appello (l'orale, se c'è), non il primo.
+    const fine = m ? (typeof m.oralDate === 'string' && m.oralDate ? m.oralDate : m.examDate) : null;
+    const dataKey = typeof fine === 'string' && fine.length >= 10 ? fine.slice(0, 10) : null;
+    const inTempo = !!dataKey && dataKey >= oggi && typeof dependentExamDate === 'string' && dataKey < dependentExamDate.slice(0, 10);
+    (inTempo ? pianificate : bloccanti).push({ course: c, materia: m, dataKey });
+  });
+  return { missing, pianificate, bloccanti };
+}
+
+/**
+ * V42 — Una materia uguale esiste già? Stesso corso del piano, oppure lo
+ * stesso nome (senza badare a maiuscole e spazi). Aggiungere due volte
+ * Analisi 1 contava 12 CFU in più nella stima di laurea.
+ */
+export function findDuplicateMateria(materie, { courseId = null, nome = '' } = {}, excludeMateriaId = null) {
+  const safe = Array.isArray(materie) ? materie : [];
+  const n = normalizzaNome(nome);
+  return (
+    safe.find(
+      (m) =>
+        m &&
+        m.id !== excludeMateriaId &&
+        ((courseId && courseId !== CUSTOM_COURSE_ID && m.courseId === courseId) || (n && normalizzaNome(m.nome) === n))
+    ) || null
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * V42 — TIPO DI ESAME NEL PIANO e conteggio dei CFU.
+ *
+ *   PIANO  — un corso del piano di studi;
+ *   SCELTA — un esame a scelta: riempie i 18 CFU "a scelta dello
+ *            studente", mai oltre;
+ *   EXTRA  — sovrannumerario: fuori dal curriculum, non entra né nella
+ *            media né nei CFU per la laurea.
+ * ------------------------------------------------------------------ */
+export const TIPO_PIANO = { PIANO: 'PIANO', SCELTA: 'SCELTA', EXTRA: 'EXTRA' };
+export const TIPO_PIANO_META = {
+  PIANO: { label: 'Piano di studi', short: 'Piano' },
+  SCELTA: { label: 'Esame a scelta', short: 'A scelta' },
+  EXTRA: { label: 'Sovrannumerario', short: 'Extra' }
+};
+export const CFU_A_SCELTA = getCourseById('sceltaLibera')?.cfu || 18;
+
+export function tipoPianoOf(materia) {
+  if (materia?.courseId === 'sceltaLibera') return TIPO_PIANO.SCELTA;
+  if (materia && TIPO_PIANO[materia.tipoPiano]) return materia.tipoPiano;
+  return materia?.courseId ? TIPO_PIANO.PIANO : TIPO_PIANO.SCELTA;
+}
+
+/** Idoneità (nessun voto): dal corso del piano o dichiarata sulla materia. */
+export function isUngradedMateria(materia) {
+  if (!materia) return false;
+  if (materia.ungraded === true || materia.formatoEsame === 'IDONEITA') return true;
+  return getCourseById(materia.courseId)?.ungraded === true;
+}
+
+/**
+ * CFU validi per la laurea: i corsi del piano + gli esami a scelta fino a
+ * 18. I sovrannumerari restano fuori. `soloSuperati` per i CFU acquisiti.
+ */
+export function computePlanCfu(materie, { soloSuperati = true } = {}) {
+  let piano = 0;
+  let scelta = 0;
+  let extra = 0;
+  (Array.isArray(materie) ? materie : []).forEach((m) => {
+    if (!m) return;
+    if (soloSuperati && !m.examPassed) return;
+    const cfu = Math.max(0, Number(m.cfu) || 0);
+    const tipo = tipoPianoOf(m);
+    if (tipo === TIPO_PIANO.EXTRA) extra += cfu;
+    else if (tipo === TIPO_PIANO.SCELTA) scelta += cfu;
+    else piano += cfu;
+  });
+  const sceltaValidi = Math.min(CFU_A_SCELTA, scelta);
+  return { piano, scelta, sceltaValidi, extra, totale: piano + sceltaValidi };
 }
 
 /**

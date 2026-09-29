@@ -55,11 +55,11 @@ export default function StaminaBar({ stamina, readinessScore = null, readinessBa
         </div>
         {fatigued ? (
           <p className="text-xs text-primary mt-2 leading-relaxed">
-            XP dimezzati finché la Stamina resta sotto il {FATIGUE_STAMINA_THRESHOLD}%. Un Daily Protocol la ricarica.
+            XP dimezzati finché la Stamina resta sotto il {FATIGUE_STAMINA_THRESHOLD}%. Una pausa vera o un Daily Protocol la ricaricano.
           </p>
         ) : (
           <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-            Scende con le sessioni di Focus, si ricarica alle 03:00 e con i Daily Protocol. Sotto il{' '}
+            Scende con le sessioni di Focus (in proporzione alla tua giornata), risale con le pause, i Daily Protocol e alle 03:00. Sotto il{' '}
             {FATIGUE_STAMINA_THRESHOLD}% gli XP vengono dimezzati.
           </p>
         )}

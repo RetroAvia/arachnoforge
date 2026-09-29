@@ -20,6 +20,7 @@ import { reducer, findMateria, BURNOUT_MINUTES_THRESHOLD } from '../state/reduce
 import { validateImportedProfile } from '../utils/storage.js';
 import {
   computeBloodPactPenalty,
+  computeTotalBankedXp,
   FATIGUE_STAMINA_THRESHOLD,
   FOCUS_QUALITY,
   FOCUS_QUALITY_META
@@ -28,9 +29,13 @@ import { getSkillDef, canUnlockSkill, computeSkillEffects } from '../data/techTr
 import { computeCalibration } from '../utils/calibration.js';
 import { computeExamReadiness } from '../utils/examReadiness.js';
 import { materiaSintesiPlan } from '../utils/sintesiEngine.js';
-import { computeCampusSnapshot, FASE } from '../utils/campusEngine.js';
+import { computeCampusSnapshot, FASE, buildCampusCalendar, sintesiMateria } from '../utils/campusEngine.js';
+import { withPlanningDates, appelloDaChiudere, haProvaScritta } from '../utils/appelli.js';
+import { buildKarenPlanContext } from '../services/karenEngine/planContext.js';
+import { streakStatus, restAllowance } from '../utils/streakEngine.js';
+import { findDuplicateMateria } from '../data/vanvitelliCourseMap.js';
 import { isBountyTarget, computeFriction } from '../utils/friction.js';
-import { getDateKey, crossedThreeAM, daysUntilDateOnly } from '../utils/dateUtils.js';
+import { getDateKey, crossedThreeAM, daysUntilDateOnly, mondayOfDateKey } from '../utils/dateUtils.js';
 import { evaluateTrophies } from '../data/trophies.js';
 import { TIMER_STATUS } from '../hooks/useTimerEngine.js';
 import { useFocusTimer } from '../hooks/useFocusTimer.js';
@@ -41,11 +46,21 @@ import { useKarenAutoRouter } from '../hooks/useKarenAutoRouter.js';
 import { computePrimaryTarget } from '../utils/karenSuggestor.js';
 import { generateDailyQuests } from '../utils/dailyPatrol.js';
 import { useAchievements } from '../hooks/useAchievements.js';
-import { isMaxCarnageActive } from '../utils/maxCarnage.js';
+import { isMaxCarnageActive, isCarnageHour } from '../utils/maxCarnage.js';
 import { canClaimWebSling, rollWebSlingRewardWithPity } from '../utils/webSling.js';
 import { createSfideTreeFromAiIndex } from '../utils/aiIndexParser.js';
+import { deriveNodeStatus, NODE_STATUS } from '../utils/skillTree.js';
 import { validateAdminPassphrase, sandboxStorageKey, guestStorageKey, loadLocalState, saveLocalState } from '../utils/adminOverride.js';
 import { saveCloudCheckpoint, loadCloudCheckpoint, clearCloudCheckpoint } from '../utils/cloudCheckpoint.js';
+import { saveCloudMirror, loadCloudMirror } from '../utils/cloudMirror.js';
+import {
+  maybeDailySnapshot,
+  saveSnapshot,
+  listSnapshots as listLocalSnapshots,
+  readSnapshot as readLocalSnapshot,
+  deleteSnapshot as deleteLocalSnapshot,
+  SNAPSHOT_REASON
+} from '../utils/localBackups.js';
 import { createSessionId, getDeviceId, classifyRemoteWrite } from '../utils/syncIdentity.js';
 import { useKarenBrain } from './KarenBrainContext.jsx';
 
@@ -63,6 +78,26 @@ const ArachnoForgeContext = createContext(null);
  * studi. Con un contesto separato, il tick al secondo raggiunge solo chi
  * il countdown lo mostra davvero (Mission Control).
  */
+/**
+ * V41 — Quanto serve per annullare l'eliminazione di alcuni argomenti:
+ * gli argomenti tolti (con la loro posizione) e i figli che verranno
+ * "promossi a radice" (con il padre che avevano). Null se non c'è niente.
+ */
+function captureSfideRemoval(state, materiaId, sfidaIds) {
+  const materia = (Array.isArray(state?.materie) ? state.materie : []).find((m) => m && m.id === materiaId);
+  const sfide = Array.isArray(materia?.sfide) ? materia.sfide : [];
+  const del = new Set(Array.isArray(sfidaIds) ? sfidaIds : []);
+  const removed = [];
+  sfide.forEach((sfida, index) => {
+    if (sfida && del.has(sfida.id)) removed.push({ sfida, index });
+  });
+  if (removed.length === 0) return null;
+  const reparent = sfide
+    .filter((s) => s && !del.has(s.id) && del.has(s.parentId))
+    .map((s) => ({ id: s.id, parentId: s.parentId }));
+  return { materiaId, removed, reparent };
+}
+
 const TimerContext = createContext(null);
 
 export function useFocusTimerContext() {
@@ -76,6 +111,8 @@ export function useFocusTimerContext() {
  * sempre (rete mobile appesa, tunnel, captive portal): oltre il limite
  * la scrittura conta come fallita e la coda riparte. */
 const SAVE_TIMEOUT_MS = 20000;
+/** V41 — tetto di attesa della lettura iniziale del profilo. */
+const BOOT_TIMEOUT_MS = 15000;
 function withTimeout(promise, ms = SAVE_TIMEOUT_MS) {
   let timer = null;
   const timeout = new Promise((_, reject) => {
@@ -99,6 +136,24 @@ export function ArachnoForgeProvider({ children }) {
   // calcolare gli "effective" minuti del Focus Timer Adattivo più sotto.
   const karenBrain = useKarenBrain();
   const [state, dispatch] = useReducer(reducer, undefined, createDefaultState);
+  // V41 — ogni sostituzione INTERA dello stato (boot, aggiornamento da un
+  // altro dispositivo, conflitto, import, reset) passa da qui. Ricordare
+  // l'oggetto esatto permette agli effetti "a fronte di salita" (nuovo
+  // rango, Symbiote sbloccata, missioni completate, Spider-Sense Surge,
+  // Maximum Carnage) di riconoscere il render dell'idratazione e di
+  // riallinearsi SENZA festeggiare: prima, a ogni avvio, ripartivano dallo
+  // stato di default e al caricamento dei dati veri suonavano e
+  // mostravano notifiche per traguardi raggiunti giorni prima.
+  // Un contatore ("epoca") cresce a ogni idratazione; ogni effetto ricorda
+  // l'ultima epoca vista e, se è cambiata, si riallinea invece di
+  // reagire. Funziona anche quando React raggruppa l'idratazione con altre
+  // azioni nello stesso render (per esempio la rigenerazione delle
+  // missioni del giorno all'avvio).
+  const [hydrationEpoch, setHydrationEpoch] = useState(0);
+  const hydrate = useCallback((payload) => {
+    setHydrationEpoch((e) => e + 1);
+    dispatch({ type: 'HYDRATE', payload });
+  }, []);
   const [sensoryZero, setSensoryZero] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [nowTick, setNowTick] = useState(0);
@@ -150,9 +205,28 @@ export function ArachnoForgeProvider({ children }) {
   const storageModeRef = useRef(storageMode);
   storageModeRef.current = storageMode;
 
-  const pushToast = useCallback((message, type = 'info') => {
+  // V41 — `options` facoltativo: `{ action: { label, onClick }, duration }`
+  // (es. "Annulla" dopo un'eliminazione). Un messaggio identico già a
+  // schermo non viene ripetuto: due eventi gemelli ravvicinati non
+  // impilano due card uguali. Mai però un toast con un'azione: ogni
+  // "Annulla" annulla la SUA operazione, e scartarlo la renderebbe
+  // irrecuperabile.
+  const pushToast = useCallback((message, type = 'info', options = null) => {
     const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    setToasts((prev) => [...prev, { id, message, type }]);
+    const hasAction = !!(options && options.action);
+    setToasts((prev) => {
+      if (!hasAction && prev.some((t) => t.message === message && t.type === type && !t.action)) return prev;
+      return [
+        ...prev,
+        {
+          id,
+          message,
+          type,
+          ...(options && options.action ? { action: options.action } : {}),
+          ...(options && Number.isFinite(options.duration) ? { duration: options.duration } : {})
+        }
+      ];
+    });
     return id;
   }, []);
 
@@ -188,7 +262,11 @@ export function ArachnoForgeProvider({ children }) {
   // pointerover per elemento, mai un blip per micro-movimento del mouse).
   const lastHoveredRef = useRef(null);
   useEffect(() => {
-    const isPrimaryButton = (btn) => btn.classList.contains('font-bold') && btn.classList.contains('uppercase');
+    // V41 — i bottoni principali si riconoscono dalla loro ricetta del
+    // design system (classi `ds-btn-*` "piene"), non più da maiuscolo +
+    // grassetto: il nuovo stile non usa più il maiuscolo spaziato.
+    const MAIN_BUTTON_CLASSES = ['ds-btn-primary', 'ds-btn-secondary', 'ds-btn-success', 'ds-btn-amber'];
+    const isPrimaryButton = (btn) => MAIN_BUTTON_CLASSES.some((c) => btn.classList.contains(c));
     const handlePointerOver = (e) => {
       const btn = e.target.closest('button');
       if (!btn || btn.disabled || !isPrimaryButton(btn)) {
@@ -236,11 +314,35 @@ export function ArachnoForgeProvider({ children }) {
       ? karenFocusDirective.break_minutes
       : state.settings.shortBreakTime;
 
+  // V42 — la chiusura di una sessione porta con sé il contesto del piano
+  // che l'utente vedeva (bersaglio di oggi, capacità, lezioni in coda):
+  // missioni e Stamina usano gli stessi numeri della UI, senza che il
+  // reducer debba ricalcolarli (e magari diversamente).
+  const timerCtxRef = useRef({ primaryTargetMateriaId: undefined, capacityHours: 4.5, lessonMateriaIds: [] });
+  const timerDispatch = useCallback((action) => {
+    if (action && action.type === 'FOCUS_COMPLETED') {
+      const c = timerCtxRef.current;
+      dispatch({
+        ...action,
+        payload: {
+          primaryTargetMateriaId: c.primaryTargetMateriaId,
+          capacityHours: c.capacityHours,
+          lessonMateriaIds: c.lessonMateriaIds,
+          ...action.payload
+        }
+      });
+      return;
+    }
+    dispatch(action);
+  }, []);
+  const bloodPactPenaltyNow = computeBloodPactPenalty(computeSkillEffects(state.profile.unlockedSkills).bloodPactReduction);
+
   const timer = useFocusTimer({
     focusTime: effectiveFocusTime,
     shortBreakTime: effectiveShortBreakTime,
     longBreakTime: state.settings.longBreakTime,
-    dispatch,
+    dispatch: timerDispatch,
+    bloodPactPenalty: bloodPactPenaltyNow,
     audio,
     pushToast,
     userId: user.id,
@@ -250,7 +352,11 @@ export function ArachnoForgeProvider({ children }) {
     notificationsEnabled: state.settings.systemNotifications === true,
     keepScreenAwake: state.settings.keepScreenAwake !== false,
     // V40.3 — il rintocco ogni 30 minuti di Focus accumulato.
-    focusReminderEnabled: state.settings.focusReminder !== false
+    focusReminderEnabled: state.settings.focusReminder !== false,
+    // V41 — il recupero di una sessione orfana aspetta i dati veri: prima
+    // veniva applicato allo stato di DEFAULT del primo render e poi
+    // cancellato dall'idratazione, perdendo i minuti che annunciava.
+    ready: syncStatus !== 'loading' && cloudReadyRef.current
   });
 
   // V26.0 — Cloud State Sync (Pillar 3): boot fetch. Un'unica query alla
@@ -264,9 +370,16 @@ export function ArachnoForgeProvider({ children }) {
   // in memoria sia scritto immediatamente su Supabase con un INSERT, cosi'
   // che il prossimo autosave possa contare su una riga già presente
   // (upsert successivi diventano puri UPDATE).
+  // V41 — un avvio non riuscito non mostra più un profilo vuoto come se
+  // fosse vero: resta sulla schermata di avvio con "Riprova" e, se su
+  // questo dispositivo c'è una copia dei tuoi dati (utils/cloudMirror.js o
+  // un checkpoint non ancora salvato), con "Continua offline".
+  const [bootError, setBootError] = useState(null);
+  const [bootAttempt, setBootAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
     setSyncStatus('loading');
+    setBootError(null);
     cloudReadyRef.current = false;
     recoveredCheckpointRef.current = false;
     (async () => {
@@ -284,23 +397,24 @@ export function ArachnoForgeProvider({ children }) {
           // che rende condizionale ogni scrittura successiva. Se la
           // migrazione non è ancora stata eseguita Postgres risponde
           // 42703 e si ricade sulla vecchia query, senza locking.
-          let { data, error } = await supabase
-            .from(USER_DATA_TABLE)
-            .select('app_state, updated_at')
-            .eq('user_id', user.id)
-            .maybeSingle();
+          // V41 — con un tetto di tempo: una rete appesa non tiene più
+          // l'app ferma sulla schermata di avvio per sempre.
+          let { data, error } = await withTimeout(
+            supabase.from(USER_DATA_TABLE).select('app_state, updated_at').eq('user_id', user.id).maybeSingle(),
+            BOOT_TIMEOUT_MS
+          );
           if (error && error.code === '42703') {
             lockingSupportedRef.current = false;
-            ({ data, error } = await supabase
-              .from(USER_DATA_TABLE)
-              .select('app_state')
-              .eq('user_id', user.id)
-              .maybeSingle());
+            ({ data, error } = await withTimeout(
+              supabase.from(USER_DATA_TABLE).select('app_state').eq('user_id', user.id).maybeSingle(),
+              BOOT_TIMEOUT_MS
+            ));
           }
           if (cancelled) return;
           if (error) throw error;
           remoteVersionRef.current = data?.updated_at || null;
           baseRemoteStateRef.current = data?.app_state || null;
+          if (data && data.app_state) saveCloudMirror(user.id, data.app_state, data.updated_at || null);
 
           if (pendingCheckpoint) {
             // V39 — il checkpoint riparte dal token su cui era stato fatto:
@@ -313,12 +427,12 @@ export function ArachnoForgeProvider({ children }) {
               baseRemoteStateRef.current = null;
             }
             recoveredWriterRef.current = pendingCheckpoint.writer || null;
-            dispatch({ type: 'HYDRATE', payload: hydrateState(pendingCheckpoint.state) });
+            hydrate(hydrateState(pendingCheckpoint.state));
             recoveredCheckpointRef.current = true;
           } else if (data && data.app_state) {
             const hydrated = hydrateState(data.app_state);
             lastPersistedRef.current = hydrated;
-            dispatch({ type: 'HYDRATE', payload: hydrated });
+            hydrate(hydrated);
           } else {
             const fresh = createDefaultState();
             const metaUsername = user.user_metadata && typeof user.user_metadata.username === 'string' ? user.user_metadata.username.trim() : '';
@@ -327,17 +441,20 @@ export function ArachnoForgeProvider({ children }) {
             // l'await il suo render trovava cloudReady ancora false, il
             // flag "salta il prossimo salvataggio" restava armato e si
             // mangiava la PRIMA modifica vera del nuovo utente.
-            const { data: inserted, error: insertError } = await supabase
-              .from(USER_DATA_TABLE)
-              .insert({ user_id: user.id, app_state: fresh })
-              .select(lockingSupportedRef.current ? 'updated_at' : 'user_id')
-              .maybeSingle();
+            const { data: inserted, error: insertError } = await withTimeout(
+              supabase
+                .from(USER_DATA_TABLE)
+                .insert({ user_id: user.id, app_state: fresh })
+                .select(lockingSupportedRef.current ? 'updated_at' : 'user_id')
+                .maybeSingle(),
+              BOOT_TIMEOUT_MS
+            );
             if (insertError) throw insertError;
             if (cancelled) return;
             remoteVersionRef.current = inserted?.updated_at || null;
             lastPersistedRef.current = fresh;
             baseRemoteStateRef.current = fresh;
-            dispatch({ type: 'HYDRATE', payload: fresh });
+            hydrate(fresh);
           }
         } else {
           // V28.1 — Pillar 2: backend locale (Guest o Sandbox Admin) — mai
@@ -349,17 +466,17 @@ export function ArachnoForgeProvider({ children }) {
           const key = storageMode === 'guest' ? guestStorageKey() : sandboxStorageKey(user.id);
           const saved = loadLocalState(key);
           if (pendingCheckpoint) {
-            dispatch({ type: 'HYDRATE', payload: hydrateState(pendingCheckpoint.state) });
+            hydrate(hydrateState(pendingCheckpoint.state));
             recoveredCheckpointRef.current = true;
           } else if (saved) {
-            dispatch({ type: 'HYDRATE', payload: hydrateState(saved) });
+            hydrate(hydrateState(saved));
           } else if (storageMode === 'sandbox' && cloudSnapshotRef.current) {
-            dispatch({ type: 'HYDRATE', payload: hydrateState(cloudSnapshotRef.current) });
+            hydrate(hydrateState(cloudSnapshotRef.current));
           } else {
             const fresh = createDefaultState();
             const metaUsername = user.user_metadata && typeof user.user_metadata.username === 'string' ? user.user_metadata.username.trim() : '';
             if (metaUsername) fresh.profile.username = metaUsername;
-            dispatch({ type: 'HYDRATE', payload: fresh });
+            hydrate(fresh);
           }
         }
 
@@ -374,14 +491,54 @@ export function ArachnoForgeProvider({ children }) {
         setSyncStatus('synced');
       } catch (err) {
         console.error('[ArachnoForge] Boot dello stato fallito — impossibile leggere/creare i dati del profilo.', err);
-        if (!cancelled) setSyncStatus('error');
+        if (cancelled) return;
+        const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+        const localCopy = storageMode === 'cloud' ? loadCloudCheckpoint(user.id, 'cloud') || loadCloudMirror(user.id) : null;
+        setBootError({
+          message: offline
+            ? 'Il dispositivo è offline. Appena torna la connessione riprova, oppure continua con la copia dei tuoi dati salvata qui.'
+            : 'Il server del Nexus non risponde. Riprova tra qualche secondo, oppure continua con la copia dei tuoi dati salvata su questo dispositivo.',
+          canOffline: !!localCopy,
+          savedAt: localCopy?.savedAt || null
+        });
+        setSyncStatus('error');
       }
     })();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user.id, storageMode]);
+  }, [user.id, storageMode, bootAttempt]);
+
+  // V41 — Riprova automatica dell'avvio al ritorno della rete.
+  useEffect(() => {
+    if (!bootError) return undefined;
+    const onOnline = () => setBootAttempt((n) => n + 1);
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [bootError]);
+
+  /** V41 — Avvio offline dalla copia locale (checkpoint o specchio del Cloud). */
+  const startOffline = useCallback(() => {
+    const cp = loadCloudCheckpoint(user.id, 'cloud');
+    const mirror = loadCloudMirror(user.id);
+    const source = cp?.state || mirror?.state;
+    if (!source) return;
+    // Il primo salvataggio al ritorno della rete parte dal token di
+    // allora: se un altro dispositivo ha salvato nel frattempo, si passa
+    // dal dialogo di conflitto invece di sovrascrivere.
+    remoteVersionRef.current = cp?.baseVersion || mirror?.version || null;
+    baseRemoteStateRef.current = cp ? null : mirror?.state || null;
+    recoveredWriterRef.current = cp?.writer || null;
+    const hydrated = hydrateState(source);
+    recoveredCheckpointRef.current = !!cp;
+    lastPersistedRef.current = cp ? null : hydrated;
+    hydrate(hydrated);
+    cloudReadyRef.current = true;
+    skipNextSaveRef.current = !cp;
+    setBootError(null);
+    setSyncStatus(typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'error');
+  }, [user.id, hydrate]);
 
   // V26.0 — Cloud State Sync (Pillar 4): Debounced Auto-Save. Ogni
   // variazione di stato riavvia un timer di 2.5s; solo l'ULTIMA variazione
@@ -418,24 +575,32 @@ export function ArachnoForgeProvider({ children }) {
   // Specchio in ref dello stato di conflitto: l'effetto di autosave deve
   // poterlo leggere senza entrare nelle proprie dipendenze.
   const conflictActiveRef = useRef(false);
+  const cloudConflictRef = useRef(null);
   useEffect(() => {
     conflictActiveRef.current = !!cloudConflict;
+    cloudConflictRef.current = cloudConflict;
   }, [cloudConflict]);
 
   /** Dopo una scrittura riuscita: se nel frattempo non è arrivato niente
    * di nuovo il checkpoint ha esaurito il suo scopo; altrimenti viene
    * riscritto con il token appena ricevuto (prima veniva cancellato
    * anche quando conteneva una modifica successiva ancora in attesa). */
-  const settleCheckpoint = (snapshot) => {
-    if (pendingStateRef.current === snapshot) {
-      clearCloudCheckpoint(user.id, storageMode);
-    } else {
-      saveCloudCheckpoint(user.id, storageMode, pendingStateRef.current, {
-        baseVersion: remoteVersionRef.current,
-        writer: sessionIdRef.current
-      });
-    }
-  };
+  const settleCheckpoint = useCallback(
+    (snapshot) => {
+      // V41 — la versione appena confermata diventa anche la copia locale
+      // di riserva per un eventuale avvio offline (utils/cloudMirror.js).
+      if (storageMode === 'cloud') saveCloudMirror(user.id, snapshot, remoteVersionRef.current);
+      if (pendingStateRef.current === snapshot) {
+        clearCloudCheckpoint(user.id, storageMode);
+      } else {
+        saveCloudCheckpoint(user.id, storageMode, pendingStateRef.current, {
+          baseVersion: remoteVersionRef.current,
+          writer: sessionIdRef.current
+        });
+      }
+    },
+    [storageMode, user.id]
+  );
 
   const persistState = useCallback(async () => {
     const snapshot = pendingStateRef.current;
@@ -508,7 +673,7 @@ export function ArachnoForgeProvider({ children }) {
     // Confermato: il checkpoint locale ha esaurito il suo scopo.
     clearCloudCheckpoint(user.id, storageMode);
     return { ok: true };
-  }, [storageMode, user.id]);
+  }, [storageMode, user.id, settleCheckpoint]);
 
   const readRemoteRow = useCallback(async () => {
     const { data, error } = await supabase
@@ -606,6 +771,9 @@ export function ArachnoForgeProvider({ children }) {
     [readRemoteRow]
   );
 
+  /** V41 — "offline" quando il browser sa di non avere rete, "error" altrimenti. */
+  const failureStatus = () => (typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'error');
+
   /** Salva SUBITO, annullando il debounce in corso. Non lancia mai:
    * ritorna `true`/`false` così il chiamante (il logout, l'editor dei
    * nodi) può decidere. */
@@ -626,7 +794,7 @@ export function ArachnoForgeProvider({ children }) {
       return true;
     } catch (err) {
       console.error('[ArachnoForge] Flush del salvataggio fallito.', err);
-      setSyncStatus('error');
+      setSyncStatus(failureStatus());
       return false;
     }
   }, [runPersist, enterConflictState]);
@@ -668,7 +836,7 @@ export function ArachnoForgeProvider({ children }) {
         if (!saveTimeoutRef.current) setSyncStatus('synced');
       } catch (err) {
         console.error('[ArachnoForge] Autosave fallito.', err);
-        setSyncStatus('error');
+        setSyncStatus(failureStatus());
       }
     }, 2500);
     return () => {
@@ -708,6 +876,10 @@ export function ArachnoForgeProvider({ children }) {
    * scrittura condizionale, che in caso di conflitto vero chiede.
    */
   const lastRemoteCheckRef = useRef(0);
+  // V41 — la stessa verifica è richiamabile dai nuovi tentativi dopo un
+  // periodo offline (vedi l'effetto successivo): ritorna true se il Cloud
+  // ha risposto.
+  const remoteCheckRef = useRef(null);
   useEffect(() => {
     if (storageMode !== 'cloud') return undefined;
     let busy = false;
@@ -717,11 +889,12 @@ export function ArachnoForgeProvider({ children }) {
       !saveTimeoutRef.current &&
       lastPersistedRef.current != null &&
       pendingStateRef.current === lastPersistedRef.current;
-    const check = async () => {
-      if (document.visibilityState !== 'visible' || busy) return;
-      if (!lockingSupportedRef.current || !isClean()) return;
+    const check = async ({ force = false } = {}) => {
+      if (busy) return false;
+      if (!force && document.visibilityState !== 'visible') return false;
+      if (!lockingSupportedRef.current || !isClean()) return false;
       const now = Date.now();
-      if (now - lastRemoteCheckRef.current < 15000) return;
+      if (!force && now - lastRemoteCheckRef.current < 15000) return false;
       lastRemoteCheckRef.current = now;
       busy = true;
       try {
@@ -729,43 +902,91 @@ export function ArachnoForgeProvider({ children }) {
         const { data, error } = await withTimeout(
           supabase.from(USER_DATA_TABLE).select('updated_at').eq('user_id', user.id).maybeSingle()
         );
-        if (error || !data?.updated_at || data.updated_at === remoteVersionRef.current || !isClean()) return;
+        if (error) return false;
+        if (!data?.updated_at || data.updated_at === remoteVersionRef.current || !isClean()) return true;
         const remote = await withTimeout(readRemoteRow());
-        if (!remote?.app_state || !isClean()) return;
+        if (!remote?.app_state || !isClean()) return true;
         const kind = classifyRemoteWrite(remote.app_state, {
           sessionId: [sessionIdRef.current, recoveredWriterRef.current],
           deviceId: deviceIdRef.current,
           knownStates: [lastSentRef.current, baseRemoteStateRef.current]
         });
         remoteVersionRef.current = remote.updated_at;
-        if (kind === 'own') return;
+        if (kind === 'own') return true;
         const hydrated = hydrateState(remote.app_state);
         baseRemoteStateRef.current = remote.app_state;
         lastPersistedRef.current = hydrated;
         skipNextSaveRef.current = true;
-        dispatch({ type: 'HYDRATE', payload: hydrated });
+        saveCloudMirror(user.id, remote.app_state, remote.updated_at || null);
+        hydrate(hydrated);
         pushToast(
           kind === 'sameDevice'
             ? 'Profilo aggiornato con le modifiche fatte in un’altra finestra.'
             : 'Profilo aggiornato con le modifiche fatte su un altro dispositivo.',
           'info'
         );
+        return true;
       } catch (err) {
         console.warn('[ArachnoForge] Controllo della versione remota non riuscito.', err);
+        return false;
       } finally {
         busy = false;
       }
     };
+    remoteCheckRef.current = check;
     const onVisibility = () => {
       if (document.visibilityState === 'visible') check();
     };
+    const onFocus = () => check();
     document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('focus', check);
+    window.addEventListener('focus', onFocus);
     return () => {
+      remoteCheckRef.current = null;
       document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('focus', check);
+      window.removeEventListener('focus', onFocus);
     };
-  }, [storageMode, user.id, readRemoteRow, pushToast]);
+  }, [storageMode, user.id, readRemoteRow, pushToast, hydrate]);
+
+  // V41 — Nuovi tentativi dopo un salvataggio fallito o un avvio offline.
+  // Prima, se l'autosave falliva (rete caduta) e poi non cambiava più
+  // nulla, lo stato restava "non salvato" per sempre: il checkpoint locale
+  // c'era, ma nessuno riprovava a mandarlo. Ora si riprova al ritorno
+  // della rete e comunque ogni 30 secondi.
+  useEffect(() => {
+    if (storageMode !== 'cloud') return undefined;
+    if (syncStatus !== 'error' && syncStatus !== 'offline') return undefined;
+    let running = false;
+    const retry = async () => {
+      if (running || !cloudReadyRef.current || conflictActiveRef.current) return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      running = true;
+      try {
+        if (pendingStateRef.current !== lastPersistedRef.current) {
+          await flushSave();
+        } else {
+          const ok = remoteCheckRef.current ? await remoteCheckRef.current({ force: true }) : false;
+          if (ok) setSyncStatus('synced');
+        }
+      } finally {
+        running = false;
+      }
+    };
+    const id = setInterval(retry, 30000);
+    window.addEventListener('online', retry);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('online', retry);
+    };
+  }, [syncStatus, storageMode, flushSave]);
+
+  // V41 — Il browser segnala la perdita di rete: lo si dice subito nella
+  // barra laterale invece di aspettare il prossimo salvataggio fallito.
+  useEffect(() => {
+    if (storageMode !== 'cloud') return undefined;
+    const onOffline = () => setSyncStatus((s) => (s === 'loading' || s === 'conflict' ? s : 'offline'));
+    window.addEventListener('offline', onOffline);
+    return () => window.removeEventListener('offline', onOffline);
+  }, [storageMode]);
 
   // V37.0 — Avviso one-shot quando il boot ha recuperato del lavoro non
   // confermato: il Cadetto deve sapere che quei dati sono tornati, non
@@ -777,10 +998,23 @@ export function ArachnoForgeProvider({ children }) {
     if (!recoveredCheckpointRef.current || recoveryNoticeShownRef.current) return;
     recoveryNoticeShownRef.current = true;
     pushToast(
-      'K.A.R.E.N. — Recuperate modifiche non ancora sincronizzate dalla sessione precedente. Le sto risalvando ora.',
+      'Karen: ho recuperato modifiche della sessione precedente che non erano ancora salvate. Le sto salvando ora.',
       'info'
     );
   }, [syncStatus, pushToast]);
+
+  // V41 — Punto di ripristino automatico del giorno (utils/localBackups.js):
+  // al primo avvio della giornata, a dati caricati. Silenzioso e in
+  // sottofondo: se IndexedDB non c'è, semplicemente non succede nulla.
+  const todayKeyForSnapshot = getDateKey();
+  const dataReady = syncStatus !== 'loading' && !bootError;
+  useEffect(() => {
+    if (!dataReady || !cloudReadyRef.current) return undefined;
+    const t = setTimeout(() => {
+      maybeDailySnapshot(user.id, pendingStateRef.current);
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [dataReady, todayKeyForSnapshot, user.id]);
 
   // Snapshot sempre aggiornato dello stato, letto (mai come dipendenza) da
   // funzioni dentro `actions` che hanno bisogno del valore CORRENTE senza
@@ -809,17 +1043,19 @@ export function ArachnoForgeProvider({ children }) {
   // "momento esatto" in cui la furia si esaurisce merita un feedback
   // rapido, non un ritardo fino a un minuto) — appena il timestamp di
   // scadenza è superato, dispatcha la disattivazione una sola volta.
+  const carnageActive = state.profile.maxCarnageActive;
+  const carnageExpiresAt = state.profile.maxCarnageExpiresAt;
   useEffect(() => {
-    if (!state.profile.maxCarnageActive) return undefined;
+    if (!carnageActive) return undefined;
     const check = () => {
-      if (!isMaxCarnageActive(state.profile)) {
+      if (!isMaxCarnageActive({ maxCarnageActive: carnageActive, maxCarnageExpiresAt: carnageExpiresAt })) {
         dispatch({ type: 'DEACTIVATE_MAX_CARNAGE' });
       }
     };
     check();
     const id = setInterval(check, 15000);
     return () => clearInterval(id);
-  }, [state.profile.maxCarnageActive, state.profile.maxCarnageExpiresAt]);
+  }, [carnageActive, carnageExpiresAt]);
 
   // V27.0 — Pillar 3: Feedback Sensoriale Completo — transizione edge-
   // triggered (come i Trofei / Daily Patrol) su `maxCarnageActive`: al
@@ -828,11 +1064,20 @@ export function ArachnoForgeProvider({ children }) {
   // si ferma esplicitamente. Mai un secondo avvio sovrapposto: il ref
   // interno di useAudioEngine (`carnageDroneRef`) è già blindato.
   const prevMaxCarnageRef = useRef(state.profile.maxCarnageActive);
+  const carnageEpochRef = useRef(0);
   useEffect(() => {
     const wasActive = prevMaxCarnageRef.current;
     const isActive = state.profile.maxCarnageActive;
+    // V41 — idratazione (avvio, altro dispositivo): nessun ruggito per una
+    // finestra già in corso. Il drone ambientale, se va, lo riaccende
+    // l'effetto qui sotto.
+    if (carnageEpochRef.current !== hydrationEpoch) {
+      carnageEpochRef.current = hydrationEpoch;
+      prevMaxCarnageRef.current = isActive;
+      return;
+    }
     if (!wasActive && isActive) {
-      pushToast('MAXIMUM CARNAGE MODE — Il simbionte prende il sopravvento. XP x2, Stamina illimitata per 2 ore.', 'danger');
+      pushToast('Maximum Carnage: il simbionte prende il sopravvento. XP ×2 per 2 ore — la Stamina scende come sempre.', 'danger');
       audio.playMaxCarnageActivate();
       // V40.3 — il drone ambientale si può spegnere da Karen OS Settings
       // senza rinunciare al resto degli effetti sonori.
@@ -843,7 +1088,7 @@ export function ArachnoForgeProvider({ children }) {
     }
     prevMaxCarnageRef.current = isActive;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.profile.maxCarnageActive, pushToast, audio]);
+  }, [state.profile.maxCarnageActive, pushToast, audio, hydrationEpoch]);
 
   // V40.3 — l'interruttore del drone agisce anche su un drone già in
   // corso: spegnerlo a metà finestra lo zittisce subito, riaccenderlo lo
@@ -865,14 +1110,20 @@ export function ArachnoForgeProvider({ children }) {
   // (vedi applyCriticalAction), che già riproduce il proprio ruggito —
   // un secondo effetto sonoro sovrapposto sarebbe rumore, non chiarezza.
   const prevSymbioteUnlockRef = useRef(state.profile.symbioteSuitUnlocked);
+  const symbioteEpochRef = useRef(0);
   useEffect(() => {
     const was = prevSymbioteUnlockRef.current;
     const is = state.profile.symbioteSuitUnlocked;
+    if (symbioteEpochRef.current !== hydrationEpoch) {
+      symbioteEpochRef.current = hydrationEpoch;
+      prevSymbioteUnlockRef.current = is;
+      return;
+    }
     if (!was && is) {
-      pushToast('🕷️ SYMBIOTE SUIT SBLOCCATA — disponibile in Karen OS Settings.', 'success');
+      pushToast('Costume Symbiote sbloccato: lo trovi in Karen OS Settings.', 'success');
     }
     prevSymbioteUnlockRef.current = is;
-  }, [state.profile.symbioteSuitUnlocked, pushToast]);
+  }, [state.profile.symbioteSuitUnlocked, pushToast, hydrationEpoch]);
 
   // V28.1 — Pillar 3 (Spider-Sense Focus Surge): edge-trigger sulle nuove
   // righe di Combat Log taggate 'SPIDERSENSE' (stesso pattern del Daily
@@ -889,10 +1140,19 @@ export function ArachnoForgeProvider({ children }) {
   // resta univoco anche quando l'array viene ritagliato in testa.
   const lastSeenLogIdRef = useRef(state.combatLog.length > 0 ? state.combatLog[state.combatLog.length - 1].id : null);
   const [spiderSenseSurgeAt, setSpiderSenseSurgeAt] = useState(0);
+  const surgeEpochRef = useRef(0);
   useEffect(() => {
     const log = state.combatLog;
     if (log.length === 0) {
       lastSeenLogIdRef.current = null;
+      return;
+    }
+    // V41 — le voci arrivate con un'idratazione sono storia, non eventi
+    // nuovi: prima l'ultima voce del log caricato poteva far ripartire
+    // toast, suono e animazione dello Spider-Sense Surge a ogni avvio.
+    if (surgeEpochRef.current !== hydrationEpoch) {
+      surgeEpochRef.current = hydrationEpoch;
+      lastSeenLogIdRef.current = log[log.length - 1].id;
       return;
     }
     const lastSeenId = lastSeenLogIdRef.current;
@@ -908,7 +1168,7 @@ export function ArachnoForgeProvider({ children }) {
       setSpiderSenseSurgeAt(Date.now());
     }
     lastSeenLogIdRef.current = log[log.length - 1].id;
-  }, [state.combatLog, pushToast, audio]);
+  }, [state.combatLog, pushToast, audio, hydrationEpoch]);
 
   // Heartbeat temporale: lo Spider-Sense Engine dipende dal giorno solare
   // corrente (nextReviewDate <= oggi), non solo dallo stato applicativo.
@@ -951,7 +1211,7 @@ export function ArachnoForgeProvider({ children }) {
 
   // "Il Cervello" della progressione (rank, XP bancato, toast di Level Up),
   // isolato in un custom hook dedicato.
-  const progression = useProgression(state.profile, pushToast, audio);
+  const progression = useProgression(state.profile, pushToast, audio, hydrationEpoch);
 
   // V25.0 — Pillar 3: effetti aggregati dello Skill Tree, ricalcolati SOLO
   // quando la lista di abilità sbloccate cambia (mai ad ogni render/XP
@@ -974,7 +1234,11 @@ export function ArachnoForgeProvider({ children }) {
 
   // "Il Cervello" dello Spider-Sense Engine (Spaced Repetition), isolato in
   // un custom hook dedicato.
-  const spiderSense = useSpiderSense(state.materie, dayKey);
+  // V42 — le materie con la data della PROSSIMA prova (lo scritto, poi
+  // l'orale) al posto di `examDate`: è la vista che ogni motore del piano
+  // riceve (vedi utils/appelli.js#withPlanningDates).
+  const materiePiano = useMemo(() => withPlanningDates(state.materie, dayKey), [state.materie, dayKey]);
+  const spiderSense = useSpiderSense(materiePiano, dayKey);
 
   // V36.0 — "Karen impara da te": capacità giornaliera reale e fattore di
   // calibrazione delle stime, misurati sul TUO storico (utils/calibration.js)
@@ -984,11 +1248,11 @@ export function ArachnoForgeProvider({ children }) {
   // ricalcola per conto proprio, quindi non possono divergere.
   const calibration = useMemo(
     () => computeCalibration(state),
-    // Dipendenze minime reali: la capacità viene dallo storico sessioni,
-    // il bias dai nodi completati — non da tutto lo stato. `dayKey`
-    // perché la finestra della capacità è relativa a oggi.
+    // Dipendenze minime reali: la capacità viene dallo storico sessioni
+    // (e dalla fase del semestre), il bias dai nodi completati, più le due
+    // impostazioni del piano. `dayKey` perché la finestra è relativa a oggi.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.starLog, state.materie, dayKey]
+    [state.starLog, state.materie, state.campus, state.settings.capacitaManuale, state.settings.giorniRiposo, dayKey]
   );
 
   // V36.0 — la riduzione di carico consigliata dal Daily Brief smette di
@@ -999,6 +1263,42 @@ export function ArachnoForgeProvider({ children }) {
       ? karenBrain.directives.mission_control.load_adjustment_pct
       : 0;
 
+  // V42 — il calendario accademico per il planner (fase e ore di lezione
+  // di ogni giorno futuro).
+  const calendar = useMemo(() => buildCampusCalendar(state.campus, state.materie), [state.campus, state.materie]);
+
+  // V42 — il lavoro FATTO OGGI per materia, per tipo: il planner lo usa per
+  // tenere fermi gli obiettivi di oggi mentre studi ("fatto 2h10 di 4h30").
+  const { doneToday, doneKey, todayMinutesByMode } = useMemo(() => {
+    const map = new Map();
+    const perModo = { SINTESI: 0, STUDIO: 0, RIPASSO: 0, ESERCIZI: 0, ALTRO: 0 };
+    const materieById = new Map(state.materie.map((m) => [m.id, m]));
+    state.starLog.forEach((e) => {
+      if (!e || e.type !== 'FOCUS_SESSION' || e.dateKey !== dayKey) return;
+      const min = Number(e.minutes) || 0;
+      const modo = perModo[e.workMode] != null ? e.workMode : 'ALTRO';
+      perModo[e.simulazione ? 'ESERCIZI' : modo] += min;
+      if (!e.materiaId) return;
+      const d = map.get(e.materiaId) || { sintesi: 0, studio: 0, esercizi: 0, ripasso: 0, altro: 0 };
+      const h = min / 60;
+      const m = materieById.get(e.materiaId);
+      const senzaNodi = !m || !Array.isArray(m.sfide) || m.sfide.length === 0;
+      // Conta nel residuo solo ciò che il residuo ha davvero scalato:
+      // il lavoro su un argomento (o su una materia senza argomenti).
+      const suNodo = !!e.sfidaId || senzaNodi;
+      if (e.simulazione) d.altro += h;
+      else if (e.workMode === 'SINTESI') d.sintesi += h;
+      else if (e.workMode === 'RIPASSO') d.ripasso += h;
+      else if ((e.workMode === 'STUDIO' || e.workMode === 'ESERCIZI') && suNodo) d[e.workMode === 'ESERCIZI' ? 'esercizi' : 'studio'] += h;
+      else d.altro += h;
+      map.set(e.materiaId, d);
+    });
+    const key = [...map.entries()]
+      .map(([id, d]) => `${id}:${Math.round((d.sintesi + d.studio + d.esercizi + d.ripasso + d.altro) * 60)}`)
+      .join('|');
+    return { doneToday: map, doneKey: key, todayMinutesByMode: perModo };
+  }, [state.starLog, state.materie, dayKey]);
+
   // "Il Cervello" del K.A.R.E.N. Auto-Router / Quantum Router (V23.0,
   // Modulo 1): Daily Quota + status a 3 livelli per ogni Materia aperta,
   // isolato in un custom hook dedicato.
@@ -1008,9 +1308,9 @@ export function ArachnoForgeProvider({ children }) {
   // dall'ora: una lezione passa da "in corso" a "da sistemare" alle
   // 11:00, non al prossimo salvataggio.
   const campusSnapshot = useMemo(
-    () => computeCampusSnapshot(state.campus, new Date(), state.materie, state.starLog),
+    () => computeCampusSnapshot(state.campus, new Date(), state.materie, state.starLog, { ritmoSintesi: calibration.sintesiPagesPerHourRaw }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.campus, state.materie, state.starLog, nowTick]
+    [state.campus, state.materie, state.starLog, nowTick, calibration.sintesiPagesPerHourRaw]
   );
 
   // V40.0 — la sintesi delle lezioni davvero da sistemare entra nel piano
@@ -1020,10 +1320,14 @@ export function ArachnoForgeProvider({ children }) {
     return campusSnapshot.coda.map((l) => ({ materiaId: l.materiaId, ore: (l.sintesiMancanteMin || 0) / 60 }));
   }, [campusSnapshot]);
 
-  const karenAutoRouter = useKarenAutoRouter(state.materie, {
+  const karenAutoRouter = useKarenAutoRouter(materiePiano, {
     calibration,
     loadAdjustmentPct: karenLoadAdjustmentPct,
-    sintesiLezioni
+    sintesiLezioni,
+    lessonPhase: campusSnapshot.fase === FASE.LEZIONI,
+    calendar,
+    doneToday,
+    doneKey
   });
 
   // Karen's Tactical Suggestor (Primary Target): ricalcolato qui, a
@@ -1034,10 +1338,19 @@ export function ArachnoForgeProvider({ children }) {
   // computePrimaryTarget): una sola risposta a "cosa faccio oggi".
   const focusTopId = karenAutoRouter.dailyFocusQuotas[0]?.materiaId ?? null;
   const primaryTarget = useMemo(
-    () => computePrimaryTarget(state.materie, calibration, focusTopId),
+    () => computePrimaryTarget(materiePiano, calibration, focusTopId, karenAutoRouter.byMateriaId),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.materie, calibration, focusTopId, dayKey]
+    [materiePiano, calibration, focusTopId, karenAutoRouter.byMateriaId, dayKey]
   );
+
+  // V42 — il contesto del piano che accompagna ogni chiusura di sessione.
+  useEffect(() => {
+    timerCtxRef.current = {
+      primaryTargetMateriaId: primaryTarget ? primaryTarget.materia.id : null,
+      capacityHours: Number(calibration.hoursPerDay) > 0 ? Number(calibration.hoursPerDay) : 4.5,
+      lessonMateriaIds: (campusSnapshot.coda || []).map((l) => l.materiaId)
+    };
+  }, [primaryTarget, calibration.hoursPerDay, campusSnapshot.coda]);
 
   // Daily Patrol Engine (V23.0, Modulo 2) — Rigenerazione giornaliera:
   // quando la dateKey persistita non corrisponde a "oggi" (primo avvio,
@@ -1045,13 +1358,33 @@ export function ArachnoForgeProvider({ children }) {
   // mezzanotte), genera un nuovo set di 3 missioni deterministico. Il
   // progresso da qui in poi è interamente event-driven (vedi reducer
   // sopra): questo effetto si occupa SOLO della rigenerazione giornaliera.
+  // V42 — le missioni si scelgono sul contesto di OGGI: fase del
+  // semestre, ripassi dovuti, lezioni da sistemare, esami con scritto,
+  // obiettivo del piano (nessuna missione impossibile).
+  const patrolCtx = useMemo(
+    () => ({
+      fase: campusSnapshot.fase,
+      upcomingReviewsCount: spiderSense.upcomingReviews.length,
+      reviewTargetCount: karenAutoRouter.reviews?.targetCount ?? spiderSense.upcomingReviews.length,
+      hasLessonsToProcess: (campusSnapshot.coda || []).length > 0,
+      hasSintesiWork: state.materie.some((m) => m && !m.examPassed && sintesiMateria(m).aperta),
+      hasWrittenExam: materiePiano.some(
+        (m) => m && !m.examPassed && m.examDate && haProvaScritta(m) && (daysUntilDateOnly(m.examDate) ?? -1) >= 0 && daysUntilDateOnly(m.examDate) <= 60
+      ),
+      hasUpcomingExam: materiePiano.some((m) => m && !m.examPassed && m.examDate && (daysUntilDateOnly(m.examDate) ?? -1) >= 0),
+      hasPrimaryTarget: !!primaryTarget,
+      todayTargetMinutes: Math.round((karenAutoRouter.today?.targetHours || 0) * 60)
+    }),
+    [campusSnapshot, spiderSense.upcomingReviews.length, karenAutoRouter, state.materie, materiePiano, primaryTarget]
+  );
   useEffect(() => {
     const todayKey = getDateKey();
+    if (!dataReady) return;
     if (!state.dailyPatrols || state.dailyPatrols.dateKey !== todayKey) {
-      const quests = generateDailyQuests(todayKey, { upcomingReviewsCount: spiderSense.upcomingReviews.length });
+      const quests = generateDailyQuests(todayKey, patrolCtx);
       dispatch({ type: 'GENERATE_DAILY_PATROLS', payload: { dateKey: todayKey, quests } });
     }
-  }, [state.dailyPatrols, spiderSense.upcomingReviews.length, dispatch]);
+  }, [state.dailyPatrols, dayKey, dataReady, patrolCtx, dispatch]);
 
   // Daily Patrol Engine — Celebrazione: rileva le transizioni
   // isCompleted false -> true (edge-triggered, come i Trofei) per
@@ -1059,15 +1392,23 @@ export function ArachnoForgeProvider({ children }) {
   // narrativa extra quando TUTTE e 3 le missioni del giorno sono
   // completate nella stessa giornata ("Patrol Perfetta").
   const prevDailyQuestsRef = useRef(null);
+  const patrolEpochRef = useRef(0);
   useEffect(() => {
     const quests = state.dailyPatrols?.quests;
     if (!Array.isArray(quests)) return;
     const prevQuests = prevDailyQuestsRef.current;
+    // V41 — missioni già completate prima del caricamento: nessuna
+    // fanfara a ogni riavvio dell'app.
+    if (patrolEpochRef.current !== hydrationEpoch || prevQuests === null) {
+      patrolEpochRef.current = hydrationEpoch;
+      prevDailyQuestsRef.current = quests;
+      return;
+    }
 
     quests.forEach((q) => {
       const prevQ = Array.isArray(prevQuests) ? prevQuests.find((p) => p.id === q.id) : null;
       if (q.isCompleted && (!prevQ || !prevQ.isCompleted)) {
-        pushToast(`🏆 DAILY PATROL — ${q.title} completata! +${q.xpReward} XP`, 'success');
+        pushToast(`Daily Patrol completata: ${q.title} · +${q.xpReward} XP`, 'success');
         audio.playQuestComplete();
       }
     });
@@ -1075,20 +1416,94 @@ export function ArachnoForgeProvider({ children }) {
     const allDoneNow = quests.length > 0 && quests.every((q) => q.isCompleted);
     const wasAllDoneBefore = Array.isArray(prevQuests) && prevQuests.length > 0 && prevQuests.every((q) => q.isCompleted);
     if (allDoneNow && !wasAllDoneBefore) {
-      pushToast('Karen: Patrol perfetta. Prenditi un caffè, te lo sei guadagnato. ☕', 'success');
+      pushToast('Karen: Patrol perfetta. Prenditi un caffè, te lo sei guadagnato.', 'success');
       audio.playLevelUpChime();
     }
 
     prevDailyQuestsRef.current = quests;
-  }, [state.dailyPatrols, pushToast, audio]);
+  }, [state.dailyPatrols, pushToast, audio, hydrationEpoch]);
 
   const actions = useMemo(
     () => ({
       updateProfile: (patch) => dispatch({ type: 'UPDATE_PROFILE', payload: patch }),
       updateSettings: (patch) => dispatch({ type: 'UPDATE_SETTINGS', payload: patch }),
-      addMateria: (payload) => dispatch({ type: 'ADD_MATERIA', payload }),
+      // V42 — niente doppioni: lo dice subito, invece di aggiungere di nuovo
+      // Analisi 1 (12 CFU in più nella stima di laurea).
+      addMateria: (payload) => {
+        const doppione = findDuplicateMateria(stateRef.current.materie, { courseId: payload?.courseId || null, nome: payload?.nome || '' });
+        if (doppione) {
+          pushToast(`"${doppione.nome}" è già nel Web-Matrix.`, 'danger');
+          return { ok: false, duplicate: doppione };
+        }
+        dispatch({ type: 'ADD_MATERIA', payload });
+        return { ok: true };
+      },
+      // V42 — esito di un appello (superato / non superato / in attesa).
+      setAppelloEsito: (materiaId, appelloId, esito, extra = {}) =>
+        dispatch({ type: 'SET_APPELLO_ESITO', payload: { materiaId, appelloId, esito, ...extra } }),
+      addSimulazione: (materiaId, simulazione) => dispatch({ type: 'ADD_SIMULAZIONE', payload: { materiaId, simulazione } }),
+      logEsercizi: (materiaId, sfidaId, fatti, corretti) => dispatch({ type: 'LOG_ESERCIZI', payload: { materiaId, sfidaId, fatti, corretti } }),
+      quizResult: (materiaId, sfidaId, esito) => {
+        dispatch({ type: 'QUIZ_RESULT', payload: { materiaId, sfidaId, ...esito } });
+        audio.playSuccessChime();
+      },
+      // V42 — "Chiudi la giornata" e piano di domani.
+      closeDay: (payload) => dispatch({ type: 'CLOSE_DAY', payload }),
+      saveTomorrowPlan: (plan) => dispatch({ type: 'SAVE_TOMORROW_PLAN', payload: { plan } }),
+      markTomorrowPlanStarted: () => dispatch({ type: 'MARK_TOMORROW_PLAN_STARTED' }),
+      saveKarenWeekly: (weekKey, payload, meta = {}) =>
+        dispatch({ type: 'SAVE_KAREN_WEEKLY', payload: { weekKey, payload, generatedAt: meta.generatedAt, weekClosed: meta.weekClosed } }),
+      // V42 — Maximum Carnage si attiva a mano, con una carica, di giorno.
+      activateMaxCarnage: () => {
+        const p = stateRef.current.profile;
+        if (!(Number(p.carnageCharges) > 0)) {
+          pushToast('Nessuna carica: servono 5 azioni critiche nella stessa giornata.', 'info');
+          return false;
+        }
+        if (!isCarnageHour()) {
+          pushToast('Il simbionte dorme fra le 23 e le 6: attivalo di giorno.', 'info');
+          return false;
+        }
+        dispatch({ type: 'ACTIVATE_MAX_CARNAGE' });
+        return true;
+      },
+      // V42 — "Ricomincio da zero" su una materia, con Annulla.
+      ricostruisciMateria: (materiaId, opzioni = {}) => {
+        const prima = findMateria(stateRef.current, materiaId);
+        if (!prima) return;
+        dispatch({ type: 'RICOSTRUISCI_MATERIA', payload: { materiaId, rifaiAppunti: !!opzioni.rifaiAppunti } });
+        pushToast(`${prima.nome}: ricostruzione da zero avviata.`, 'info', {
+          duration: 10000,
+          action: { label: 'Annulla', onClick: () => dispatch({ type: 'REPLACE_MATERIA', payload: { materia: prima } }) }
+        });
+      },
       updateMateria: (id, patch) => dispatch({ type: 'UPDATE_MATERIA', payload: { id, patch } }),
-      deleteMateria: (id) => dispatch({ type: 'DELETE_MATERIA', payload: { id } }),
+      // V41 — eliminare una materia si può annullare: la notifica offre
+      // "Annulla" per qualche secondo (ripristino mirato, vedi
+      // RESTORE_MATERIA nel reducer) e prima di eliminare si salva una
+      // copia di sicurezza locale (Karen OS Settings → Backup).
+      deleteMateria: (id) => {
+        const prev = stateRef.current;
+        const list = Array.isArray(prev.materie) ? prev.materie : [];
+        const index = list.findIndex((m) => m && m.id === id);
+        if (index < 0) return;
+        const materia = list[index];
+        const lezioni = [];
+        (Array.isArray(prev.campus?.semestri) ? prev.campus.semestri : []).forEach((sem) => {
+          (Array.isArray(sem?.lezioni) ? sem.lezioni : []).forEach((lezione) => {
+            if (lezione && lezione.materiaId === id) lezioni.push({ semestreId: sem.id, lezione });
+          });
+        });
+        saveSnapshot(user.id, prev, { reason: SNAPSHOT_REASON.PRE_DELETE, label: materia.nome }).catch(() => undefined);
+        dispatch({ type: 'DELETE_MATERIA', payload: { id } });
+        pushToast(`"${materia.nome}" eliminata.`, 'info', {
+          duration: 9000,
+          action: {
+            label: 'Annulla',
+            onClick: () => dispatch({ type: 'RESTORE_MATERIA', payload: { materia, index, lezioni } })
+          }
+        });
+      },
       addSfida: (materiaId, payload) => dispatch({ type: 'ADD_SFIDA', payload: { materiaId, ...payload } }),
       updateSfida: (materiaId, sfidaId, patch) => dispatch({ type: 'UPDATE_SFIDA', payload: { materiaId, sfidaId, patch } }),
       // V31.2 — Pillar 2 (Robust State & Supabase Sync): salvataggio
@@ -1124,7 +1539,18 @@ export function ArachnoForgeProvider({ children }) {
           ? { success: true }
           : { success: false, error: new Error(conflictActiveRef.current ? 'Conflitto di sincronizzazione' : 'Salvataggio non riuscito') };
       },
-      deleteSfida: (materiaId, sfidaId) => dispatch({ type: 'DELETE_SFIDA', payload: { materiaId, sfidaId } }),
+      // V41 — anche gli argomenti eliminati (uno o in blocco) si
+      // recuperano con "Annulla" dalla notifica (RESTORE_SFIDE).
+      deleteSfida: (materiaId, sfidaId) => {
+        const undo = captureSfideRemoval(stateRef.current, materiaId, [sfidaId]);
+        dispatch({ type: 'DELETE_SFIDA', payload: { materiaId, sfidaId } });
+        if (undo) {
+          pushToast(`"${undo.removed[0].sfida.nome}" eliminato.`, 'info', {
+            duration: 9000,
+            action: { label: 'Annulla', onClick: () => dispatch({ type: 'RESTORE_SFIDE', payload: undo }) }
+          });
+        }
+      },
       // V39.0 — Empire State University (vedi utils/campusEngine.js).
       campusAddSemestre: (payload) => dispatch({ type: 'CAMPUS_ADD_SEMESTRE', payload }),
       campusUpdateSemestre: (id, patch) => dispatch({ type: 'CAMPUS_UPDATE_SEMESTRE', payload: { id, patch } }),
@@ -1141,20 +1567,37 @@ export function ArachnoForgeProvider({ children }) {
       // pannello di selezione del Web-Matrix (QuadrantHub.jsx). `sfidaIds`
       // è un array semplice (mai un Set: i reducer restano serializzabili,
       // coerente col resto dell'app che finisce su Supabase come JSONB).
-      bulkDeleteSfide: (materiaId, sfidaIds) => dispatch({ type: 'BULK_DELETE_SFIDE', payload: { materiaId, sfidaIds } }),
+      bulkDeleteSfide: (materiaId, sfidaIds) => {
+        const undo = captureSfideRemoval(stateRef.current, materiaId, sfidaIds);
+        dispatch({ type: 'BULK_DELETE_SFIDE', payload: { materiaId, sfidaIds } });
+        if (undo) {
+          const n = undo.removed.length;
+          pushToast(n === 1 ? `"${undo.removed[0].sfida.nome}" eliminato.` : `${n} argomenti eliminati.`, 'info', {
+            duration: 9000,
+            action: { label: 'Annulla', onClick: () => dispatch({ type: 'RESTORE_SFIDE', payload: undo }) }
+          });
+        }
+      },
       completeSfida: (materiaId, sfidaId) => {
         // Level Up Chime per i Nodi Padre ("Boss" dello Skill Tree, cioè
         // nodi che hanno almeno un sotto-argomento agganciato): un arpeggio
         // più ricco del Success Chime standard, coerente col peso di aver
         // appena sconfitto un intero "Boss" di argomenti collegati.
         const materia = findMateria(stateRef.current, materiaId);
-        const isBossNode = !!materia && materia.sfide.some((s) => s.parentId === sfidaId);
+        const target = materia ? materia.sfide.find((s) => s.id === sfidaId) : null;
+        // V41 — stesso controllo del reducer, fatto prima: un nodo
+        // bloccato (o già completato) non suona più il chime di un
+        // completamento che non avviene.
+        const status = target ? deriveNodeStatus(target, materia.sfide) : null;
+        if (status !== NODE_STATUS.AVAILABLE && status !== NODE_STATUS.IN_PROGRESS) return false;
+        const isBossNode = materia.sfide.some((s) => s.parentId === sfidaId);
         dispatch({ type: 'COMPLETE_SFIDA', payload: { materiaId, sfidaId } });
         if (isBossNode) audio.playLevelUpChime();
         else audio.playSuccessChime();
+        return true;
       },
-      reviewSfida: (materiaId, sfidaId, rating) => {
-        dispatch({ type: 'REVIEW_SFIDA', payload: { materiaId, sfidaId, rating } });
+      reviewSfida: (materiaId, sfidaId, rating, source = 'MANUALE') => {
+        dispatch({ type: 'REVIEW_SFIDA', payload: { materiaId, sfidaId, rating, source } });
         audio.playSuccessChime();
       },
       // V34.4 — Undo di un Nodo completato per errore: nessun fanfare di
@@ -1169,9 +1612,19 @@ export function ArachnoForgeProvider({ children }) {
       deleteQuickQuest: (id) => dispatch({ type: 'DELETE_QUICK_QUEST', payload: { id } }),
       addShopReward: (nome, costoXp) => dispatch({ type: 'ADD_SHOP_REWARD', payload: { nome, costoXp } }),
       deleteShopReward: (id) => dispatch({ type: 'DELETE_SHOP_REWARD', payload: { id } }),
+      // V41 — il toast di conferma solo se il riscatto passa davvero:
+      // prima diceva "ACQUISTATO" anche quando il reducer lo rifiutava
+      // per saldo insufficiente.
       redeemShopReward: (id, nome) => {
+        const reward = (Array.isArray(stateRef.current.shopRewards) ? stateRef.current.shopRewards : []).find((r) => r.id === id);
+        if (!reward) return false;
+        if (computeTotalBankedXp(stateRef.current.profile) < reward.costoXp) {
+          pushToast(`XP insufficienti per "${reward.nome || nome}".`, 'danger');
+          return false;
+        }
         dispatch({ type: 'REDEEM_SHOP_REWARD', payload: { id } });
-        pushToast(`ACQUISTATO — ${nome}`, 'success');
+        pushToast(`Riscattata: ${reward.nome || nome}. La trovi nell'inventario.`, 'success');
+        return true;
       },
       consumeInventoryItem: (id) => dispatch({ type: 'CONSUME_INVENTORY_ITEM', payload: { id } }),
       unlockSkill: (skillId) => {
@@ -1179,12 +1632,12 @@ export function ArachnoForgeProvider({ children }) {
         const unlockedSkills = Array.isArray(stateRef.current.profile.unlockedSkills) ? stateRef.current.profile.unlockedSkills : [];
         if (!def || !canUnlockSkill(def, unlockedSkills, stateRef.current.profile.techTokens || 0)) return;
         dispatch({ type: 'UNLOCK_SKILL', payload: { skillId } });
-        pushToast(`SKILL SBLOCCATA — ${def.title}`, 'success');
+        pushToast(`Abilità sbloccata: ${def.title}.`, 'success');
         audio.playSkillUnlock();
       },
       bossFightResult: (payload) => {
         dispatch({ type: 'BOSS_FIGHT_RESULT', payload });
-        pushToast(payload.win ? 'SUPERCRIMINALE SCONFITTO — XP accreditati' : 'GAME OVER — nessun XP', payload.win ? 'success' : 'danger');
+        pushToast(payload.win ? 'Supercriminale sconfitto: XP accreditati.' : 'Game over: nessun XP questa volta.', payload.win ? 'success' : 'danger');
         if (payload.win) audio.playLevelUpChime();
       },
       // V33.1 — Sinister Six Gauntlet: chiamata UNA sola volta da
@@ -1195,17 +1648,41 @@ export function ArachnoForgeProvider({ children }) {
       completeGauntlet: () => dispatch({ type: 'GAUNTLET_CLEARED' }),
       lastStandSacrifice: () => {
         dispatch({ type: 'LAST_STAND_SACRIFICE' });
-        pushToast('LAST STAND — sei sopravvissuto a 1 HP', 'danger');
+        pushToast('Last Stand: sei sopravvissuto con 1 HP.', 'danger');
       },
       logEvent: (message, tag) => dispatch({ type: 'LOG_EVENT', payload: { message, tag } }),
+      // V41 — import e reset sostituiscono l'intero profilo: prima si
+      // mette da parte un punto di ripristino (utils/localBackups.js), poi
+      // si passa dall'idratazione, così nessun effetto scambia i dati
+      // importati per traguardi appena raggiunti.
       importProfile: (rawObj) => {
         const validation = validateImportedProfile(rawObj);
         if (!validation.valid) return validation;
-        const hydrated = hydrateState(rawObj);
-        dispatch({ type: 'IMPORT_PROFILE', payload: hydrated });
+        saveSnapshot(user.id, stateRef.current, { reason: SNAPSHOT_REASON.PRE_IMPORT });
+        const next = reducer(stateRef.current, { type: 'IMPORT_PROFILE', payload: hydrateState(rawObj) });
+        hydrate(next);
         return { valid: true };
       },
-      resetProfile: () => dispatch({ type: 'RESET_PROFILE' }),
+      resetProfile: () => {
+        saveSnapshot(user.id, stateRef.current, { reason: SNAPSHOT_REASON.PRE_RESET });
+        hydrate(reducer(stateRef.current, { type: 'RESET_PROFILE' }));
+      },
+      /** V41 — punto di ripristino creato a mano (Karen OS Settings → Backup). */
+      createSnapshot: (label = '') => saveSnapshot(user.id, stateRef.current, { reason: SNAPSHOT_REASON.MANUAL, label }),
+      // V41 — elenco, lettura ed eliminazione dei punti di ripristino
+      // locali (Karen OS Settings → Backup).
+      listSnapshots: () => listLocalSnapshots(user.id),
+      readSnapshot: (id) => readLocalSnapshot(id),
+      deleteSnapshot: (id) => deleteLocalSnapshot(id),
+      /** V41 — ripristina un punto salvato su questo dispositivo. */
+      restoreSnapshot: async (snapshotState) => {
+        const validation = validateImportedProfile(snapshotState);
+        if (!validation.valid) return validation;
+        await saveSnapshot(user.id, stateRef.current, { reason: SNAPSHOT_REASON.PRE_RESTORE });
+        const next = reducer(stateRef.current, { type: 'IMPORT_PROFILE', payload: hydrateState(snapshotState) });
+        hydrate({ ...next, combatLog: next.combatLog.map((e, i, arr) => (i === arr.length - 1 ? { ...e, message: 'Profilo ripristinato da un punto di ripristino locale.' } : e)) });
+        return { valid: true };
+      },
       // V27.0 — Pillar 4 (Daily Web-Sling): il roll pesato avviene QUI
       // (fuori dal reducer, che resta puro) — un solo claim al giorno,
       // guardia esplicita anche a livello di action creator così una UI
@@ -1230,7 +1707,20 @@ export function ArachnoForgeProvider({ children }) {
         const result = createSfideTreeFromAiIndex(parsedNodes);
         if (!result.valid) return result;
         dispatch({ type: 'BULK_IMPORT_SFIDE', payload: { materiaId, sfide: result.sfide } });
-        pushToast(`AI Index Matrix — ${result.sfide.length} nodi importati.`, 'success');
+        // V41 — un indice sbagliato (materia sbagliata, capitoli doppi) si
+        // toglie con un click, invece che selezionando decine di nodi.
+        const importedIds = result.sfide.map((sf) => sf.id);
+        pushToast(
+          `AI Index Matrix: ${result.sfide.length} ${result.sfide.length === 1 ? 'argomento importato' : 'argomenti importati'}.`,
+          'success',
+          {
+            duration: 9000,
+            action: {
+              label: 'Annulla',
+              onClick: () => dispatch({ type: 'BULK_DELETE_SFIDE', payload: { materiaId, sfidaIds: importedIds } })
+            }
+          }
+        );
         audio.playDataImport();
         return { valid: true, count: result.sfide.length };
       },
@@ -1248,7 +1738,7 @@ export function ArachnoForgeProvider({ children }) {
         }
         cloudSnapshotRef.current = stateRef.current;
         setSandboxActive(true);
-        pushToast('Protocollo Admin Attivato — Sandbox in uso.', 'info');
+        pushToast('Protocollo Admin attivo: stai usando la Sandbox.', 'info');
         audio.playAccessGranted();
         return { valid: true };
       },
@@ -1257,7 +1747,7 @@ export function ArachnoForgeProvider({ children }) {
       // HYDRATE (effetto di boot), mai un nuovo fetch di rete necessario.
       deactivateSandbox: () => {
         setSandboxActive(false);
-        pushToast('Sandbox disattivata — profilo Cloud ripristinato.', 'info');
+        pushToast('Sandbox disattivata: profilo Cloud ripristinato.', 'info');
         audio.playWebClick();
       },
       // V35.0 — K.A.R.E.N. Daily Brain: bookkeeping silenzioso, lato
@@ -1278,6 +1768,14 @@ export function ArachnoForgeProvider({ children }) {
       // qui né là, ed è esattamente il tipo di magia che fa perdere
       // fiducia in un sistema di sincronizzazione).
       resolveConflictKeepLocal: async () => {
+        // V41 — la versione dell'altro dispositivo, che sta per essere
+        // sovrascritta, resta recuperabile da Backup.
+        if (cloudConflictRef.current?.remoteState) {
+          saveSnapshot(user.id, cloudConflictRef.current.remoteState, {
+            reason: SNAPSHOT_REASON.PRE_CONFLICT,
+            label: 'Versione dell’altro dispositivo'
+          });
+        }
         conflictActiveRef.current = false;
         setCloudConflict(null);
         setSyncStatus('syncing');
@@ -1302,6 +1800,12 @@ export function ArachnoForgeProvider({ children }) {
         }
       },
       resolveConflictTakeRemote: (remoteState, remoteUpdatedAt) => {
+        // V41 — e il lavoro di questo dispositivo, che sta per essere
+        // scartato, anche.
+        saveSnapshot(user.id, stateRef.current, {
+          reason: SNAPSHOT_REASON.PRE_CONFLICT,
+          label: 'Versione di questo dispositivo'
+        });
         conflictActiveRef.current = false;
         remoteVersionRef.current = remoteUpdatedAt || null;
         clearCloudCheckpoint(user.id, storageMode);
@@ -1310,7 +1814,7 @@ export function ArachnoForgeProvider({ children }) {
           baseRemoteStateRef.current = remoteState;
           lastPersistedRef.current = hydrated;
           skipNextSaveRef.current = true;
-          dispatch({ type: 'HYDRATE', payload: hydrated });
+          hydrate(hydrated);
         }
         setCloudConflict(null);
         setSyncStatus('synced');
@@ -1337,56 +1841,40 @@ export function ArachnoForgeProvider({ children }) {
     // commento qui sopra dichiara stabile, e su cui si appoggiano
     // useCallback/useEffect di più pagine. L'id è la sola cosa che
     // `updateSfidaAndSync` legge davvero.
-    [pushToast, audio, authSignOut, storageMode, user.id, flushSave, runPersist, enterConflictState]
+    [pushToast, audio, authSignOut, storageMode, user.id, flushSave, runPersist, enterConflictState, hydrate]
   );
 
   const derived = useMemo(() => {
     const fatigued = state.profile.stamina < FATIGUE_STAMINA_THRESHOLD;
-    // V34.1 — FIX: una Materia già superata (`examPassed`, voto registrato)
-    // restava candidata a "Prossimo Esame" finché la sua `examDate` non
-    // veniva manualmente cambiata/rimossa — bastava che la data fosse la
-    // più vicina nell'ordinamento per far comparire una materia CHIUSA
-    // nella Traiettoria (Sidebar), nel Doomsday Clock (Mission Control) e
-    // nel Web-Velocity Focus Analytics (Daily Bugle Archives), che quindi
-    // mostrava "100% — quadrante già completato" all'infinito invece di
-    // sparire e lasciare spazio al prossimo esame REALE. Stesso identico
-    // filtro già usato da K.A.R.E.N. Auto-Router (vedi useKarenAutoRouter,
-    // `.filter((m) => !m.examPassed)`) — un solo criterio di "esame ancora
-    // da sostenere", condiviso da ogni consumatore di `derived.nextExam`.
-    // V39.0 — il "prossimo esame" è il prossimo NEL FUTURO: un appello di
-    // tre settimane fa, sostenuto e in attesa di verbale, restava
-    // "prossimo esame" per sempre nella Sidebar e nel Doomsday Clock.
-    const upcomingExams = [...state.materie]
-      .filter((m) => m.examDate && !m.examPassed && (daysUntilDateOnly(m.examDate) ?? -1) >= 0)
+    // Il "prossimo esame" è la prossima PROVA nel futuro di una materia non
+    // superata (V42: dopo lo scritto, l'orale dello stesso appello).
+    const upcomingExams = materiePiano
+      .filter((m) => m && m.examDate && !m.examPassed && (daysUntilDateOnly(m.examDate) ?? -1) >= 0)
       .sort((a, b) => a.examDate.localeCompare(b.examDate));
     const nextExam = upcomingExams[0] || null;
 
-    // V39.0 — la Traiettoria legge lo STESSO stato della Quota Odierna.
-    // Prima contava i NODI rimasti diviso i giorni: venti nodi da mezz'ora
-    // in dieci giorni risultavano ROSSO (sono 10 ore, OTTIMALE), tre nodi
-    // da trenta ore VERDE (sono 90 ore, CRITICO). Ora un solo verdetto.
+    // V42 — la Traiettoria guarda TUTTI gli esami dei prossimi 30 giorni
+    // (prima solo il prossimo: un esame critico al secondo posto restava
+    // "verde" in Sidebar).
     let trajectory = 'GREEN';
-    if (nextExam) {
-      const quota = karenAutoRouter.byMateriaId.get(nextExam.id);
-      if (quota?.status === 'CRITICO') trajectory = 'RED';
-      else if (quota?.status === 'ATTENZIONE') trajectory = 'YELLOW';
-    }
+    upcomingExams
+      .filter((m) => (daysUntilDateOnly(m.examDate) ?? 99) <= 30)
+      .forEach((m) => {
+        const q = karenAutoRouter.byMateriaId.get(m.id);
+        if (q?.status === 'CRITICO') trajectory = 'RED';
+        else if (q?.status === 'ATTENZIONE' && trajectory !== 'RED') trajectory = 'YELLOW';
+      });
 
-    // V37.0 — riusa la valutazione già fatta a monte (vedi
-    // `evaluatedTrophies`), invece di rifarla da capo.
     const unlockedAtById = new Map(state.trophies.map((r) => [r.id, r.unlockedAt]));
     const trophyList = evaluatedTrophies.map((t) => ({
       ...t,
       unlockedAt: unlockedAtById.get(t.id) || null
     }));
 
-    // V31.3 — Bounty Board (Friction Analytics): riattiva utils/friction.js,
-    // rimasto scaffoldato ma mai collegato a nessuna UI. Richiede almeno 3
-    // tentativi di ripasso registrati prima di segnalare un nodo, per non
-    // marcare come "Bounty" un nodo dopo un solo giudizio "Difficile"
-    // (rumore statistico su un campione troppo piccolo). Top 5 per frizione
-    // decrescente, letto da QuadrantHub per il pannello dedicato.
+    // V31.3 — Bounty Board (Friction Analytics). V42 — solo materie ancora
+    // da sostenere: un esame superato non ha più "argomenti che ti costano".
     const bountyTargets = state.materie
+      .filter((m) => m && !m.examPassed)
       .flatMap((m) => (Array.isArray(m.sfide) ? m.sfide : []).map((s) => ({ materia: m, sfida: s })))
       .filter(({ sfida }) => (sfida.tentativiSuccessi || 0) + (sfida.tentativiFalliti || 0) >= 3 && isBountyTarget(sfida))
       .map(({ materia, sfida }) => ({
@@ -1399,41 +1887,81 @@ export function ArachnoForgeProvider({ children }) {
       .sort((a, b) => b.friction - a.friction)
       .slice(0, 5);
 
-    const todayKey = getDateKey();
+    const todayKey = dayKey;
     const todayMinutes = state.starLog
       .filter((e) => e.type === 'FOCUS_MINUTES' && e.dateKey === todayKey)
       .reduce((sum, e) => sum + e.minutes, 0);
-    const burnoutRisk = todayMinutes > BURNOUT_MINUTES_THRESHOLD;
+    // V42 — il rischio burnout si misura sulla TUA giornata: oltre una volta
+    // e mezza la capacità (mai sotto le 5 ore).
+    const capacityMin = Math.round((Number(calibration.hoursPerDay) || 4.5) * 60);
+    const burnoutThresholdMin = Math.max(BURNOUT_MINUTES_THRESHOLD, Math.round(capacityMin * 1.5));
+    const burnoutRisk = todayMinutes > burnoutThresholdMin;
 
-    // V36.0 — EXAM READINESS INDEX: il verdetto "sostieni / rimanda" per
-    // ogni materia ancora aperta, calcolato una sola volta qui e letto
-    // sia dal Web-Matrix sia da Mission Control. `byMateriaId` perché è
-    // così che lo consuma la UI (lookup su una card, non scorrimento).
+    // V36.0/V42 — EXAM READINESS: sui pilastri veri (copertura di studio,
+    // memoria, pratica, piano globale).
     const radarByMateriaId = new Map(spiderSense.memoryRadar.byMateria.map((r) => [r.materiaId, r]));
     const examReadinessByMateriaId = new Map(
-      state.materie
-        .filter((m) => !m.examPassed)
-        .map((m) => [m.id, computeExamReadiness(m, radarByMateriaId.get(m.id) || null, calibration)])
+      materiePiano
+        .filter((m) => m && !m.examPassed)
+        .map((m) => [
+          m.id,
+          computeExamReadiness(m, radarByMateriaId.get(m.id) || null, calibration, { planQuota: karenAutoRouter.byMateriaId.get(m.id) || null, todayKey })
+        ])
     );
     const nextExamReadiness = nextExam ? examReadinessByMateriaId.get(nextExam.id) || null : null;
 
-    // V38.0 — "La Forgia degli Appunti": il piano di sintesi di ogni
-    // materia ancora aperta. Stesso pattern dei due sopra (mappa per id,
-    // calcolata una volta sola qui) perché lo leggono in tre punti
-    // diversi — Web-Matrix, Mission Control e il Debriefing — e
-    // ricalcolarlo in ognuno significherebbe tre risposte che nel tempo
-    // divergono.
+    // V38.0/V42 — piano di sintesi di ogni materia, con la data di chiusura
+    // degli appunti del piano GLOBALE (tutte le materie insieme).
     const sintesiPlanByMateriaId = new Map(
-      state.materie.filter((m) => !m.examPassed).map((m) => [m.id, materiaSintesiPlan(m, calibration)])
+      materiePiano
+        .filter((m) => m && !m.examPassed)
+        .map((m) => [m.id, materiaSintesiPlan(m, calibration, { chiusuraAppunti: karenAutoRouter.byMateriaId.get(m.id)?.chiusuraAppuntiDateKey })])
     );
+
+    // V42 — la serie di studio, con i riposi della settimana.
+    const streak = streakStatus(state.profile, { todayKey, todayMinutes, restDaysPerWeek: restAllowance(state.settings) });
+
+    // V42 — appelli passati di cui registrare l'esito.
+    const appelliDaChiudere = state.materie.map((m) => appelloDaChiudere(m, todayKey)).filter(Boolean);
+
+    // V42 — il piano preparato ieri sera, e se oggi è già stata chiusa.
+    const tomorrowPlanToday = state.tomorrowPlan && state.tomorrowPlan.dateKey === todayKey ? state.tomorrowPlan : null;
+    const dayClosedToday = (state.dayClosures || []).some((c) => c.dateKey === todayKey);
+    const weekKey = mondayOfDateKey(todayKey);
+
+    // V42 — gli ingressi del planner, per gli scenari del Piano della
+    // sessione ("e se spostassi questo appello?"): stessi numeri del piano vero.
+    const planInputs = {
+      calibration,
+      loadAdjustmentPct: karenLoadAdjustmentPct,
+      sintesiLezioni,
+      lessonPhase: campusSnapshot.fase === FASE.LEZIONI,
+      calendar,
+      doneToday,
+      todayKey
+    };
+
+    // V42 — il piano di oggi da consegnare a K.A.R.E.N. a ogni rigenerazione.
+    const karenPlanContext = buildKarenPlanContext({
+      planToday: karenAutoRouter.today,
+      quotas: karenAutoRouter.quotas,
+      materie: materiePiano,
+      campus: campusSnapshot,
+      streak,
+      starLog: state.starLog,
+      todayKey
+    });
 
     return {
       fatigued,
       nextExam,
+      upcomingExams,
       trajectory,
       trophyList,
       todayMinutes,
+      todayMinutesByMode,
       burnoutRisk,
+      burnoutThresholdMin,
       // Spider-Sense Engine — delegato a useSpiderSense.
       upcomingReviews: spiderSense.upcomingReviews,
       allTrackedReviews: spiderSense.allTrackedReviews,
@@ -1445,55 +1973,47 @@ export function ArachnoForgeProvider({ children }) {
       rankMeta: progression.rankMeta,
       xpNeeded: progression.xpNeeded,
       xpPct: progression.xpPct,
-      // V25.0 — Pillar 3: Tech Tokens & Skill Tree, esposti come `derived`
-      // per la UI (Sidebar, Armory) senza ricalcoli duplicati altrove.
       skillEffects,
       effectiveBloodPactPenalty: computeBloodPactPenalty(skillEffects.bloodPactReduction),
-      // K.A.R.E.N. Auto-Router (V20.0, Pillar 1) — Daily Quota per materia.
+      // Il piano (V42: globale, vedi utils/studyPlanner.js).
+      materiePiano,
       karenQuotas: karenAutoRouter.quotas,
       karenQuotaByMateriaId: karenAutoRouter.byMateriaId,
       karenEventHorizonList: karenAutoRouter.eventHorizonList,
-      // V29.0 — Pillar 1 (Planner Restriction) + Pillar 2 (Precedence
-      // Engine): tre liste distinte per la UI — mai più "tutto insieme".
       karenDailyFocusIds: karenAutoRouter.dailyFocusIds,
       karenMonotaskActive: karenAutoRouter.monotaskActive,
       karenDailyFocusQuotas: karenAutoRouter.dailyFocusQuotas,
       karenQueuedQuotas: karenAutoRouter.queuedQuotas,
       karenFrozenQuotas: karenAutoRouter.frozenQuotas,
-      // Karen's Tactical Suggestor — Primary Target (V18.0/V20.0).
+      karenBudget: karenAutoRouter.budget,
+      karenCumulativeOverload: karenAutoRouter.cumulativeOverload,
+      karenSintesi: karenAutoRouter.sintesi,
+      planToday: karenAutoRouter.today,
+      planReviews: karenAutoRouter.reviews,
+      planTimeline: karenAutoRouter.timeline,
       primaryTarget,
-      // V27.0 — Pillar 3 (Maximum Carnage Mode): stato derivato, letto da
-      // Sidebar/Shell/MissionControl per il feedback sensoriale globale.
-      // Ricalcolato ad ogni `nowTick` (heartbeat 60s) cosi' la finestra
-      // scade visivamente anche senza altre azioni dell'utente.
       isMaxCarnageActive: isMaxCarnageActive(state.profile),
-      // V27.0 — Pillar 4 (Daily Web-Sling): true se il forziere di oggi è
-      // ancora disponibile — letto dal widget in Mission Control.
+      carnageCharges: Number(state.profile.carnageCharges) || 0,
+      carnageCanActivate: (Number(state.profile.carnageCharges) || 0) > 0 && !isMaxCarnageActive(state.profile) && isCarnageHour(),
       canClaimWebSling: canClaimWebSling(state.profile),
-      // V31.3 — Bounty Board (Friction Analytics).
       bountyTargets,
-      // V35.0 — K.A.R.E.N. Daily Brain: Focus Timer Adattivo, letto dal
-      // widget del Tactical Timer per il badge "Preset Adattivo K.A.R.E.N.".
       karenAdaptiveTimerActive: !!karenFocusDirective,
       karenFocusDirective,
-      // V36.0 — Budget Giornaliero Globale: ore realmente assegnate oggi,
-      // deficit dichiarato, riduzione di carico applicata davvero.
-      karenBudget: karenAutoRouter.budget,
-      // V36.0 — "Karen impara da te": capacità reale e bias delle stime.
       calibration,
-      // V36.0 — Exam Readiness Index.
       examReadinessByMateriaId,
       sintesiPlanByMateriaId,
-      // V39.0 — Empire State University.
       campus: campusSnapshot,
-      karenCumulativeOverload: karenAutoRouter.cumulativeOverload,
-      // V40.0 — riserva per la sintesi delle lezioni (quanto, e se passa
-      // davanti agli esami in "ADESSO").
-      karenSintesi: karenAutoRouter.sintesi,
-      nextExamReadiness
+      nextExamReadiness,
+      streak,
+      appelliDaChiudere,
+      tomorrowPlanToday,
+      dayClosedToday,
+      weekKey,
+      karenPlanContext,
+      planInputs
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, nowTick, spiderSense, progression, karenAutoRouter, primaryTarget, skillEffects, karenFocusDirective, calibration, evaluatedTrophies, campusSnapshot]);
+  }, [state, nowTick, spiderSense, progression, karenAutoRouter, primaryTarget, skillEffects, karenFocusDirective, calibration, evaluatedTrophies, campusSnapshot, materiePiano, todayMinutesByMode, dayKey, karenLoadAdjustmentPct, sintesiLezioni, calendar, doneToday]);
 
   const value = useMemo(
     () => ({
@@ -1531,7 +2051,20 @@ export function ArachnoForgeProvider({ children }) {
   // reale, sia qualunque azione utente che potrebbe scattare un autosave
   // prematuro con dati non ancora sincronizzati.
   if (syncStatus === 'loading') {
-    return <BootScreen message="Sincronizzazione Web-Matrix in corso..." />;
+    return <BootScreen message="Sincronizzazione del Web-Matrix in corso…" />;
+  }
+  if (bootError) {
+    const when = bootError.savedAt
+      ? new Date(bootError.savedAt).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+      : null;
+    return (
+      <BootScreen
+        error={bootError.message}
+        onRetry={() => setBootAttempt((n) => n + 1)}
+        onOffline={bootError.canOffline ? startOffline : null}
+        offlineLabel={when ? `Continua offline (copia del ${when})` : 'Continua offline'}
+      />
+    );
   }
 
   return (

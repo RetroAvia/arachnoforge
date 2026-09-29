@@ -205,12 +205,12 @@ function Dropdown({
                 ? { position: 'fixed', left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width, maxHeight: pos.maxHeight }
                 : { position: 'fixed', left: -9999, top: 0, visibility: 'hidden', width: 'max-content', maxWidth: MAX_LIST_W }
             }
-            className={`z-[70] overflow-y-auto overscroll-contain af-scroll bg-surface/95 backdrop-blur-2xl border border-secondary/30 rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.6)] p-1.5 space-y-0.5 focus:outline-none ${
+            className={`z-[70] overflow-y-auto overscroll-contain af-scroll bg-panel border border-line-strong rounded-xl shadow-pop p-1.5 space-y-0.5 focus:outline-none ${
               pos ? 'af-dropdown-in' : ''
             } ${pos?.openUp ? 'origin-bottom' : 'origin-top'}`}
           >
             {options.length === 0 && (
-              <li className="px-3 py-2 text-base text-slate-500 italic">Nessuna opzione disponibile.</li>
+              <li className="px-3 py-2 text-sm text-slate-500">Nessuna opzione disponibile.</li>
             )}
             {options.map((opt, i) => {
               const active = opt.value === value;
@@ -222,12 +222,8 @@ function Dropdown({
                   aria-selected={active}
                   onMouseEnter={() => setHighlighted(i)}
                   onClick={() => commit(opt.value)}
-                  className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-base cursor-pointer transition-colors duration-150 ${
-                    active
-                      ? 'bg-gradient-to-r from-secondary/25 to-secondary/5 text-white'
-                      : hl
-                      ? 'bg-white/5 text-white'
-                      : 'text-slate-300'
+                  className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-[14px] cursor-pointer transition-colors duration-100 ${
+                    active ? 'bg-secondary/15 text-white' : hl ? 'bg-white/[0.06] text-white' : 'text-slate-300'
                   }`}
                 >
                   {/* V40.2 — `depth` rientra le voci di un albero (nodi
@@ -263,15 +259,15 @@ function Dropdown({
         aria-label={ariaLabel}
         title={selected ? String(selected.label) : undefined}
         className={`${compact ? INPUT_SM : INPUT} flex items-center justify-between gap-2 text-left disabled:opacity-50 disabled:cursor-not-allowed ${
-          open ? 'border-primary ring-1 ring-primary' : ''
+          open ? '!border-secondary/70 !shadow-[0_0_0_3px_rgb(var(--af-refuel-rgb)/0.18)]' : ''
         }`}
       >
         <span className={`truncate ${selected ? 'text-slate-100' : 'text-slate-500'}`}>
           {selected ? selected.label : placeholder}
         </span>
         <Icon
-          name="crosshair"
-          className={`w-4 h-4 shrink-0 text-slate-500 transition-transform duration-300 ${open ? 'rotate-45 text-primary' : ''}`}
+          name="chevronDown"
+          className={`w-4 h-4 shrink-0 text-slate-500 transition-transform duration-200 ${open ? 'rotate-180 text-slate-300' : ''}`}
         />
       </button>
       {list}

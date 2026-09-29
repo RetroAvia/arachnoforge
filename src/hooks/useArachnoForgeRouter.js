@@ -10,6 +10,8 @@ export const ROUTES = {
   QUADRANT_HUB: 'quadrant-hub',
   // V39.0 — Empire State University: semestre, orario, lezioni/sessione.
   CAMPUS: 'campus',
+  // V42 — il piano della sessione, giorno per giorno fino agli esami.
+  PIANO: 'piano-sessione',
   BOSS_FIGHT: 'boss-fight',
   STAR_LOG: 'star-log',
   ARMORY: 'armory',

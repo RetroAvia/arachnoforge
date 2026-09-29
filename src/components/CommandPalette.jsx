@@ -14,7 +14,7 @@ import { INTENT, requestIntent } from '../utils/uiIntents.js';
  *
  * Scorciatoie sempre attive (fuori dai campi di testo):
  *   Ctrl/⌘ K   apre e chiude la palette
- *   Alt 1…9    salta alle sezioni, nell'ordine della barra laterale
+ *   Alt 0…9    salta alle sezioni (il numero accanto a ogni voce della barra)
  *   ?          elenco delle scorciatoie
  * Quelle del timer (Spazio, Esc, D) restano dello Stark-Web Terminal.
  */
@@ -24,6 +24,7 @@ const OPEN_EVENT = 'af:command-palette';
 const NAV = [
   { route: ROUTES.MISSION_CONTROL, label: 'Stark-Web Terminal', hint: 'Home, timer e piano del giorno', icon: 'terminal', key: '1', kw: 'home timer oggi piano quota adesso' },
   { route: ROUTES.QUADRANT_HUB, label: 'The Web-Matrix', hint: 'Materie, nodi e Skill Tree', icon: 'web', key: '2', kw: 'materie esami nodi argomenti skill tree' },
+  { route: ROUTES.PIANO, label: 'Web-Swing Route', hint: 'Piano della sessione giorno per giorno', icon: 'trendUp', key: '0', kw: 'piano sessione calendario scadenze appelli settimane scenari' },
   { route: ROUTES.CAMPUS, label: 'Empire State University', hint: 'Semestre, orario e lezioni', icon: 'calendar', key: '3', kw: 'lezioni orario semestre campus sintesi' },
   { route: ROUTES.BOSS_FIGHT, label: 'Sinister Six Simulator', hint: 'Simulazione d’esame a tempo', icon: 'crosshair', key: '4', kw: 'boss fight simulazione esame villain' },
   { route: ROUTES.STAR_LOG, label: 'Daily Bugle Archives', hint: 'Storico, heatmap e statistiche', icon: 'newspaper', key: '5', kw: 'storico statistiche heatmap sessioni star log' },
@@ -61,7 +62,7 @@ function isTypingTarget(el) {
 
 const SHORTCUTS = [
   { keys: [shortcutLabel('K')], label: 'Apri la palette comandi' },
-  { keys: ['Alt', '1…9'], label: 'Vai alle sezioni della barra laterale' },
+  { keys: ['Alt', '0…9'], label: 'Vai alle sezioni della barra laterale (Alt+0: Web-Swing Route)' },
   { keys: ['?'], label: 'Mostra queste scorciatoie' },
   { keys: ['Spazio'], label: 'Timer: avvia, metti in pausa, riprendi (Stark-Web Terminal)' },
   { keys: ['Esc'], label: 'Sensory Zero on/off (Stark-Web Terminal)' },
@@ -187,6 +188,14 @@ function PaletteDialog({ onClose, initialSection }) {
         goTo(ROUTES.QUADRANT_HUB);
         requestIntent(INTENT.WEBMATRIX_NEW_MATERIA);
       }
+    });
+    out.push({
+      id: 'act-piano',
+      group: 'Azioni',
+      label: 'Piano della sessione (scadenze e scenari)',
+      icon: 'trendUp',
+      kw: 'piano sessione scadenze appelli inizia entro chiusura appunti scenari ritardo',
+      action: () => goTo(ROUTES.PIANO)
     });
     out.push({
       id: 'act-spider-sense',
@@ -493,9 +502,8 @@ export default function CommandPalette() {
       if (isTypingTarget(e.target)) return;
       // Un'altra finestra modale ha la precedenza sulle scorciatoie.
       if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
-      if (e.altKey && !mod && /^Digit[1-9]$/.test(e.code)) {
-        const n = Number(e.code.slice(5));
-        const target = NAV[n - 1];
+      if (e.altKey && !mod && /^Digit[0-9]$/.test(e.code)) {
+        const target = NAV.find((t) => t.key === e.code.slice(5));
         if (target) {
           e.preventDefault();
           goTo(target.route);

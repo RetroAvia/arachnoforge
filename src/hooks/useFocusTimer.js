@@ -1,7 +1,32 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useTimerEngine, TIMER_STATUS } from './useTimerEngine.js';
 import { BLOOD_PACT_PENALTY, FOCUS_QUALITY, DEFAULT_FOCUS_QUALITY } from '../utils/xpEngine.js';
-import { saveFocusCheckpoint, loadFocusCheckpoint, clearFocusCheckpoint } from '../utils/focusRecovery.js';
+import {
+  saveFocusCheckpoint,
+  loadFocusCheckpoint,
+  clearFocusCheckpoint,
+  saveRunningBlock,
+  loadRunningBlock,
+  clearRunningBlock,
+  planRunningBlockRestore,
+  getTabId,
+  readFocusLease,
+  writeFocusLease,
+  releaseFocusLease,
+  isForeignLeaseAlive,
+  LEASE_BEAT_MS
+} from '../utils/focusRecovery.js';
+
+const EMPTY_PENDING = { totalMinutes: 0, overdriveOccurred: false, overdriveMinutes: 0, materiaId: null, sfidaId: null, intent: null };
+/**
+ * V42 — l'intento di una sessione: il modo di lavoro con cui l'hai avviata
+ * (Sintesi dalla coda delle lezioni, Ripasso da un argomento in scadenza,
+ * Esercizi, Studio). Il Debriefing parte già su quel modo.
+ */
+const INTENTS = ['SINTESI', 'RIPASSO', 'ESERCIZI', 'STUDIO'];
+function normIntent(v) {
+  return INTENTS.includes(v) ? v : null;
+}
 import { notify, vibrate, requestWakeLock, releaseWakeLock } from '../utils/systemNotify.js';
 
 /**
@@ -49,7 +74,13 @@ export function useFocusTimer({
   keepScreenAwake = true,
   // V40.3 — il rintocco ogni 30 minuti di Focus accumulato si può
   // spegnere: senza un suono di fine blocco sembrava casuale.
-  focusReminderEnabled = true
+  focusReminderEnabled = true,
+  // V41 — true quando lo stato del profilo è stato caricato: il recupero
+  // di una sessione orfana deve arrivare DOPO i dati veri, non prima.
+  ready = true,
+  // V42 — la penalità Blood Pact effettiva (Skill Tree compreso), per un
+  // messaggio che dica il vero (prima diceva sempre −50).
+  bloodPactPenalty = BLOOD_PACT_PENALTY
 }) {
   const [activeFocusMateriaId, setActiveFocusMateriaId] = useState(null);
   const [activeFocusSfidaId, setActiveFocusSfidaId] = useState(null);
@@ -57,53 +88,40 @@ export function useFocusTimer({
   // avvii da una lezione da sistemare (Campus o card "ADESSO"). Il
   // Debriefing parte già in modo Sintesi e chiede le pagine fonte per fonte.
   const [activeFocusIntent, setActiveFocusIntent] = useState(null);
-  const [pendingFocus, setPendingFocus] = useState({
-    totalMinutes: 0,
-    overdriveOccurred: false,
-    materiaId: null,
-    sfidaId: null,
-    intent: null
-  });
+  const [pendingFocus, setPendingFocus] = useState(EMPTY_PENDING);
+  const bloodPactPenaltyRef = useRef(bloodPactPenalty);
+  useEffect(() => {
+    bloodPactPenaltyRef.current = bloodPactPenalty;
+  }, [bloodPactPenalty]);
+  // V42 — durata dell'ultima pausa avviata: a fine pausa ricarica Stamina.
+  const breakMinutesRef = useRef(0);
 
   const activeFocusRef = useRef({ materiaId: null, sfidaId: null, intent: null });
   useEffect(() => {
     activeFocusRef.current = { materiaId: activeFocusMateriaId, sfidaId: activeFocusSfidaId, intent: activeFocusIntent };
   }, [activeFocusMateriaId, activeFocusSfidaId, activeFocusIntent]);
 
-  // V35.0 — Recovery-on-boot: gira UNA sola volta al mount dell'hook (il
-  // guard `recoveryDoneRef` assorbe anche il doppio-invoke di
-  // React.StrictMode in sviluppo). Se un checkpoint orfano esiste per
-  // l'utente corrente, lo si dispatcha come una FOCUS_COMPLETED con
-  // qualità neutra (nessun Tactical Debriefing possibile a posteriori —
-  // la sessione originale non c'è più per essere valutata) e un flag
-  // `recovered` che il reducer usa SOLO per aggiungere una riga di
-  // Combat Log distinta, mai per alterare XP/Stamina/StarLog (identica
-  // pipeline di un FOCUS_COMPLETED normale).
+  // V35.0 / V41 — Il recupero al boot vive più sotto, dopo il motore del
+  // timer: oltre ai blocchi finiti ora riprende anche quello in corso.
   const recoveryDoneRef = useRef(false);
-  useEffect(() => {
-    if (recoveryDoneRef.current) return;
-    recoveryDoneRef.current = true;
-    const checkpoint = loadFocusCheckpoint(userId);
-    if (!checkpoint) return;
-    dispatch({
-      type: 'FOCUS_COMPLETED',
-      payload: {
-        wasOverdrive: !!checkpoint.overdriveOccurred,
-        materiaId: checkpoint.materiaId || null,
-        sfidaId: checkpoint.sfidaId || null,
-        focusMinutes: checkpoint.totalMinutes,
-        quality: DEFAULT_FOCUS_QUALITY,
-        // Una sessione avviata esplicitamente come Sintesi resta tale
-        // anche se recuperata: l'intento l'hai dichiarato tu all'avvio.
-        workMode: checkpoint.intent === 'SINTESI' ? 'SINTESI' : null,
-        recovered: true
-      }
-    });
-    clearFocusCheckpoint(userId);
-    pushToast(`K.A.R.E.N. — Sessione Focus recuperata dopo chiusura imprevista: +${checkpoint.totalMinutes} min registrati.`, 'info');
-    audio.playSuccessChime();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
+  // V41 — identità di questa finestra (vedi "una sola finestra alla
+  // volta" in utils/focusRecovery.js).
+  const tabIdRef = useRef(null);
+  if (tabIdRef.current === null) tabIdRef.current = getTabId();
+  // V41 — Web Locks: un lucchetto esclusivo per utente, tenuto dalla
+  // finestra che ha una sessione in corso. Il browser lo libera da solo
+  // quando la finestra si chiude, va in crash o viene scartata, e lo
+  // lascia a una finestra in secondo piano anche se rallentata o
+  // congelata: esattamente la regola che serve. Il "possesso" a tempo
+  // resta solo per i browser senza Web Locks.
+  const locksOk = typeof navigator !== 'undefined' && !!navigator.locks && typeof navigator.locks.request === 'function';
+  const lockName = `arachnoforge-focus-session-${userId || 'anon'}`;
+  // 'idle' finché i dati non sono pronti, 'pending' in attesa del
+  // lucchetto (un'altra finestra ha la sessione), 'done' a recupero fatto.
+  const [recoveryPhase, setRecoveryPhase] = useState('idle');
+  const recuperaRef = useRef(null);
+  // Vero se da più di un istante un'altra finestra tiene la sessione.
+  const [sessionElsewhere, setSessionElsewhere] = useState(false);
 
   // V35.0 — Checkpoint sincrono: scrive (MAI cancella) ad ogni blocco
   // accumulato — la cancellazione è sempre esplicita, nei punti in cui
@@ -116,6 +134,7 @@ export function useFocusTimer({
       saveFocusCheckpoint(userId, {
         totalMinutes: pendingFocus.totalMinutes,
         overdriveOccurred: pendingFocus.overdriveOccurred,
+        overdriveMinutes: pendingFocus.overdriveMinutes || 0,
         materiaId: pendingFocus.materiaId,
         sfidaId: pendingFocus.sfidaId,
         intent: pendingFocus.intent || null
@@ -139,6 +158,7 @@ export function useFocusTimer({
         saveFocusCheckpoint(userId, {
           totalMinutes: pendingFocusRef.current.totalMinutes,
           overdriveOccurred: pendingFocusRef.current.overdriveOccurred,
+          overdriveMinutes: pendingFocusRef.current.overdriveMinutes || 0,
           materiaId: pendingFocusRef.current.materiaId,
           sfidaId: pendingFocusRef.current.sfidaId,
           intent: pendingFocusRef.current.intent || null
@@ -205,7 +225,7 @@ export function useFocusTimer({
   useEffect(() => { notifyRef.current = notificationsEnabled; }, [notificationsEnabled]);
   useEffect(() => { wakeRef.current = keepScreenAwake; }, [keepScreenAwake]);
 
-  const handleFocusComplete = useCallback(({ wasOverdrive }) => {
+  const handleFocusComplete = useCallback(({ wasOverdrive, durationSeconds }) => {
     // V40.3 — IL suono che mancava: la fine di un blocco era muta se non
     // avevi attivato le notifiche di sistema. Se era già stato programmato
     // sul clock audio ha appena suonato da solo, e non si ripete.
@@ -214,10 +234,15 @@ export function useFocusTimer({
     rintoccoRef.current = null;
     if (!giaSuonato) audio.playBlockComplete();
     const { materiaId, sfidaId, intent } = activeFocusRef.current;
-    const minutes = focusTimeRef.current;
+    // V41 — i minuti del blocco che è finito davvero, non quelli
+    // dell'impostazione di adesso (vedi totalSecondsRef in useTimerEngine).
+    const minutes =
+      Number.isFinite(durationSeconds) && durationSeconds > 0 ? Math.max(1, Math.round(durationSeconds / 60)) : focusTimeRef.current;
     setPendingFocus((prev) => ({
       totalMinutes: prev.totalMinutes + minutes,
       overdriveOccurred: prev.overdriveOccurred || wasOverdrive,
+      // V42 — i minuti dei blocchi Overdrive, a parte: il bonus vale solo su quelli.
+      overdriveMinutes: (prev.overdriveMinutes || 0) + (wasOverdrive ? minutes : 0),
       materiaId: prev.materiaId || materiaId,
       sfidaId: prev.sfidaId || sfidaId,
       intent: prev.totalMinutes > 0 ? prev.intent || null : intent || null
@@ -238,15 +263,284 @@ export function useFocusTimer({
     const giaSuonato = !!prog && prog.tipo === 'BREAK' && prog.suonato();
     rintoccoRef.current = null;
     if (!giaSuonato) audio.playBreakOver();
-    pushToast('Pausa terminata — pronto per il prossimo blocco di Focus.', 'info');
+    // V42 — una pausa fatta davvero ricarica Stamina.
+    if (breakMinutesRef.current > 0) dispatch({ type: 'BREAK_COMPLETED', payload: { minutes: breakMinutesRef.current } });
+    breakMinutesRef.current = 0;
+    pushToast('Pausa finita: pronto per il prossimo blocco di Focus.', 'info');
     if (notifyRef.current) {
       notify('Pausa terminata', { body: 'Karen: pronto per il prossimo blocco di Focus.', tag: 'af-break' });
       vibrate([90]);
     }
-  }, [pushToast, audio]);
+  }, [pushToast, audio, dispatch]);
 
   const rawTimer = useTimerEngine({ onFocusComplete: handleFocusComplete, onBreakComplete: handleBreakComplete });
-  const { start: timerStart, stop: timerStop, pause: timerPause, resume: timerResume } = rawTimer;
+  const {
+    start: timerStart,
+    stop: timerStop,
+    pause: timerPause,
+    resume: timerResume,
+    restore: timerRestore,
+    snapshot: timerSnapshot
+  } = rawTimer;
+
+  /**
+   * Recovery-on-boot, UNA sola volta per sessione (il guard assorbe anche
+   * il doppio montaggio di React.StrictMode), e solo quando i dati del
+   * profilo sono caricati (`ready`).
+   *
+   * V41 — prima si guarda il blocco che stava correndo
+   * (planRunningBlockRestore in utils/focusRecovery.js):
+   *  - ancora in corso o in pausa → riparte da dov'era, e i blocchi già
+   *    finiti della stessa sessione tornano "in sospeso" (la sessione
+   *    continua, non va chiusa d'ufficio);
+   *  - finito mentre l'app era chiusa → i suoi minuti si aggiungono a
+   *    quelli in sospeso e si salvano col Debriefing, con un "Non
+   *    contarlo" nel toast per chi l'aveva abbandonato;
+   *  - niente da riprendere → il recupero della V35: i blocchi finiti e
+   *    mai salvati vengono accreditati con qualità neutra, nella stessa
+   *    action FOCUS_COMPLETED di sempre (flag `recovered` solo per il
+   *    Combat Log).
+   */
+  useEffect(() => {
+    if (!ready || recoveryDoneRef.current) return undefined;
+    const tabId = tabIdRef.current;
+
+    const recupera = () => {
+      recoveryDoneRef.current = true;
+      const checkpoint = loadFocusCheckpoint(userId);
+      const running = loadRunningBlock(userId);
+      const plan = planRunningBlockRestore(running);
+      const pendingSalvato = checkpoint
+        ? {
+            totalMinutes: checkpoint.totalMinutes,
+            overdriveOccurred: !!checkpoint.overdriveOccurred,
+            overdriveMinutes: Math.min(checkpoint.totalMinutes, Math.max(0, Number(checkpoint.overdriveMinutes) || 0)),
+            materiaId: checkpoint.materiaId || null,
+            sfidaId: checkpoint.sfidaId || null,
+            intent: normIntent(checkpoint.intent)
+          }
+        : null;
+      const riprendiArgomento = () => {
+        const intent = normIntent(running.intent);
+        setActiveFocusMateriaId(running.materiaId || null);
+        setActiveFocusSfidaId(running.sfidaId || null);
+        setActiveFocusIntent(intent);
+        activeFocusRef.current = { materiaId: running.materiaId || null, sfidaId: running.sfidaId || null, intent };
+      };
+
+      if (plan.action === 'resume' || plan.action === 'paused') {
+        if (pendingSalvato) setPendingFocus(pendingSalvato);
+        if (running.mode === 'FOCUS') {
+          riprendiArgomento();
+          // Il rintocco dei 30 minuti non deve suonare subito per il
+          // tempo già passato prima del ricaricamento.
+          const trascorsi = Math.max(0, Number(running.totalSeconds) - Math.ceil(plan.remainingMs / 1000));
+          reminderThresholdRef.current = Math.floor(((pendingSalvato?.totalMinutes || 0) * 60 + trascorsi) / REMINDER_INTERVAL_SECONDS);
+        }
+        timerRestore({
+          mode: running.mode,
+          endsAt: plan.action === 'resume' ? plan.endsAt : null,
+          pausedRemainingMs: plan.action === 'paused' ? plan.remainingMs : null,
+          totalSeconds: running.totalSeconds,
+          overdrive: running.overdrive
+        });
+        if (plan.action === 'resume') programmaRintocco(running.mode, Math.ceil(plan.remainingMs / 1000));
+        const breakMode = running.mode === 'BREAK';
+        pushToast(
+          plan.action === 'paused'
+            ? breakMode
+              ? 'Pausa ritrovata: è sospesa, come l’avevi lasciata.'
+              : 'Blocco di Focus ritrovato: è in pausa, come l’avevi lasciato.'
+            : breakMode
+            ? 'Pausa ripresa: il tempo ha continuato a scorrere mentre l’app era chiusa.'
+            : 'Blocco di Focus ripreso: il timer ha continuato a contare mentre l’app era chiusa.',
+          'info'
+        );
+        return;
+      }
+
+      clearRunningBlock(userId);
+
+      if (plan.action === 'complete') {
+        const minutes = plan.minutes;
+        const intentBlocco = normIntent(running.intent);
+        const totale = (pendingSalvato?.totalMinutes || 0) + minutes;
+        // Come dopo un blocco finito con l'app aperta: stesso argomento
+        // per un eventuale Overdrive, e il rintocco dei 30 minuti tiene
+        // conto del tempo già fatto.
+        riprendiArgomento();
+        reminderThresholdRef.current = Math.floor((totale * 60) / REMINDER_INTERVAL_SECONDS);
+        setPendingFocus({
+          totalMinutes: totale,
+          overdriveOccurred: !!pendingSalvato?.overdriveOccurred || !!running.overdrive,
+          overdriveMinutes: (pendingSalvato?.overdriveMinutes || 0) + (running.overdrive ? minutes : 0),
+          materiaId: pendingSalvato?.materiaId || running.materiaId || null,
+          sfidaId: pendingSalvato?.sfidaId || running.sfidaId || null,
+          intent: pendingSalvato && pendingSalvato.totalMinutes > 0 ? pendingSalvato.intent : intentBlocco
+        });
+        pushToast(`Il blocco di Focus è finito mentre l’app era chiusa: ${minutes} min da salvare con il Debriefing.`, 'info', {
+          duration: 12000,
+          action: {
+            label: 'Non contarlo',
+            onClick: () => {
+              // Se nel frattempo non è cambiato niente si torna ESATTAMENTE
+              // a com'era prima (anche l'Overdrive del blocco scartato non
+              // conta più); altrimenti si tolgono solo i suoi minuti.
+              const invariato = pendingFocusRef.current.totalMinutes === totale;
+              const restano = invariato ? pendingSalvato?.totalMinutes || 0 : Math.max(0, pendingFocusRef.current.totalMinutes - minutes);
+              if (restano === 0) clearFocusCheckpoint(userId);
+              setPendingFocus((prev) => {
+                if (restano === 0) return EMPTY_PENDING;
+                if (invariato && pendingSalvato) return pendingSalvato;
+                return { ...prev, totalMinutes: Math.max(0, prev.totalMinutes - minutes) };
+              });
+              reminderThresholdRef.current = Math.floor((restano * 60) / REMINDER_INTERVAL_SECONDS);
+            }
+          }
+        });
+        return;
+      }
+
+      if (!checkpoint) return;
+      dispatch({
+        type: 'FOCUS_COMPLETED',
+        payload: {
+          wasOverdrive: !!checkpoint.overdriveOccurred,
+          materiaId: checkpoint.materiaId || null,
+          sfidaId: checkpoint.sfidaId || null,
+          focusMinutes: checkpoint.totalMinutes,
+          baseMinutes: Math.max(0, checkpoint.totalMinutes - (pendingSalvato?.overdriveMinutes || 0)),
+          quality: DEFAULT_FOCUS_QUALITY,
+          // Una sessione avviata con un modo esplicito (Sintesi, Ripasso,
+          // Esercizi) resta tale anche se recuperata: l'hai dichiarato tu.
+          workMode: normIntent(checkpoint.intent),
+          recovered: true
+        }
+      });
+      clearFocusCheckpoint(userId);
+      pushToast(`Sessione di Focus interrotta da una chiusura imprevista: recuperati ${checkpoint.totalMinutes} min.`, 'info');
+      audio.playSuccessChime();
+    };
+
+    // V41 — Un'altra finestra aperta ha la sessione in mano: niente
+    // recupero finché la tiene (il blocco finirebbe due volte).
+    // Con Web Locks il recupero parte quando il lucchetto si libera (vedi
+    // l'effetto qui sotto); senza, si ricontrolla il possesso a tempo.
+    recuperaRef.current = recupera;
+    if (locksOk) {
+      setRecoveryPhase((p) => (p === 'done' ? p : 'pending'));
+      return undefined;
+    }
+    if (!isForeignLeaseAlive(readFocusLease(userId), tabId)) {
+      recupera();
+      return undefined;
+    }
+    setSessionElsewhere(true);
+    const id = setInterval(() => {
+      if (recoveryDoneRef.current) {
+        clearInterval(id);
+        setSessionElsewhere(false);
+        return;
+      }
+      if (!isForeignLeaseAlive(readFocusLease(userId), tabId)) {
+        clearInterval(id);
+        setSessionElsewhere(false);
+        recupera();
+      }
+    }, LEASE_BEAT_MS);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, ready]);
+
+  const sessioneAttiva = rawTimer.status !== TIMER_STATUS.IDLE || pendingFocus.totalMinutes > 0;
+
+  // V41 — Il lucchetto della sessione (Web Locks). Richiesto in attesa del
+  // recupero e poi tenuto finché in questa finestra c'è una sessione:
+  // chi lo ottiene per primo recupera, gli altri aspettano in fila. Fra
+  // il recupero e la sessione non viene mai lasciato, così nessun'altra
+  // finestra in coda può infilarsi e riprendere lo stesso blocco.
+  const wantLock = locksOk && (recoveryPhase === 'pending' || (recoveryPhase === 'done' && sessioneAttiva));
+  useEffect(() => {
+    if (!wantLock) return undefined;
+    const ctrl = new AbortController();
+    let release = null;
+    let disposed = false;
+    const onGranted = () => {
+      // Concesso proprio mentre l'effetto veniva smontato: si restituisce
+      // subito, invece di tenerlo per sempre.
+      if (disposed) return undefined;
+      return new Promise((resolve) => {
+        release = resolve;
+        if (!recoveryDoneRef.current && recuperaRef.current) recuperaRef.current();
+        recoveryDoneRef.current = true;
+        setRecoveryPhase('done');
+        setSessionElsewhere(false);
+      });
+    };
+    navigator.locks.request(lockName, { signal: ctrl.signal }, onGranted).catch(() => {
+      /* richiesta annullata: niente da fare */
+    });
+    return () => {
+      disposed = true;
+      ctrl.abort();
+      if (release) release();
+    };
+  }, [wantLock, lockName]);
+
+  // In attesa da più di un istante = la sessione è davvero in un'altra
+  // finestra (all'avvio normale il lucchetto arriva in pochi millisecondi).
+  useEffect(() => {
+    if (recoveryPhase !== 'pending') return undefined;
+    const id = setTimeout(() => setSessionElsewhere(true), 1500);
+    return () => clearTimeout(id);
+  }, [recoveryPhase]);
+
+  // V41 — Possesso a tempo (solo senza Web Locks): rinnovato ogni pochi
+  // secondi finché in questa finestra c'è un blocco (anche in pausa) o
+  // dei minuti da salvare, rilasciato quando la sessione finisce o la
+  // finestra si chiude.
+  useEffect(() => {
+    if (!sessioneAttiva || locksOk) return undefined;
+    const tabId = tabIdRef.current;
+    const beat = () => writeFocusLease(userId, tabId);
+    const release = () => releaseFocusLease(userId, tabId);
+    beat();
+    const id = setInterval(beat, LEASE_BEAT_MS);
+    window.addEventListener('pagehide', release);
+    window.addEventListener('pageshow', beat);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('pagehide', release);
+      window.removeEventListener('pageshow', beat);
+      release();
+    };
+  }, [sessioneAttiva, userId, locksOk]);
+
+  // V41 — Il blocco in corso si riscrive a ogni cambio di stato del
+  // timer (avvio, pausa, ripresa, Overdrive) e si cancella quando torna
+  // fermo. Mai prima del recupero qui sopra: al primo render il timer è
+  // IDLE, e cancellare il record in quel momento vorrebbe dire perderlo.
+  useEffect(() => {
+    if (!recoveryDoneRef.current) return;
+    if (rawTimer.status === TIMER_STATUS.IDLE) {
+      clearRunningBlock(userId);
+      return;
+    }
+    const snap = timerSnapshot();
+    if (snap.mode !== 'FOCUS' && snap.mode !== 'BREAK') return;
+    const focus = snap.mode === 'FOCUS';
+    const { materiaId, sfidaId, intent } = activeFocusRef.current;
+    saveRunningBlock(userId, {
+      mode: snap.mode,
+      endsAt: snap.endsAt,
+      pausedRemainingMs: snap.pausedRemainingMs,
+      totalSeconds: rawTimer.totalSeconds,
+      overdrive: focus && snap.overdrive,
+      materiaId: focus ? materiaId : null,
+      sfidaId: focus ? sfidaId : null,
+      intent: focus ? intent : null
+    });
+  }, [rawTimer.runId, rawTimer.status, rawTimer.totalSeconds, userId, timerSnapshot]);
 
   // V40.3 — lo stato del blocco in corso, leggibile dentro le callback
   // senza doverle ricreare ad ogni tick del countdown.
@@ -273,6 +567,9 @@ export function useFocusTimer({
   const freezeRunningBlock = useCallback(() => {
     const b = bloccoRef.current;
     if (b.status !== TIMER_STATUS.FOCUS && b.status !== TIMER_STATUS.PAUSED) return 0;
+    // V41 — una PAUSA sospesa non è un Focus sospeso: i suoi minuti non
+    // sono studio.
+    if (timerSnapshot().mode !== 'FOCUS') return 0;
     const minuti = Math.max(0, Math.floor((b.totalSeconds - b.remainingSeconds) / 60));
     annullaRintocco();
     timerStop();
@@ -281,13 +578,14 @@ export function useFocusTimer({
       setPendingFocus((prev) => ({
         totalMinutes: prev.totalMinutes + minuti,
         overdriveOccurred: prev.overdriveOccurred || b.overdrive,
+        overdriveMinutes: (prev.overdriveMinutes || 0) + (b.overdrive ? minuti : 0),
         materiaId: prev.materiaId || materiaId,
         sfidaId: prev.sfidaId || sfidaId,
         intent: prev.totalMinutes > 0 ? prev.intent || null : intent || null
       }));
     }
     return minuti;
-  }, [timerStop, annullaRintocco]);
+  }, [timerStop, annullaRintocco, timerSnapshot]);
 
   // V36.0 — Wake Lock: lo schermo resta acceso per tutta la durata di un
   // blocco di Focus (mai durante una pausa: lì spegnere è il punto), e
@@ -313,19 +611,28 @@ export function useFocusTimer({
     }
   }, [rawTimer.status, rawTimer.remainingSeconds, rawTimer.totalSeconds, pendingFocus.totalMinutes, audio]);
 
-  const startFocus = useCallback((materiaId = null, sfidaId = null, overdrive = false, intent = null) => {
+  const startFocus = useCallback((materiaId = null, sfidaId = null, overdrive = false, intent = null, options = null) => {
+    // V41 — una sessione avviata qui chiude l'eventuale attesa del
+    // recupero (vedi "una sola finestra alla volta").
+    recoveryDoneRef.current = true;
+    const i = normIntent(intent);
     setActiveFocusMateriaId(materiaId);
     setActiveFocusSfidaId(sfidaId);
-    setActiveFocusIntent(intent === 'SINTESI' ? 'SINTESI' : null);
+    setActiveFocusIntent(i);
     // Il ref si aggiorna subito: un blocco non deve mai partire con
     // l'intento della sessione precedente.
-    activeFocusRef.current = { materiaId, sfidaId, intent: intent === 'SINTESI' ? 'SINTESI' : null };
-    timerStart('FOCUS', focusTimeRef.current, { overdrive });
-    programmaRintocco('FOCUS', focusTimeRef.current * 60);
+    activeFocusRef.current = { materiaId, sfidaId, intent: i };
+    // V42 — durata su misura (es. "Solo 5 minuti" contro la procrastinazione).
+    const custom = Number(options?.minutes);
+    const minutes = Number.isFinite(custom) && custom >= 1 && custom <= 180 ? Math.round(custom) : focusTimeRef.current;
+    timerStart('FOCUS', minutes, { overdrive });
+    programmaRintocco('FOCUS', minutes * 60);
   }, [timerStart, programmaRintocco]);
 
   const startBreak = useCallback((long = false) => {
+    recoveryDoneRef.current = true;
     const minutes = long ? longBreakRef.current : shortBreakRef.current;
+    breakMinutesRef.current = minutes;
     timerStart('BREAK', minutes);
     programmaRintocco('BREAK', minutes * 60);
   }, [timerStart, programmaRintocco]);
@@ -339,9 +646,13 @@ export function useFocusTimer({
 
   const resume = useCallback(() => {
     const b = bloccoRef.current;
+    // V41 — in pausa lo stato è PAUSED per entrambi i tipi di blocco: il
+    // tipo vero lo sa il motore. Prima una pausa ripresa programmava il
+    // rintocco di fine Focus.
+    const tipo = timerSnapshot().mode === 'BREAK' ? 'BREAK' : 'FOCUS';
     timerResume();
-    if (b.remainingSeconds > 0) programmaRintocco(b.status === TIMER_STATUS.BREAK ? 'BREAK' : 'FOCUS', b.remainingSeconds);
-  }, [timerResume, programmaRintocco]);
+    if (b.remainingSeconds > 0) programmaRintocco(tipo, b.remainingSeconds);
+  }, [timerResume, programmaRintocco, timerSnapshot]);
 
   const interruptFocus = useCallback(() => {
     annullaRintocco();
@@ -350,11 +661,11 @@ export function useFocusTimer({
       // Blood Pact è un abbandono volontario dell'intera sessione: forfeit
       // anche di eventuali minuti già accumulati in blocchi Overdrive
       // precedenti non ancora salvati.
-      setPendingFocus({ totalMinutes: 0, overdriveOccurred: false, materiaId: null, sfidaId: null, intent: null });
+      setPendingFocus(EMPTY_PENDING);
       reminderThresholdRef.current = 0;
       clearFocusCheckpoint(userId);
       dispatch({ type: 'BLOOD_PACT_INTERRUPT' });
-      pushToast(`BLOOD PACT — -${BLOOD_PACT_PENALTY} XP`, 'danger');
+      pushToast(`Blood Pact: −${bloodPactPenaltyRef.current} XP per la sessione interrotta.`, 'danger');
     }
   }, [timerStop, dispatch, pushToast, userId, annullaRintocco]);
 
@@ -382,7 +693,7 @@ export function useFocusTimer({
     // punto arrivi la chiamata (i minuti interi del blocco in corso sono
     // già stati messi in sospeso da freezeRunningBlock).
     const inCorso = bloccoRef.current.status;
-    if (inCorso === TIMER_STATUS.FOCUS || inCorso === TIMER_STATUS.PAUSED) {
+    if ((inCorso === TIMER_STATUS.FOCUS || inCorso === TIMER_STATUS.PAUSED) && timerSnapshot().mode === 'FOCUS') {
       annullaRintocco();
       timerStop();
     }
@@ -396,27 +707,32 @@ export function useFocusTimer({
           // lavorato davvero (sempre della stessa materia).
           sfidaId: forgia && forgia.sfidaId !== undefined ? forgia.sfidaId || null : pendingFocus.sfidaId,
           focusMinutes: pendingFocus.totalMinutes,
+          baseMinutes: Math.max(0, pendingFocus.totalMinutes - (pendingFocus.overdriveMinutes || 0)),
           quality,
           workMode: forgia?.workMode || null,
           pagineFonte: forgia?.pagineFonte || 0,
           pagineFontePer: forgia?.pagineFontePer || null,
-          pagineAppuntiProdotte: forgia?.pagineAppuntiProdotte || 0
+          pagineAppuntiProdotte: forgia?.pagineAppuntiProdotte || 0,
+          // V42 — esercizi svolti (modo Esercizi) e giudizio del ripasso (modo Ripasso).
+          eserciziFatti: forgia?.eserciziFatti || 0,
+          eserciziCorretti: forgia?.eserciziCorretti || 0,
+          reviewRating: forgia?.reviewRating || null
         }
       });
       audio.playSuccessChime();
       if (quality === FOCUS_QUALITY.DISTRACTED) {
-        pushToast('Sessione faticosa registrata — attiva un Daily Protocol per recuperare Stamina.', 'info');
+        pushToast('Sessione faticosa registrata: Karen ne tiene conto per timer e carico dei prossimi giorni.', 'info');
       }
-      setPendingFocus({ totalMinutes: 0, overdriveOccurred: false, materiaId: null, sfidaId: null, intent: null });
+      setPendingFocus(EMPTY_PENDING);
       reminderThresholdRef.current = 0;
       clearFocusCheckpoint(userId);
       return true;
     }
-    setPendingFocus({ totalMinutes: 0, overdriveOccurred: false, materiaId: null, sfidaId: null, intent: null });
+    setPendingFocus(EMPTY_PENDING);
     reminderThresholdRef.current = 0;
     clearFocusCheckpoint(userId);
     return false;
-  }, [pendingFocus, dispatch, audio, pushToast, userId, timerStop, annullaRintocco]);
+  }, [pendingFocus, dispatch, audio, pushToast, userId, timerStop, annullaRintocco, timerSnapshot]);
 
   // Smontaggio del Provider (logout, chiusura): nessun rintocco fantasma
   // programmato sul clock audio.
@@ -432,6 +748,11 @@ export function useFocusTimer({
     remainingSeconds: rawTimer.remainingSeconds,
     totalSeconds: rawTimer.totalSeconds,
     isOverdriveActive: rawTimer.isOverdriveActive,
+    // V41 — 'FOCUS' | 'BREAK' | null: distingue un Focus in pausa da una
+    // pausa sospesa (lo stato è PAUSED in entrambi i casi).
+    blockMode: rawTimer.mode,
+    // V41 — la sessione è aperta in un'altra finestra di ArachnoForge.
+    sessionElsewhere,
     startFocus,
     startBreak,
     pause,
@@ -454,6 +775,8 @@ export function useFocusTimer({
     pendingFocusIntent: pendingFocus.intent || null,
     activeFocusMateriaId,
     activeFocusSfidaId,
+    // V42 — il lavoro dichiarato alla partenza (Sintesi, Studio, Ripasso, Esercizi).
+    activeFocusIntent,
     // V35.0 — sostituisce la logica fragile locale (`awaitingPostFocus`,
     // ex MissionControl.jsx) basata su un edge-trigger che si perdeva ad
     // ogni smontaggio/rimontaggio della pagina: `awaitingDebrief` è
@@ -466,6 +789,8 @@ export function useFocusTimer({
     rawTimer.remainingSeconds,
     rawTimer.totalSeconds,
     rawTimer.isOverdriveActive,
+    rawTimer.mode,
+    sessionElsewhere,
     startFocus,
     startBreak,
     pause,
@@ -480,7 +805,8 @@ export function useFocusTimer({
     pendingFocus.sfidaId,
     pendingFocus.intent,
     activeFocusMateriaId,
-    activeFocusSfidaId
+    activeFocusSfidaId,
+    activeFocusIntent
   ]);
 }
 

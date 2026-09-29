@@ -131,7 +131,7 @@ export default function WebSlingChest() {
               Lancia la Ragnatela
             </button>
             <p className="text-[11px] text-slate-500 text-center max-w-xs px-3">
-              75% Standard · 20% Medio · 4% Raro · 1% Forziere di Parker (Tech Token)
+              75% Standard · 20% Medio · 4% Raro (+1 Tech Token) · 1% Forziere di Parker (+1 Tech Token)
             </p>
           </>
         )}
