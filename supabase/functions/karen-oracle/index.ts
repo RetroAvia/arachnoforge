@@ -1,80 +1,71 @@
 // =====================================================================
 // ArachnoForge — supabase/functions/karen-oracle/index.ts
-// K.A.R.E.N. AI Engine — v4 "Blindatura & Governance" (Fase 5)
+// K.A.R.E.N. AI Engine — v6 "Un piano, non un oroscopo" (V42)
 // =====================================================================
 // Deploy:  supabase functions deploy karen-oracle
 // Secrets:
 //   supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
-//   supabase secrets set ANTHROPIC_MODEL=claude-sonnet-5   (opzionale — default già Sonnet)
+//   supabase secrets set KAREN_ALLOWED_EMAILS=tua@email.it     (consigliato)
+//   supabase secrets set KAREN_ALLOWED_USER_IDS=<uuid>          (in alternativa)
+//   supabase secrets set ANTHROPIC_MODEL=claude-sonnet-5        (opzionale: è già il default)
+//   supabase secrets set ALLOWED_ORIGINS=https://tuo-dominio    (opzionale)
+// Database: eseguire supabase/karen_v8_governance.sql (contatori unici e
+// cache del bilancio settimanale). Senza, la function funziona lo stesso:
+// ricade sui contatori della v7 e non salva i bilanci.
 //
-// NOVITÀ v2 (Fase 3):
-//   1. Readiness Score ribilanciato 50/50 — Biometria oggettiva (sonno,
-//      HR a riposo, attività) 50 punti, Log Soggettivo (focus, energia,
-//      stress, indolenzimento) 50 punti — invece dell'80/20 della v1.
-//   2. Il body della request DEVE contenere `date` (YYYY-MM-DD, locale
-//      del chiamante) — nessun fallback silenzioso su "oggi UTC": era un
-//      Timezone Trap reale. Vedi validateDateParam in ./_logic.ts.
-//   3. Lifecycle & Cache: se esiste già un karen_briefings per
-//      user_id+date e la request non passa `force: true`, la function
-//      NON richiama Claude — restituisce il briefing già salvato
-//      (`cached: true` nella risposta). Solo `force: true` (pulsante
-//      "Rigenera Diagnostica" in SuitTelemetryView) forza una nuova
-//      chiamata AI e sovrascrive la riga.
+// Questo file tocca rete, database e segreti; tutta la logica pura
+// (readiness, piano, prompt, validazione delle risposte) vive in
+// ./_logic.ts ed è coperta da _logic.test.ts.
 //
-// NOVITÀ v3 (Fase 4 — "Daily Brain"): STESSA identica chiamata Claude
-// giornaliera (zero chiamate AI aggiuntive, zero cambio di lifecycle) —
-// il JSON richiesto a Claude cresce da {briefing_text, tactical_advice}
-// a un payload `directives` esteso ({mission_control, focus_timer,
-// study_window}), persistito nella colonna `directives` di
-// karen_briefings (migration v3) e consumato pervasivamente lato client
-// (KarenBrainContext.jsx).
+// MODALITÀ (campo `mode` del body):
+//   (assente)   Daily Briefing: readiness + piano di oggi → direttive.
+//   'quiz'      domande di richiamo attivo su UN nodo.
+//   'oral'      interrogazione orale simulata su 1-5 argomenti di una materia.
+//   'oral_eval' valutazione di una risposta scritta a una domanda dell'orale.
+//   'weekly'    bilancio della settimana, salvato per settimana.
 //
-// NOVITÀ v4 (Fase 5 — "Blindatura & Governance"):
-//   1. Tutta la logica pura (readiness engine, sanitizzazione direttive,
-//      prompt builder) è stata estratta in ./_logic.ts — questo file
-//      resta l'unico che tocca rete/DB/env, importa tutto il resto.
-//      Vedi _logic.ts e _logic.test.ts (Deno.test) nella stessa cartella.
-//   2. Rate-limit sulle rigenerazioni manuali: `force: true` quando esiste
-//      già un briefing per la data resta gratuito fino a
-//      MAX_FORCE_REGENERATIONS_PER_DAY volte/giorno, poi la function
-//      restituisce il briefing cache esistente con `rate_limited: true`
-//      invece di richiamare Claude (protezione di budget — vedi
-//      _logic.ts per il ragionamento completo). La prima generazione del
-//      giorno non è mai conteggiata come rigenerazione.
-//   3. `study_window` più intelligente: quando lo storico delle sessioni
-//      Focus dell'utente (`user_data.app_state.starLog`, SOLA LETTURA) ha
-//      almeno 5 campioni negli ultimi 60 giorni, la fascia oraria più
-//      frequentata sostituisce il default pomeridiano generico — sia nel
-//      prompt inviato a Claude sia nel fallback deterministico. Questa è
-//      l'unica lettura che karen-oracle fa fuori dalle 3 tabelle
-//      biometriche isolate: è a senso unico (mai una scrittura verso
-//      user_data da questa function) e degrada con grazia a `null` se
-//      lo storico manca o è insufficiente.
-//
-// NOVITÀ v5 (Study Focus Engine — "capire materia e argomento"):
-//   1. `user_data.app_state.materie` (STESSA riga già letta per il punto
-//      3 sopra, zero query aggiuntive) alimenta selectStudyFocusCandidates
-//      (./_logic.ts): un piccolo paniere di argomenti/materie REALI del
-//      Web-Matrix (nome, obiettivo, note, difficoltà) entra nel prompt,
-//      cosi' Claude può leggere il CONTENUTO effettivo di ciò che il
-//      Cadetto sta per studiare e scegliere l'argomento e la tecnica di
-//      studio più adatta, non solo dare direttive generiche su readiness
-//      biometrica. Nuovo campo `directives.study_focus` (stesso ciclo
-//      cache/1-chiamata-al-giorno, zero costo AI aggiuntivo, mai un
-//      payload mancante — vedi commenti in _logic.ts).
-//   2. Modello tornato a Sonnet (era Haiku dalla V35.0): con un solo
-//      utente e una chiamata/giorno il costo è comunque trascurabile — si
-//      privilegia la qualità del piano pedagogico.
-//
-// Chiamata (dal frontend, useSuitTelemetry.triggerOracleScan):
-//   supabase.functions.invoke('karen-oracle', { body: { date: todayStr, force: false } });
+// STORIA IN BREVE
+//   v2  data locale obbligatoria (Timezone Trap), cache per utente/giorno.
+//   v3  direttive "Daily Brain" nella stessa chiamata.
+//   v4  logica estratta in _logic.ts, tetto alle rigenerazioni.
+//   v5  Study Focus Engine: argomenti reali del Web-Matrix nel prompt.
+//   v6 (V42):
+//    1. Accesso ristretto (KAREN_ALLOWED_*): una sessione valida non basta,
+//       deve essere la tua. Registrazioni aperte ≠ IA gratis per tutti.
+//    2. La data del client vale solo entro ±1 giorno da quella del server;
+//       i contatori usano il giorno UTC del SERVER (cambiare data non li
+//       azzera) e sono atomici per ogni modalità.
+//    3. Il piano di oggi calcolato dall'app (`plan_context`) entra nel
+//       prompt, validato contro lo stato salvato (id veri, nomi dal
+//       database, numeri troncati): K.A.R.E.N. sceglie DENTRO il piano.
+//    4. Readiness "non nota" con pochi dati: direttive neutre, niente
+//       riduzioni di carico né timer inventati.
+//    5. Modello di riserva se quello configurato non esiste o è
+//       sovraccarico; JSON estratto in modo robusto; una risposta troncata
+//       si riprova una volta con più spazio.
+//    6. Se Claude non risponde, un briefing buono già salvato NON viene mai
+//       sovrascritto da un ripiego; il ripiego del primo giro è dichiarato
+//       (`directives.source = 'fallback'`) e si riprova alla richiesta dopo.
+//    7. Nei log niente testo generato né dati di salute: solo esiti e
+//       lunghezze.
 // =====================================================================
 
-import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
+import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2.45.4';
 import {
   validateDateParam,
+  isDateWithinServerWindow,
+  serverDateKey,
+  parseAllowList,
+  isUserAllowed,
+  DEFAULT_MODEL,
+  fallbackModelFor,
+  extractJsonObject,
+  responseText,
+  wasTruncated,
+  cleanUserText,
   computeReadinessScore,
   readinessBand,
+  readinessIsKnown,
   buildSystemPrompt,
   defaultDirectivesForBand,
   sanitizeDirectives,
@@ -82,39 +73,64 @@ import {
   computeHistoricalStudyWindow,
   computeYesterdayOutcome,
   computePersonalSleepTarget,
+  normalizeMaterie,
+  sanitizePlanContext,
+  selectStudyFocusCandidates,
+  shouldRetryFallbackBriefing,
+  isFallbackBriefing,
+  dateKeyDaysBefore,
   findQuizNodeContext,
+  quizContextIsThin,
   buildQuizSystemPrompt,
   buildQuizUserPrompt,
   sanitizeQuiz,
-  selectStudyFocusCandidates,
+  findOralContext,
+  oralContextIsThin,
+  buildOralSystemPrompt,
+  buildOralUserPrompt,
+  sanitizeOral,
+  parseOralEvalInput,
+  buildOralEvalSystemPrompt,
+  buildOralEvalUserPrompt,
+  sanitizeOralEval,
+  validateWeekParam,
+  weekIsClosed,
+  sanitizeWeeklyContext,
+  buildWeeklySystemPrompt,
+  buildWeeklyUserPrompt,
+  sanitizeWeeklyReview,
   HR_BASELINE_WINDOW_DAYS,
   HR_BASELINE_MIN_SAMPLES,
-  MAX_FORCE_REGENERATIONS_PER_DAY,
-  MAX_QUIZ_GENERATIONS_PER_DAY,
+  USAGE_LIMITS,
+  type UsageKind,
   type Directives
 } from './_logic.ts';
 
 // ---------------------------------------------------------------------
 // Config / secrets
 // ---------------------------------------------------------------------
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
-const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY')!;
-// V35.3 — App a singolo utente: 1 sola chiamata/utente/giorno rende il
-// costo trascurabile con QUALUNQUE modello — tornato a Sonnet (il default
-// originale pre-V35.0) per privilegiare la qualità del piano pedagogico
-// (Study Focus Engine) invece del risparmio, che qui non ha impatto reale
-// sul budget. Override via env-var resta comunque possibile.
-const ANTHROPIC_MODEL = Deno.env.get('ANTHROPIC_MODEL') ?? 'claude-sonnet-5';
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
+const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY') ?? '';
+const ANTHROPIC_MODEL = (Deno.env.get('ANTHROPIC_MODEL') ?? '').trim() || DEFAULT_MODEL;
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 
-// V37.0 — CORS ristretto. `*` non era sfruttabile (ogni chiamata richiede
-// comunque un JWT valido), ma un allow-list costa nulla e toglie di mezzo
-// un'intera classe di sorprese. `ALLOWED_ORIGINS` è una lista separata da
-// virgole impostabile con `supabase secrets set ALLOWED_ORIGINS=...`;
-// se non è impostata si torna al comportamento permissivo di prima,
-// così un deploy esistente non smette di funzionare.
+// V42 — chi può usare K.A.R.E.N. (vedi isUserAllowed in _logic.ts).
+const ALLOWED_USER_IDS = parseAllowList(Deno.env.get('KAREN_ALLOWED_USER_IDS'));
+const ALLOWED_EMAILS = parseAllowList(Deno.env.get('KAREN_ALLOWED_EMAILS'));
+const ALLOW_ALL = (Deno.env.get('KAREN_ALLOW_ALL') ?? '').trim().toLowerCase() === 'true';
+const ALLOWLIST_SET = ALLOWED_USER_IDS.length > 0 || ALLOWED_EMAILS.length > 0;
+if (!ALLOWLIST_SET) {
+  console.warn(
+    ALLOW_ALL
+      ? 'karen-oracle: KAREN_ALLOW_ALL=true — ogni utente autenticato può usare l’IA.'
+      : 'karen-oracle: nessuna allowlist impostata (KAREN_ALLOWED_EMAILS / KAREN_ALLOWED_USER_IDS): nessun account è abilitato finché non la imposti.'
+  );
+}
+
+// CORS ristretto: `ALLOWED_ORIGINS` (lista separata da virgole). Non
+// impostata = permissivo come prima (ogni chiamata richiede comunque un JWT).
 const ALLOWED_ORIGINS = (Deno.env.get('ALLOWED_ORIGINS') ?? '')
   .split(',')
   .map((o) => o.trim())
@@ -122,8 +138,7 @@ const ALLOWED_ORIGINS = (Deno.env.get('ALLOWED_ORIGINS') ?? '')
 
 function corsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get('Origin') ?? '';
-  const allowOrigin =
-    ALLOWED_ORIGINS.length === 0 ? '*' : ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  const allowOrigin = ALLOWED_ORIGINS.length === 0 ? '*' : ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
   return {
     'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -132,22 +147,24 @@ function corsHeaders(req: Request): Record<string, string> {
   };
 }
 
-function jsonResponse(body: unknown, status = 200, req?: Request) {
+function jsonResponse(req: Request, body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...(req ? corsHeaders(req) : { 'Access-Control-Allow-Origin': '*' }), 'Content-Type': 'application/json' }
+    headers: { ...corsHeaders(req), 'Content-Type': 'application/json' }
   });
 }
 
-/**
- * V37.0 — Timeout esplicito sulle chiamate ad Anthropic. Senza, una
- * risposta lenta o una connessione appesa tiene occupata la function
- * fino al timeout di piattaforma, e il client resta bloccato sullo
- * spinner senza sapere perché. Meglio un errore onesto e rapido.
- */
+// ---------------------------------------------------------------------
+// Claude
+// ---------------------------------------------------------------------
+/** Timeout esplicito: meglio un errore onesto e rapido di uno spinner infinito. */
 const ANTHROPIC_TIMEOUT_MS = 45_000;
 
-async function fetchAnthropic(body: unknown): Promise<Response> {
+type ClaudeCall =
+  | { ok: true; model: string; text: string; truncated: boolean }
+  | { ok: false; model: string; status: number; errorType: string | null };
+
+async function postAnthropic(model: string, system: string, user: string, maxTokens: number): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ANTHROPIC_TIMEOUT_MS);
   try {
@@ -158,7 +175,7 @@ async function fetchAnthropic(body: unknown): Promise<Response> {
         'x-api-key': ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01'
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ model, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] }),
       signal: controller.signal
     });
   } finally {
@@ -166,422 +183,513 @@ async function fetchAnthropic(body: unknown): Promise<Response> {
   }
 }
 
+/**
+ * Una chiamata con ripiego di modello: se il modello configurato non
+ * esiste (404) o è sovraccarico (529), si prova UNA volta il successivo
+ * della catena (fallbackModelFor). Nei log solo stato e tipo d'errore.
+ */
+async function callClaude(system: string, user: string, maxTokens: number): Promise<ClaudeCall> {
+  let model = ANTHROPIC_MODEL;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let res: Response;
+    try {
+      res = await postAnthropic(model, system, user, maxTokens);
+    } catch (err) {
+      const aborted = err instanceof DOMException && err.name === 'AbortError';
+      console.error('karen-oracle: Claude non raggiungibile', { model, aborted });
+      return { ok: false, model, status: aborted ? 504 : 502, errorType: aborted ? 'timeout' : 'network' };
+    }
+    if (res.ok) {
+      const json = await res.json().catch(() => null);
+      return { ok: true, model, text: responseText(json), truncated: wasTruncated(json) };
+    }
+    const errBody = await res.json().catch(() => null);
+    const errorType = typeof errBody?.error?.type === 'string' ? errBody.error.type : null;
+    console.error('karen-oracle: errore Claude API', { model, status: res.status, errorType });
+    const next = res.status === 404 || res.status === 529 ? fallbackModelFor(model) : null;
+    if (!next) return { ok: false, model, status: res.status, errorType };
+    model = next;
+  }
+  return { ok: false, model, status: 502, errorType: 'fallback_exhausted' };
+}
+
+type ClaudeJson =
+  | { ok: true; model: string; parsed: unknown }
+  | { ok: false; model: string; status: number; reason: string };
+
+/** Chiamata + estrazione del JSON; una risposta troncata si riprova una volta con più spazio. */
+async function callClaudeJson(system: string, user: string, maxTokens: number, retryMaxTokens: number | null = null): Promise<ClaudeJson> {
+  let call = await callClaude(system, user, maxTokens);
+  if (!call.ok) return { ok: false, model: call.model, status: call.status, reason: call.errorType ?? 'api_error' };
+  let parsed = extractJsonObject(call.text);
+  if (parsed == null && call.truncated && retryMaxTokens) {
+    console.warn('karen-oracle: risposta troncata, nuovo tentativo con più token', { model: call.model, length: call.text.length });
+    call = await callClaude(system, user, retryMaxTokens);
+    if (!call.ok) return { ok: false, model: call.model, status: call.status, reason: call.errorType ?? 'api_error' };
+    parsed = extractJsonObject(call.text);
+  }
+  if (parsed == null) {
+    console.error('karen-oracle: JSON non leggibile nella risposta', { model: call.model, length: call.text.length, truncated: call.truncated });
+    return { ok: false, model: call.model, status: 502, reason: call.truncated ? 'truncated' : 'unparsable' };
+  }
+  return { ok: true, model: call.model, parsed };
+}
+
+// ---------------------------------------------------------------------
+// Contatori di utilizzo (atomici, sul giorno UTC del server)
+// ---------------------------------------------------------------------
+type Usage = { count: number | null };
+
+/**
+ * +1 atomico sul contatore della modalità. Con la migrazione v8 assente
+ * si ricade sul contatore quiz della v7 (solo per i quiz) oppure si
+ * procede senza tetto: una migrazione mancante non spegne l'app.
+ */
+async function bumpUsage(admin: SupabaseClient, userId: string, kind: UsageKind): Promise<Usage> {
+  const day = serverDateKey();
+  const { data, error } = await admin.rpc('bump_karen_usage', { p_user_id: userId, p_date: day, p_kind: kind });
+  if (!error) return { count: Number(data) || 0 };
+  if (kind === 'quiz') {
+    const legacy = await admin.rpc('bump_karen_quiz_usage', { p_user_id: userId, p_date: day });
+    if (!legacy.error) return { count: Number(legacy.data) || 0 };
+  }
+  console.warn('karen-oracle: contatore di utilizzo non disponibile (eseguire karen_v8_governance.sql)', { kind, code: error.code ?? null });
+  return { count: null };
+}
+
+const LIMIT_MESSAGES: Record<UsageKind, string> = {
+  briefing: 'briefing nuovi al giorno raggiunto: riprova domani.',
+  quiz: 'interrogazioni al giorno raggiunto. Le domande già generate restano salvate sui nodi.',
+  regen: 'rigenerazioni del briefing al giorno raggiunto: il piano di oggi resta quello già generato.',
+  retry: 'nuovi tentativi automatici al giorno raggiunto: il piano di ripiego resta valido per oggi.',
+  oral: 'interrogazioni orali al giorno raggiunto: riprova domani.',
+  oral_eval: 'valutazioni delle risposte al giorno raggiunto: per oggi giudicati sui punti chiave.',
+  weekly: 'bilanci settimanali al giorno raggiunto: riprova domani.'
+};
+
+function overLimit(usage: Usage, kind: UsageKind): boolean {
+  return usage.count != null && usage.count > USAGE_LIMITS[kind];
+}
+
+function limitResponse(req: Request, kind: UsageKind) {
+  return jsonResponse(req, { error: `Limite di ${USAGE_LIMITS[kind]} ${LIMIT_MESSAGES[kind]}`, rate_limited: true, limit: USAGE_LIMITS[kind] }, 429);
+}
+
+// ---------------------------------------------------------------------
+// Modalità
+// ---------------------------------------------------------------------
+type Ctx = {
+  req: Request;
+  body: Record<string, unknown>;
+  userId: string;
+  admin: SupabaseClient;
+  appState: Record<string, unknown> | null;
+};
+
+const NODE_GONE = 'Nodo non trovato nel Web-Matrix: potrebbe essere stato rinominato o eliminato. Sincronizza e riprova.';
+
+/** 'quiz' — domande di richiamo attivo su UN nodo, letto dal database. */
+async function handleQuiz({ req, body, userId, admin, appState }: Ctx) {
+  const materiaId = typeof body.materiaId === 'string' ? body.materiaId : '';
+  const sfidaId = typeof body.sfidaId === 'string' ? body.sfidaId : '';
+  if (!materiaId || !sfidaId) return jsonResponse(req, { error: "Modalità quiz: 'materiaId' e 'sfidaId' sono obbligatori." }, 400);
+  const nodeCtx = findQuizNodeContext(appState?.materie, materiaId, sfidaId);
+  if (!nodeCtx) return jsonResponse(req, { error: NODE_GONE }, 404);
+
+  // Il conteggio avviene PRIMA della chiamata: meglio un'unità persa su un
+  // errore di rete che chiamate non contate.
+  const usage = await bumpUsage(admin, userId, 'quiz');
+  if (overLimit(usage, 'quiz')) return limitResponse(req, 'quiz');
+
+  const result = await callClaudeJson(buildQuizSystemPrompt(), buildQuizUserPrompt(nodeCtx), 1200);
+  const quiz = result.ok ? sanitizeQuiz(result.parsed) : null;
+  if (!quiz) {
+    // Nessun ripiego inventato: niente domande generiche spacciate per mirate.
+    return jsonResponse(req, { error: "K.A.R.E.N. non è riuscita a produrre un'interrogazione valida su questo nodo. Riprova." }, 502);
+  }
+  return jsonResponse(req, {
+    quiz: { ...quiz, generatedAt: new Date().toISOString(), argomento: nodeCtx.argomento },
+    thin_context: quizContextIsThin(nodeCtx),
+    quiz_calls_today: usage.count,
+    quiz_calls_limit: USAGE_LIMITS.quiz
+  });
+}
+
+/** 'oral' — interrogazione orale su 1-5 argomenti di una materia. */
+async function handleOral({ req, body, userId, admin, appState }: Ctx) {
+  const materiaId = typeof body.materiaId === 'string' ? body.materiaId : '';
+  if (!materiaId) return jsonResponse(req, { error: "Modalità orale: 'materiaId' è obbligatorio." }, 400);
+  const ctx = findOralContext(appState?.materie, materiaId, body.sfidaIds);
+  if (!ctx) return jsonResponse(req, { error: 'Argomenti non trovati nel Web-Matrix: sincronizza e riprova.' }, 404);
+
+  const usage = await bumpUsage(admin, userId, 'oral');
+  if (overLimit(usage, 'oral')) return limitResponse(req, 'oral');
+
+  const result = await callClaudeJson(buildOralSystemPrompt(), buildOralUserPrompt(ctx), 2200, 3200);
+  const oral = result.ok ? sanitizeOral(result.parsed, ctx) : null;
+  if (!oral) return jsonResponse(req, { error: "K.A.R.E.N. non è riuscita a preparare l'interrogazione orale. Riprova." }, 502);
+  return jsonResponse(req, { oral: { ...oral, materia: ctx.materia, generatedAt: new Date().toISOString() }, thin_context: oralContextIsThin(ctx) });
+}
+
+/** 'oral_eval' — valutazione di una risposta, sui punti chiave e sugli appunti del nodo. */
+async function handleOralEval({ req, body, userId, admin, appState }: Ctx) {
+  const materiaId = typeof body.materiaId === 'string' ? body.materiaId : '';
+  const input = parseOralEvalInput(body);
+  if (!materiaId || !input) return jsonResponse(req, { error: 'Serve una domanda e una risposta di almeno qualche parola.' }, 400);
+  const materie = Array.isArray(appState?.materie) ? (appState!.materie as Record<string, unknown>[]) : [];
+  const materia = materie.find((m) => m && typeof m === 'object' && m.id === materiaId);
+  if (!materia) return jsonResponse(req, { error: 'Materia non trovata: sincronizza e riprova.' }, 404);
+  const sfidaId = typeof body.sfidaId === 'string' ? body.sfidaId : '';
+  const nodo = sfidaId ? findQuizNodeContext(appState?.materie, materiaId, sfidaId) : null;
+
+  const usage = await bumpUsage(admin, userId, 'oral_eval');
+  if (overLimit(usage, 'oral_eval')) return limitResponse(req, 'oral_eval');
+
+  const result = await callClaudeJson(
+    buildOralEvalSystemPrompt(),
+    buildOralEvalUserPrompt(input, cleanUserText(materia.nome, 120) || 'Materia senza nome', nodo),
+    700,
+    1100
+  );
+  const valutazione = result.ok ? sanitizeOralEval(result.parsed) : null;
+  if (!valutazione) return jsonResponse(req, { error: 'Valutazione non disponibile: giudicati sui punti chiave.' }, 502);
+  return jsonResponse(req, { valutazione });
+}
+
+/** 'weekly' — bilancio della settimana, con cache per settimana (karen_weekly). */
+async function handleWeekly({ req, body, userId, admin, appState }: Ctx) {
+  const week = validateWeekParam(body.week);
+  if (!week) return jsonResponse(req, { error: "Settimana non valida: serve il lunedì ('YYYY-MM-DD') di una delle ultime sei settimane." }, 400);
+  const force = body.force === true;
+  const todayKey = validateDateParam(body.date) && isDateWithinServerWindow(body.date as string) ? (body.date as string) : serverDateKey();
+
+  // Cache: un bilancio fatto a settimana CHIUSA è definitivo; uno fatto a
+  // metà settimana vale per la sua giornata, e a settimana finita si rifà.
+  const settimanaChiusa = weekIsClosed(week, todayKey);
+  const { data: cached, error: cacheError } = await admin
+    .from('karen_weekly')
+    .select('payload, updated_at, week_closed')
+    .eq('user_id', userId)
+    .eq('week_start', week)
+    .maybeSingle();
+  const cacheAvailable = !cacheError;
+  if (cacheError && cacheError.code !== 'PGRST116') {
+    console.warn('karen-oracle (weekly): cache non disponibile (eseguire karen_v8_governance.sql)', { code: cacheError.code ?? null });
+  }
+  if (!force && cached?.payload) {
+    const aggiornato = typeof cached.updated_at === 'string' ? cached.updated_at.slice(0, 10) : '';
+    const definitivo = cached.week_closed === true;
+    if (definitivo || (!settimanaChiusa && aggiornato === serverDateKey())) {
+      return jsonResponse(req, { weekly: cached.payload, cached: true, generatedAt: cached.updated_at, weekClosed: definitivo });
+    }
+  }
+
+  const materieSnapshot = normalizeMaterie(appState?.materie);
+  const contesto = sanitizeWeeklyContext(body.week_context, materieSnapshot, week);
+  if (!contesto) return jsonResponse(req, { error: 'Dati della settimana non validi: ricarica la pagina e riprova.' }, 400);
+  if (contesto.total_minutes === 0 && contesto.reviews.count === 0) {
+    return jsonResponse(req, { error: 'Nessuna sessione registrata in questa settimana: il bilancio si prepara quando c’è qualcosa da guardare.' }, 400);
+  }
+
+  const usage = await bumpUsage(admin, userId, 'weekly');
+  if (overLimit(usage, 'weekly')) return limitResponse(req, 'weekly');
+
+  const { materie, prompt } = buildWeeklyUserPrompt(contesto, todayKey);
+  const result = await callClaudeJson(buildWeeklySystemPrompt(), prompt, 1400, 2200);
+  const weekly = result.ok ? sanitizeWeeklyReview(result.parsed, materie) : null;
+  if (!weekly) return jsonResponse(req, { error: 'K.A.R.E.N. non è riuscita a preparare il bilancio. Riprova fra poco.' }, 502);
+
+  const generatedAt = new Date().toISOString();
+  if (cacheAvailable) {
+    const { error: saveError } = await admin
+      .from('karen_weekly')
+      .upsert(
+        { user_id: userId, week_start: week, payload: weekly, model: result.model, week_closed: settimanaChiusa, updated_at: generatedAt },
+        { onConflict: 'user_id,week_start' }
+      );
+    if (saveError) console.warn('karen-oracle (weekly): bilancio non salvato', { code: saveError.code ?? null });
+  }
+  return jsonResponse(req, { weekly, cached: false, generatedAt, weekClosed: settimanaChiusa });
+}
+
+/** Il Daily Briefing: readiness + piano di oggi → testo e direttive. */
+async function handleBriefing({ req, body, userId, admin, appState }: Ctx) {
+  const targetDate = validateDateParam(body.date);
+  if (!targetDate) {
+    return jsonResponse(req, { error: "Campo 'date' obbligatorio, formato YYYY-MM-DD (data LOCALE del chiamante)." }, 400);
+  }
+  if (!isDateWithinServerWindow(targetDate)) {
+    return jsonResponse(req, { error: `La data inviata (${targetDate}) non è oggi: controlla data e ora del dispositivo.` }, 400);
+  }
+  const force = body.force === true;
+
+  // -- Cache del giorno --
+  const { data: existing, error: existingError } = await admin
+    .from('karen_briefings')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('date', targetDate)
+    .maybeSingle();
+  if (existingError) {
+    // Senza sapere cosa c'è già non si genera: un ripiego potrebbe finire
+    // sopra un briefing buono, e la chiamata sfuggirebbe ai contatori.
+    console.error('karen-oracle: errore nel controllo cache', { code: existingError.code ?? null });
+    return jsonResponse(req, { error: 'Archivio dei briefing non raggiungibile in questo momento: riprova fra poco.' }, 503);
+  }
+
+  const existingIsFallback = isFallbackBriefing(existing);
+  const retryFallback = !!existing && !force && shouldRetryFallbackBriefing(existing);
+  if (existing && !force && !retryFallback) {
+    return jsonResponse(req, {
+      briefing: existing,
+      readiness_band: readinessBand(existing.readiness_score),
+      cached: true,
+      // Un ripiego appena rinnovato: si riprova, ma non prima di due minuti.
+      ...(existingIsFallback ? { fallback: true, warning: 'K.A.R.E.N. ci ha provato meno di due minuti fa: riprova fra poco.' } : {})
+    });
+  }
+
+  // -- Governance: ogni ramo che chiama Claude si conta — la prima
+  //    generazione del giorno, una rigenerazione manuale, un nuovo
+  //    tentativo dopo un ripiego. --
+  if (!existing) {
+    const usage = await bumpUsage(admin, userId, 'briefing');
+    if (overLimit(usage, 'briefing')) return limitResponse(req, 'briefing');
+  } else {
+    const kind: UsageKind = force ? 'regen' : 'retry';
+    const usage = await bumpUsage(admin, userId, kind);
+    const count = usage.count ?? (force ? (Number(existing.regen_count) || 0) + 1 : 0);
+    if (count > USAGE_LIMITS[kind]) {
+      return jsonResponse(req, {
+        briefing: existing,
+        readiness_band: readinessBand(existing.readiness_score),
+        cached: true,
+        rate_limited: true,
+        ...(force
+          ? { error: `Limite di ${USAGE_LIMITS.regen} ${LIMIT_MESSAGES.regen}` }
+          : { fallback: true, warning: `Limite di ${USAGE_LIMITS.retry} ${LIMIT_MESSAGES.retry}` })
+      });
+    }
+  }
+
+  // -- Dati: biometria e survey di oggi, storico cardiaco e di sonno,
+  //    briefing di ieri; lo stato dell'app è già letto (sola lettura). --
+  const baselineSince = new Date(Date.parse(`${targetDate}T00:00:00Z`) - HR_BASELINE_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+  const [{ data: bioToday }, { data: subjectiveToday }, { data: hrHistory }, { data: yesterdayBriefing }] = await Promise.all([
+    admin
+      .from('suit_biometrics')
+      .select('sleep_total_min, sleep_deep_min, sleep_rem_min, resting_hr, steps, active_calories')
+      .eq('user_id', userId)
+      .eq('date', targetDate)
+      .maybeSingle(),
+    admin
+      .from('cadet_subjective_logs')
+      .select('focus_level, energy_level, stress_level, muscle_soreness, mood, caffeine_mg')
+      .eq('user_id', userId)
+      .eq('date', targetDate)
+      .maybeSingle(),
+    admin
+      .from('suit_biometrics')
+      .select('resting_hr, sleep_total_min, date')
+      .eq('user_id', userId)
+      .gte('date', baselineSince)
+      .lt('date', targetDate),
+    // Il briefing di IERI, non l'ultimo precedente: un consiglio di quattro
+    // giorni fa non è "il consiglio di ieri" da verificare.
+    admin.from('karen_briefings').select('briefing_text, directives').eq('user_id', userId).eq('date', dateKeyDaysBefore(targetDate, 1)).maybeSingle()
+  ]);
+
+  const storico = (hrHistory ?? []) as { resting_hr: number | null; sleep_total_min: number | null }[];
+  const hrSamples = storico.map((r) => r.resting_hr).filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+  const baselineHr = hrSamples.length >= HR_BASELINE_MIN_SAMPLES ? Math.round(hrSamples.reduce((a, b) => a + b, 0) / hrSamples.length) : null;
+  const sleepTarget = computePersonalSleepTarget(storico.map((r) => r.sleep_total_min));
+
+  const readiness = computeReadinessScore(bioToday ?? null, baselineHr, subjectiveToday ?? null, sleepTarget.target);
+  const readinessKnown = readinessIsKnown(readiness);
+  const band = readinessBand(readiness.score);
+
+  const materieSnapshot = normalizeMaterie(appState?.materie);
+  const plan = sanitizePlanContext(body.plan_context, materieSnapshot, targetDate);
+  const historicalWindow = computeHistoricalStudyWindow(appState?.starLog, targetDate);
+  const studyFocus = selectStudyFocusCandidates(appState?.materie, targetDate, plan);
+  const yesterdayOutcome = computeYesterdayOutcome(appState?.starLog, targetDate, yesterdayBriefing?.directives ?? null, appState?.materie);
+
+  const result = await callClaudeJson(
+    buildSystemPrompt(),
+    buildUserPrompt({
+      date: targetDate,
+      readiness,
+      band,
+      bio: bioToday ?? null,
+      subjective: subjectiveToday ?? null,
+      previousBriefing: yesterdayBriefing?.briefing_text ?? null,
+      historicalWindow,
+      studyFocus,
+      yesterdayOutcome,
+      plan
+    }),
+    1600,
+    2600
+  );
+
+  let briefingText = '';
+  let tacticalAdvice = '';
+  let directives: Directives | null = null;
+  let model: string | null = null;
+  if (result.ok && result.parsed && typeof result.parsed === 'object') {
+    const parsed = result.parsed as Record<string, unknown>;
+    briefingText = cleanUserText(parsed.briefing_text, 1500);
+    tacticalAdvice = cleanUserText(parsed.tactical_advice, 1500);
+    if (briefingText && tacticalAdvice) {
+      directives = sanitizeDirectives(parsed, band, historicalWindow, studyFocus, { readinessKnown });
+      model = result.model;
+    } else {
+      console.error('karen-oracle: campi del briefing mancanti nella risposta', { model: result.model });
+    }
+  }
+
+  if (!directives) {
+    // Claude non ha dato un briefing usabile. Un briefing buono già salvato
+    // resta com'è: niente ripiego sopra un piano vero.
+    if (existing && !existingIsFallback) {
+      return jsonResponse(
+        req,
+        {
+          briefing: existing,
+          readiness_band: readinessBand(existing.readiness_score),
+          cached: true,
+          error: 'K.A.R.E.N. non ha risposto: resta valido il briefing già generato oggi. Riprova fra qualche minuto.'
+        },
+        502
+      );
+    }
+    // Primo giro (o un ripiego da rinnovare): il piano deterministico,
+    // dichiarato come tale, così la giornata ha comunque le sue direttive.
+    const oggettivi = Math.round((readiness.breakdown.objectiveCompleteness ?? 0) * 100);
+    const soggettivi = Math.round((readiness.breakdown.subjectiveCompleteness ?? 0) * 100);
+    briefingText = readinessKnown
+      ? `K.A.R.E.N. non è raggiungibile in questo momento: ecco il piano di ripiego. Readiness di oggi ${readiness.score}/100 (${band}), dati oggettivi ${oggettivi}%, soggettivi ${soggettivi}%.`
+      : `K.A.R.E.N. non è raggiungibile in questo momento: ecco il piano di ripiego. Readiness non misurata oggi (pochi dati): vale il piano, senza correzioni.`;
+    tacticalAdvice =
+      readinessKnown && band === 'CRITICO'
+        ? 'Riduci il carico di oggi e privilegia sessioni brevi: il piano può attendere qualche ora in più.'
+        : 'Segui il piano di oggi dall’inizio: prima i ripassi in scadenza, poi la prima materia della giornata.';
+    directives = defaultDirectivesForBand(band, historicalWindow, studyFocus, { readinessKnown });
+  }
+
+  const nextRegenCount = existing ? (Number(existing.regen_count) || 0) + (force ? 1 : 0) : 0;
+  const { data: saved, error: saveError } = await admin
+    .from('karen_briefings')
+    .upsert(
+      {
+        user_id: userId,
+        date: targetDate,
+        readiness_score: readiness.score,
+        briefing_text: briefingText,
+        tactical_advice: tacticalAdvice,
+        score_breakdown: { ...readiness.breakdown, known: readinessKnown, sleepTargetPersonalized: sleepTarget.personalized },
+        directives: { ...directives, generated_at: new Date().toISOString(), model },
+        regen_count: nextRegenCount
+      },
+      { onConflict: 'user_id,date' }
+    )
+    .select()
+    .single();
+
+  if (saveError) {
+    console.error('karen-oracle: errore salvataggio karen_briefings', { code: saveError.code ?? null });
+    return jsonResponse(req, { error: 'Briefing generato ma non salvato: riprova.' }, 500);
+  }
+
+  const fallback = directives.source === 'fallback';
+  return jsonResponse(req, {
+    briefing: saved,
+    readiness_band: band,
+    readiness_known: readinessKnown,
+    cached: false,
+    fallback,
+    ...(fallback ? { warning: 'K.A.R.E.N. non ha risposto: piano di ripiego. Riprova fra qualche minuto.' } : {})
+  });
+}
+
 // ---------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------
+const MODES = new Set(['briefing', 'quiz', 'oral', 'oral_eval', 'weekly']);
+
 Deno.serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders(req) });
-  }
-  if (req.method !== 'POST') {
-    return jsonResponse({ error: 'Metodo non consentito. Usa POST.' }, 405, req);
-  }
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders(req) });
+  if (req.method !== 'POST') return jsonResponse(req, { error: 'Metodo non consentito. Usa POST.' }, 405);
 
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY || !ANTHROPIC_API_KEY) {
-    console.error('karen-oracle: variabili d\'ambiente mancanti', {
+    console.error('karen-oracle: variabili d’ambiente mancanti', {
       hasSupabaseUrl: !!SUPABASE_URL,
       hasAnonKey: !!SUPABASE_ANON_KEY,
       hasServiceRoleKey: !!SUPABASE_SERVICE_ROLE_KEY,
       hasAnthropicKey: !!ANTHROPIC_API_KEY
     });
-    return jsonResponse(
-      { error: 'Configurazione server incompleta: un secret richiesto non è impostato (vedi supabase secrets set).' },
-      500,
-      req
-    );
+    return jsonResponse(req, { error: 'Configurazione server incompleta: un secret richiesto non è impostato (vedi supabase secrets set).' }, 500);
   }
 
   try {
-    // -- 1. Identifica il chiamante dal suo JWT (mai un user_id dal body) --
+    // -- 1. Chi chiama: dal JWT, mai un user_id dal body --
     const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      return jsonResponse({ error: 'Authorization header mancante.' }, 401, req);
-    }
-
-    const callerClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      global: { headers: { Authorization: authHeader } }
-    });
+    if (!authHeader) return jsonResponse(req, { error: 'Authorization header mancante.' }, 401);
+    const callerClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { global: { headers: { Authorization: authHeader } } });
     const {
       data: { user },
       error: userError
     } = await callerClient.auth.getUser();
-
     if (userError || !user) {
-      // Distinzione esplicita: un JWT scaduto/non valido è un problema di
-      // sessione (401, il client può tentare un refresh e ritentare), mai
-      // un generico 500 che nasconderebbe la causa reale.
-      return jsonResponse({ error: 'Sessione non valida o scaduta.', code: 'INVALID_SESSION' }, 401, req);
+      // 401 esplicito: il client può rinnovare la sessione e ritentare.
+      return jsonResponse(req, { error: 'Sessione non valida o scaduta.', code: 'INVALID_SESSION' }, 401);
     }
 
-    // -- 2. Body: `date` obbligatorio (Timezone Trap — vedi validateDateParam) --
-    const body = await req.json().catch(() => null);
-    if (!body || typeof body !== 'object') {
-      return jsonResponse({ error: "Body JSON mancante o non valido." }, 400, req);
+    // -- 2. V42 — e deve essere un utente ammesso --
+    if (!isUserAllowed({ id: user.id, email: user.email ?? null }, ALLOWED_USER_IDS, ALLOWED_EMAILS, ALLOW_ALL)) {
+      if (!ALLOWLIST_SET) {
+        return jsonResponse(
+          req,
+          {
+            error: 'K.A.R.E.N. non è ancora abilitata per nessun account: imposta il secret KAREN_ALLOWED_EMAILS con la tua email (supabase secrets set KAREN_ALLOWED_EMAILS=…).',
+            code: 'ALLOWLIST_NOT_SET'
+          },
+          403
+        );
+      }
+      console.warn('karen-oracle: accesso negato a un utente fuori allowlist');
+      return jsonResponse(req, { error: 'Questo account non è abilitato a K.A.R.E.N.', code: 'NOT_ALLOWED' }, 403);
     }
 
-    // -- 2b. V36.0 — MODALITÀ QUIZ ("Interrogazione K.A.R.E.N.").
-    //        Ramo completamente separato dal lifecycle del briefing
-    //        giornaliero: on-demand, non tocca `karen_briefings` né alcuna
-    //        altra tabella, non consuma il tetto di rigenerazioni e non
-    //        interferisce con la cache del giorno. Le domande tornano al
-    //        client, che le salva DENTRO il nodo nel Cloud State esistente
-    //        (`sfida.quiz`) — zero migrazioni di schema. Il contenuto del
-    //        nodo viene letto SEMPRE dal database, mai dal body. --
-    if ((body as Record<string, unknown>).mode === 'quiz') {
-      const materiaId = String((body as Record<string, unknown>).materiaId ?? '');
-      const sfidaId = String((body as Record<string, unknown>).sfidaId ?? '');
-      if (!materiaId || !sfidaId) {
-        return jsonResponse({ error: "Modalità quiz: 'materiaId' e 'sfidaId' sono obbligatori." }, 400, req);
-      }
+    // -- 3. Body e modalità --
+    const raw = await req.json().catch(() => null);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return jsonResponse(req, { error: 'Body JSON mancante o non valido.' }, 400);
+    const body = raw as Record<string, unknown>;
+    const mode = typeof body.mode === 'string' ? body.mode : 'briefing';
+    if (!MODES.has(mode)) return jsonResponse(req, { error: `Modalità sconosciuta: ${cleanUserText(mode, 20)}.` }, 400);
 
-      const adminForQuiz = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-      const { data: quizUserData } = await adminForQuiz
-        .from('user_data')
-        .select('app_state')
-        .eq('user_id', user.id)
-        .maybeSingle();
-
-      const quizAppState = quizUserData?.app_state as Record<string, unknown> | null | undefined;
-      const nodeCtx = findQuizNodeContext(quizAppState?.materie, materiaId, sfidaId);
-      if (!nodeCtx) {
-        return jsonResponse({ error: 'Nodo non trovato nel Web-Matrix: potrebbe essere stato rinominato o eliminato.' }, 404, req);
-      }
-
-      // V37.0 — Tetto giornaliero sulle Interrogazioni. Era l'unico ramo
-      // AI senza alcun limite: il pulsante "Rigenera" è a portata di mano
-      // su ogni nodo completato e ogni pressione è una chiamata Sonnet.
-      // L'incremento è ATOMICO lato database (vedi
-      // supabase/karen_ai_usage_v7_quiz_rate_limit.sql): un SELECT
-      // seguito da UPDATE qui lascerebbe scavalcare il tetto proprio
-      // sotto doppio-click. Il conteggio avviene PRIMA della chiamata —
-      // meglio sprecare un'unità su un errore di rete che permettere
-      // chiamate non contate.
-      const usageDate =
-        validateDateParam((body as Record<string, unknown>).date) ?? new Date().toISOString().slice(0, 10);
-      let quizCallsToday = 0;
-      const { data: bumped, error: usageError } = await adminForQuiz.rpc('bump_karen_quiz_usage', {
-        p_user_id: user.id,
-        p_date: usageDate
-      });
-      if (usageError) {
-        // Migrazione non ancora eseguita (42P01 / funzione assente): si
-        // procede senza tetto, esattamente come prima. Mai un'app che
-        // smette di funzionare per una migrazione mancante.
-        console.warn('karen-oracle (quiz): contatore di utilizzo non disponibile', usageError.message);
-      } else {
-        quizCallsToday = Number(bumped) || 0;
-        if (quizCallsToday > MAX_QUIZ_GENERATIONS_PER_DAY) {
-          return jsonResponse(
-            {
-              error:
-                `Limite di ${MAX_QUIZ_GENERATIONS_PER_DAY} interrogazioni al giorno raggiunto. ` +
-                'Le domande già generate restano salvate sui nodi e disponibili offline: riprova domani.',
-              rate_limited: true,
-              quiz_calls_today: quizCallsToday - 1,
-              quiz_calls_limit: MAX_QUIZ_GENERATIONS_PER_DAY
-            },
-            429,
-            req
-          );
-        }
-      }
-
-      const quizRes = await fetchAnthropic({
-        model: ANTHROPIC_MODEL,
-        max_tokens: 1200,
-        system: buildQuizSystemPrompt(),
-        messages: [{ role: 'user', content: buildQuizUserPrompt(nodeCtx) }]
-      });
-
-      if (!quizRes.ok) {
-        const errText = await quizRes.text();
-        console.error('karen-oracle (quiz): Anthropic API error', quizRes.status, errText);
-        return jsonResponse({ error: "K.A.R.E.N. non è riuscita a contattare il nucleo tattico (Claude API)." }, 502, req);
-      }
-
-      const quizJson = await quizRes.json();
-      const quizText: string = (Array.isArray(quizJson?.content) ? quizJson.content : [])
-        .filter((block: { type?: string; text?: string }) => block?.type === 'text' && typeof block.text === 'string')
-        .map((block: { text?: string }) => block.text)
-        .join('\n')
-        .trim();
-
-      let quiz = null;
-      try {
-        const cleaned = quizText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '');
-        quiz = sanitizeQuiz(JSON.parse(cleaned));
-      } catch (quizParseErr) {
-        console.error('karen-oracle (quiz): parsing fallito', quizParseErr, quizText);
-      }
-
-      if (!quiz) {
-        // Nessun fallback deterministico possibile: non si inventano
-        // domande su un contenuto che il server non conosce. Meglio un
-        // errore onesto che otto domande generiche spacciate per mirate.
-        return jsonResponse({ error: "K.A.R.E.N. non è riuscita a produrre un'interrogazione valida su questo nodo. Riprova." }, 502, req);
-      }
-
-      return jsonResponse(
-        {
-          quiz: { ...quiz, generatedAt: new Date().toISOString(), argomento: nodeCtx.argomento },
-          thin_context: (nodeCtx.obiettivo.length + nodeCtx.blueprint.length + nodeCtx.note.length) < 40,
-          quiz_calls_today: quizCallsToday,
-          quiz_calls_limit: MAX_QUIZ_GENERATIONS_PER_DAY
-        },
-        200,
-        req
-      );
-    }
-
-    const targetDate = validateDateParam((body as Record<string, unknown>).date);
-    if (!targetDate) {
-      return jsonResponse(
-        { error: "Campo 'date' obbligatorio, formato YYYY-MM-DD (data LOCALE del chiamante, mai calcolata lato server)." },
-        400,
-        req
-      );
-    }
-    const force = (body as Record<string, unknown>).force === true;
-
-    // -- 3. Client con Service Role — bypassa la RLS per leggere/scrivere
-    //       in modo affidabile lato server (karen_briefings è SELECT-only
-    //       per "authenticated", vedi supabase/suit_telemetry_schema.sql) --
+    // -- 4. Service Role (karen_briefings è SELECT-only per il client) e
+    //       stato dell'app in SOLA LETTURA: la fonte di verità è il database. --
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const { data: userData, error: stateError } = await admin.from('user_data').select('app_state').eq('user_id', user.id).maybeSingle();
+    if (stateError) console.warn('karen-oracle: stato dell’app non leggibile', { code: stateError.code ?? null });
+    const appState = userData?.app_state && typeof userData.app_state === 'object' ? (userData.app_state as Record<string, unknown>) : null;
 
-    // -- 4. Lifecycle & Cache: si recupera SEMPRE l'eventuale briefing già
-    //       esistente per oggi (anche con force:true — serve comunque per
-    //       il conteggio delle rigenerazioni e come fallback se il tetto
-    //       è superato). Senza force, si restituisce direttamente. --
-    const { data: existing, error: existingError } = await admin
-      .from('karen_briefings')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('date', targetDate)
-      .maybeSingle();
-
-    if (existingError) {
-      console.error('karen-oracle: errore nel controllo cache', existingError);
+    const ctx: Ctx = { req, body, userId: user.id, admin, appState };
+    switch (mode) {
+      case 'quiz':
+        return await handleQuiz(ctx);
+      case 'oral':
+        return await handleOral(ctx);
+      case 'oral_eval':
+        return await handleOralEval(ctx);
+      case 'weekly':
+        return await handleWeekly(ctx);
+      default:
+        return await handleBriefing(ctx);
     }
-
-    if (existing && !force) {
-      return jsonResponse({ briefing: existing, readiness_band: readinessBand(existing.readiness_score), cached: true }, 200, req);
-    }
-
-    // -- 4b. Governance costi: `force: true` su un briefing già esistente
-    //       è una RIGENERAZIONE e viene conteggiata. Oltre il tetto
-    //       giornaliero, si restituisce la cache esistente con un flag
-    //       esplicito invece di richiamare Claude — mai un blocco silenzioso
-    //       che sembri un errore, mai un costo illimitato. La primissima
-    //       generazione del giorno (existing == null) non passa mai di qui. --
-    if (existing && force) {
-      const currentRegenCount = existing.regen_count ?? 0;
-      if (currentRegenCount >= MAX_FORCE_REGENERATIONS_PER_DAY) {
-        return jsonResponse({
-          briefing: existing,
-          readiness_band: readinessBand(existing.readiness_score),
-          cached: true,
-          rate_limited: true,
-          error: `Limite di ${MAX_FORCE_REGENERATIONS_PER_DAY} rigenerazioni manuali/giorno raggiunto. Riprova domani, oppure attendi la prossima generazione automatica.`
-        }, 200, req);
-      }
-    }
-
-    // -- 5. Raccolta dati: biometria di oggi, log soggettivo di oggi,
-    //       baseline HR a riposo (ultimi 14 giorni), briefing di ieri, e
-    //       (V35.1) il Cloud State principale — SOLA LETTURA, usato
-    //       unicamente per dedurre lo storico della finestra Focus più
-    //       frequentata (vedi computeHistoricalStudyWindow in _logic.ts).
-    //       Deliberatamente MAI dal body della request: la fonte di
-    //       verità per il calcolo resta sempre il database, mai un
-    //       payload che il client potrebbe alterare. --
-    const baselineSince = new Date(new Date(`${targetDate}T00:00:00Z`).getTime() - HR_BASELINE_WINDOW_DAYS * 86400000)
-      .toISOString()
-      .slice(0, 10);
-
-    const [{ data: bioToday }, { data: subjectiveToday }, { data: hrHistory }, { data: yesterdayBriefing }, { data: userData }] =
-      await Promise.all([
-        admin
-          .from('suit_biometrics')
-          .select('sleep_total_min, sleep_deep_min, sleep_rem_min, resting_hr, steps, active_calories')
-          .eq('user_id', user.id)
-          .eq('date', targetDate)
-          .maybeSingle(),
-        admin
-          .from('cadet_subjective_logs')
-          .select('focus_level, energy_level, stress_level, muscle_soreness, mood, caffeine_mg')
-          .eq('user_id', user.id)
-          .eq('date', targetDate)
-          .maybeSingle(),
-        admin
-          .from('suit_biometrics')
-          // V36.0 — stessa query, una colonna in più: `sleep_total_min`
-          // alimenta il target di sonno PERSONALE (vedi
-          // computePersonalSleepTarget). Zero round-trip aggiuntivi.
-          .select('resting_hr, sleep_total_min, date')
-          .eq('user_id', user.id)
-          .gte('date', baselineSince)
-          .lt('date', targetDate)
-          .not('resting_hr', 'is', null),
-        admin
-          .from('karen_briefings')
-          // V36.0 — anche `directives`: servono per confrontare ciò che
-          // K.A.R.E.N. aveva consigliato ieri con ciò che è successo
-          // davvero (computeYesterdayOutcome).
-          .select('briefing_text, directives')
-          .eq('user_id', user.id)
-          .lt('date', targetDate)
-          .order('date', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-        admin
-          .from('user_data')
-          .select('app_state')
-          .eq('user_id', user.id)
-          .maybeSingle()
-      ]);
-
-    const hrSamples = (hrHistory ?? []).map((r: { resting_hr: number }) => r.resting_hr).filter((v) => v != null);
-    const baselineHr =
-      hrSamples.length >= HR_BASELINE_MIN_SAMPLES
-        ? Math.round(hrSamples.reduce((a: number, b: number) => a + b, 0) / hrSamples.length)
-        : null;
-
-    // V36.0 — Target di sonno personale, dedotto dalla stessa finestra di
-    // osservazione già usata per la baseline cardiaca. Sotto la soglia di
-    // campioni resta il 7h30 universale, dichiarato come tale.
-    const sleepSamples = (hrHistory ?? []).map((r: { sleep_total_min: number | null }) => r.sleep_total_min);
-    const sleepTarget = computePersonalSleepTarget(sleepSamples);
-
-    const readiness = computeReadinessScore(bioToday ?? null, baselineHr, subjectiveToday ?? null, sleepTarget.target);
-    const band = readinessBand(readiness.score);
-
-    // Lettura SOLA-LETTURA, a senso unico, di app_state.starLog — degrada
-    // a `null` con grazia se assente/vuoto/insufficiente (vedi commento
-    // esteso su computeHistoricalStudyWindow in _logic.ts).
-    const appState = userData?.app_state as Record<string, unknown> | null | undefined;
-    const historicalWindow = computeHistoricalStudyWindow(appState?.starLog, targetDate);
-    // V35.3 — Study Focus Engine: STESSA riga app_state qui sopra, nessuna
-    // query aggiuntiva. Degrada con grazia a liste vuote se `materie`
-    // manca/è vuoto (vedi selectStudyFocusCandidates in _logic.ts).
-    const studyFocus = selectStudyFocusCandidates(appState?.materie, targetDate);
-    // V36.0 — Chiusura del ciclo: cosa è realmente successo ieri, contro
-    // le direttive che K.A.R.E.N. aveva emesso ieri. Stessa riga app_state,
-    // nessuna query aggiuntiva.
-    const yesterdayOutcome = computeYesterdayOutcome(appState?.starLog, targetDate, yesterdayBriefing?.directives ?? null);
-
-    // -- 6. Chiamata a Claude (via Supabase Edge Function — MAI dal client) --
-    const anthropicRes = await fetchAnthropic({
-      model: ANTHROPIC_MODEL,
-      // V35.3 — 700 -> 1000: lo schema ha un nuovo blocco study_focus
-      // (argomento_principale + fino a MAX_DUE_REVIEWS ripassi, ognuno
-      // con una motivazione testuale) — margine per non troncare la
-      // risposta JSON di Claude a metà.
-      // V36.0 — 1000 -> 1400: una risposta troncata NON produce un
-      // errore visibile, cade silenziosamente sul fallback deterministico
-      // e il piano della giornata perde tutta la parte pedagogica senza
-      // che nulla lo segnali. Con una chiamata al giorno il margine in
-      // più non ha alcun impatto reale sul costo.
-      max_tokens: 1400,
-      system: buildSystemPrompt(),
-      messages: [
-        {
-          role: 'user',
-          content: buildUserPrompt({
-            date: targetDate,
-            readiness,
-            band,
-            bio: bioToday ?? null,
-            subjective: subjectiveToday ?? null,
-            previousBriefing: yesterdayBriefing?.briefing_text ?? null,
-            historicalWindow,
-            studyFocus,
-            yesterdayOutcome
-          })
-        }
-      ]
-    });
-
-    if (!anthropicRes.ok) {
-      const errText = await anthropicRes.text();
-      console.error('Anthropic API error:', anthropicRes.status, errText);
-      return jsonResponse({ error: 'K.A.R.E.N. non è riuscita a contattare il nucleo tattico (Claude API).' }, 502, req);
-    }
-
-    const anthropicJson = await anthropicRes.json();
-    // Non indicizzare content[0] alla cieca: la risposta può contenere
-    // blocchi 'thinking'/'redacted_thinking' prima del testo, o più
-    // blocchi 'text' — si filtra per type e si concatenano tutti i
-    // blocchi di testo trovati, cosi' la function non si blocca né
-    // produce un rawText vuoto solo per l'ordine dei blocchi.
-    const contentBlocks = Array.isArray(anthropicJson?.content) ? anthropicJson.content : [];
-    const rawText: string = contentBlocks
-      .filter((block: { type?: string; text?: string }) => block?.type === 'text' && typeof block.text === 'string')
-      .map((block: { text?: string }) => block.text)
-      .join('\n')
-      .trim();
-
-    let briefingText: string;
-    let tacticalAdvice: string;
-    // V35.0 — Daily Brain: `directives` viene SEMPRE valorizzato, sia sul
-    // ramo di successo (sanitizeDirectives valida/clampa il JSON di
-    // Claude, ricadendo blocco-per-blocco sul default della banda per
-    // qualunque campo anomalo) sia sul ramo di fallback totale (parsing
-    // fallito -> default deterministico completo) — mai un payload
-    // parziale o mancante che lascerebbe l'HUD senza direttive per oggi.
-    let directives: Directives;
-    try {
-      const cleaned = rawText.trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '');
-      const parsed = JSON.parse(cleaned);
-      briefingText = String(parsed.briefing_text ?? '').trim();
-      tacticalAdvice = String(parsed.tactical_advice ?? '').trim();
-      if (!briefingText || !tacticalAdvice) throw new Error('Campi mancanti nel JSON di Claude.');
-      directives = sanitizeDirectives(parsed, band, historicalWindow, studyFocus);
-    } catch (parseErr) {
-      console.error('Parsing risposta Claude fallito:', parseErr, rawText);
-      // Fallback deterministico — l'app non deve mai restare senza
-      // briefing solo perché il modello ha risposto in un formato inatteso.
-      briefingText = `Telemetria acquisita. Readiness Score odierno: ${readiness.score}/100 (${band}). Dati disponibili: oggettivi ${Math.round(
-        (readiness.breakdown.objectiveCompleteness ?? 0) * 100
-      )}%, soggettivi ${Math.round((readiness.breakdown.subjectiveCompleteness ?? 0) * 100)}%.`;
-      tacticalAdvice =
-        band === 'CRITICO'
-          ? 'Riduci il carico di Focus odierno e privilegia recupero attivo: la Quota Odierna può attendere qualche ora in più.'
-          : 'Procedi con la Quota Odierna pianificata, monitorando eventuali segnali di affaticamento.';
-      directives = defaultDirectivesForBand(band, historicalWindow, studyFocus);
-    }
-
-    // -- 7. Persistenza (upsert — un solo briefing per utente/giorno).
-    //       `regen_count` si incrementa SOLO quando questa chiamata è una
-    //       rigenerazione manuale di un briefing già esistente (governance
-    //       costi, vedi punto 4b) — la primissima generazione del giorno
-    //       parte sempre da 0. --
-    const nextRegenCount = existing ? (existing.regen_count ?? 0) + 1 : 0;
-    const { data: saved, error: saveError } = await admin
-      .from('karen_briefings')
-      .upsert(
-        {
-          user_id: user.id,
-          date: targetDate,
-          readiness_score: readiness.score,
-          briefing_text: briefingText,
-          tactical_advice: tacticalAdvice,
-          score_breakdown: readiness.breakdown,
-          directives,
-          regen_count: nextRegenCount
-        },
-        { onConflict: 'user_id,date' }
-      )
-      .select()
-      .single();
-
-    if (saveError) {
-      console.error('Errore salvataggio karen_briefings:', saveError);
-      return jsonResponse({ error: 'Briefing generato ma non salvato.', details: saveError.message }, 500, req);
-    }
-
-    return jsonResponse({ briefing: saved, readiness_band: band, cached: false }, 200, req);
   } catch (err) {
-    console.error('karen-oracle: errore inatteso', err);
-    return jsonResponse({ error: 'Errore interno di K.A.R.E.N.' }, 500, req);
+    console.error('karen-oracle: errore inatteso', { name: err instanceof Error ? err.name : typeof err });
+    return jsonResponse(req, { error: 'Errore interno di K.A.R.E.N.' }, 500);
   }
 });
