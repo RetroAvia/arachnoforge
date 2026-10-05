@@ -22,7 +22,8 @@
 // deploy nella stessa cache della V36; cambiarlo a ogni versione maggiore
 // la riporta pulita.
 // V42 — nuova versione maggiore, cache nuova.
-const VERSION = 'af-v42-1';
+// V43, V44 — idem.
+const VERSION = 'af-v44-1';
 const SHELL_CACHE = `${VERSION}-shell`;
 const ASSET_CACHE = `${VERSION}-assets`;
 

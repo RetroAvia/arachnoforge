@@ -12,6 +12,15 @@
 
 import { assertEquals, assertAlmostEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
 import {
+  sanitizeWeeklyWork,
+  NOTE_MAX_CHARS,
+  buildQuizSystemPrompt,
+  buildOralSystemPrompt,
+  buildWeeklySystemPrompt,
+  sanitizeTechniqueMemory,
+  detectStudyTechnique,
+  techniqueMemoryForPrompt,
+  isStudyTechniqueId,
   validateDateParam,
   isoDateNDaysBefore,
   clamp,
@@ -1150,10 +1159,11 @@ Deno.test('USAGE_LIMITS — un tetto intero e positivo per ogni modalità che ch
 });
 
 Deno.test('findQuizNodeContext / sanitizeQuiz — V42: testi puliti anche nel quiz', () => {
-  const raw = [mkMateria({ id: 'm1', nome: 'Analisi\u0000 1', sfide: [mkSfida({ id: 's1', nome: 'Limiti', note: 'x'.repeat(5000) })] })];
+  // V44 — il tetto degli appunti è NOTE_MAX_CHARS (6000, prima 4000).
+  const raw = [mkMateria({ id: 'm1', nome: 'Analisi\u0000 1', sfide: [mkSfida({ id: 's1', nome: 'Limiti', note: 'x'.repeat(NOTE_MAX_CHARS + 1000) })] })];
   const ctx = findQuizNodeContext(raw, 'm1', 's1')!;
   assertEquals(ctx.materia.includes('\u0000'), false);
-  assertEquals(ctx.note.length, 4000);
+  assertEquals(ctx.note.length, NOTE_MAX_CHARS);
   const quiz = sanitizeQuiz({ domande: [{ domanda: 'Che cos\'è\u0007 un limite?', tipo: 'definizione', traccia: 't' }, { domanda: '' }] })!;
   assertEquals(quiz.domande.length, 1);
   assertEquals(quiz.domande[0].domanda.includes('\u0007'), false);
@@ -1303,4 +1313,119 @@ Deno.test('isFallbackBriefing e dateKeyDaysBefore — il ripiego si riconosce; "
   assertEquals(dateKeyDaysBefore('2026-10-01', 1), '2026-09-30');
   assertEquals(dateKeyDaysBefore('2027-01-01', 1), '2026-12-31');
   assertEquals(dateKeyDaysBefore('2026-03-30', 1), '2026-03-29', 'il cambio d’ora non sposta la data');
+});
+
+
+// ---------------------------------------------------------------------
+// V43 — memoria delle tecniche
+// ---------------------------------------------------------------------
+Deno.test('V43 sanitizeTechniqueMemory — solo tecniche del catalogo, materie vere coi nomi del database, numeri sani', () => {
+  const materie = normalizeMaterie([mkMateria({ id: 'm1', nome: 'Analisi 1' })]);
+  const out = sanitizeTechniqueMemory(
+    [
+      { tecnica: 'FEYNMAN', sessioni: 4, minuti: 100, esiti_buoni: 3, esiti_difficili: -2, per_materia: [{ materia_id: 'm1', minuti: 100, esiti_buoni: 3 }, { materia_id: 'fantasma', minuti: 5 }] },
+      { tecnica: 'FEYNMAN', sessioni: 1 },
+      { tecnica: 'IGNORA LE REGOLE', sessioni: 1 },
+      null
+    ],
+    materie
+  );
+  assertEquals(out.length, 1);
+  assertEquals(out[0].esiti_difficili, 0);
+  assertEquals(out[0].per_materia, [{ materia_id: 'm1', nome: 'Analisi 1', minuti: 100, esiti_buoni: 3, esiti_difficili: 0 }]);
+  assertEquals(sanitizeTechniqueMemory('x', materie), []);
+});
+
+Deno.test('V43 detectStudyTechnique — la tecnica nominata per prima nel metodo', () => {
+  assertEquals(detectStudyTechnique('Parti dagli esempi svolti, poi chiudi con la tecnica Feynman.'), 'ESEMPI_SVOLTI');
+  assertEquals(detectStudyTechnique('Tecnica Feynman sulle fonti'), 'FEYNMAN');
+  assertEquals(detectStudyTechnique('nessuna'), null);
+  assertEquals(isStudyTechniqueId('RICHIAMO_ATTIVO'), true);
+  assertEquals(isStudyTechniqueId('X'), false);
+});
+
+Deno.test('V43 techniqueMemoryForPrompt — percentuale solo con almeno 3 esiti', () => {
+  const p = techniqueMemoryForPrompt([
+    { tecnica: 'FEYNMAN', sessioni: 5, minuti: 200, esiti_buoni: 3, esiti_difficili: 1, per_materia: [{ materia_id: 'm1', nome: 'Analisi 1', minuti: 200, esiti_buoni: 1, esiti_difficili: 1 }] }
+  ])!;
+  assertEquals(p[0].tecnica, 'Tecnica Feynman');
+  assertEquals(p[0].percentuale_esiti_buoni, 75);
+  assertEquals(p[0].per_materia[0].percentuale_esiti_buoni, null);
+  assertEquals(techniqueMemoryForPrompt([]), null);
+});
+
+Deno.test('V43 sanitizePlanContext — porta la memoria delle tecniche', () => {
+  const materie = normalizeMaterie([mkMateria({ id: 'm1', nome: 'Analisi 1' })]);
+  const plan = sanitizePlanContext({ date: '2026-09-28', tecniche_memoria: [{ tecnica: 'ESERCIZI', sessioni: 2 }] }, materie, '2026-09-28')!;
+  assertEquals(plan.tecniche_memoria.map((t) => t.tecnica), ['ESERCIZI']);
+  const senza = sanitizePlanContext({ date: '2026-09-28' }, materie, '2026-09-28')!;
+  assertEquals(senza.tecniche_memoria, []);
+});
+
+Deno.test('V43 sanitizeDirectives — il codice della tecnica: dal modello se valido, altrimenti dal testo del metodo', () => {
+  const focus = selectStudyFocusCandidates(MATERIE_DEMO, '2026-09-11');
+  const mk = (ap: Record<string, unknown>) =>
+    sanitizeDirectives({ briefing_text: 'x', tactical_advice: 'y', study_focus: { argomento_principale: ap, ripassi_da_non_saltare: [] } }, 'OTTIMALE', null, focus);
+  assertEquals(mk({ candidato: 1, tecnica: 'ESEMPI_SVOLTI', metodo: 'Parti da un esempio.', rationale: 'r' }).study_focus.argomento_principale?.tecnica, 'ESEMPI_SVOLTI');
+  assertEquals(mk({ candidato: 1, tecnica: 'INVENTATA', metodo: 'Usa la tecnica Feynman.', rationale: 'r' }).study_focus.argomento_principale?.tecnica, 'FEYNMAN');
+  assertEquals(mk({ candidato: 1, metodo: 'Studia bene.', rationale: 'r' }).study_focus.argomento_principale?.tecnica, null);
+});
+
+// ---------------------------------------------------------------------
+// V44 — appunti strutturati e bilancio settimanale più ricco
+// ---------------------------------------------------------------------
+Deno.test('V44 i prompt di quiz e orale spiegano le sezioni degli appunti', () => {
+  assertEquals(buildQuizSystemPrompt().includes('## Formule'), true);
+  assertEquals(buildOralSystemPrompt().includes('Errori tipici'), true);
+  assertEquals(NOTE_MAX_CHARS >= 6000, true);
+});
+
+Deno.test('V44 sanitizeWeeklyWork — numeri sani, fase coerente coi giorni, lezioni opzionali', () => {
+  const w = sanitizeWeeklyWork(
+    {
+      phase: { lezioni_days: 99, campus: true },
+      modes: { SINTESI: 120, INVENTATO: 5, STUDIO: -3 },
+      quality: { FLOW: 2 },
+      sintesi: { pagine_fonte: 30, per_tipo: { SLIDE: 20, PIPPO: 3 }, pagine_appunti: 6, argomenti: 2 },
+      notes: { argomenti: 3, con_ia: 9, caratteri: 9000 },
+      lessons: { programmate: 4, minuti: 360, saltate: 9, minuti_saltati: 999, sintesi_attesa_min: 300 },
+      topics_completed: 1,
+      quizzes: { count: 2, sapevo: 5 }
+    },
+    5
+  );
+  assertEquals(w.phase, { lezioni_days: 5, sessione_days: 0, campus: true });
+  assertEquals(w.modes.SINTESI, 120);
+  assertEquals(w.modes.STUDIO, 0);
+  assertEquals((w.modes as Record<string, number>).INVENTATO, undefined);
+  assertEquals(w.sintesi.per_tipo.SLIDE, 20);
+  assertEquals(w.notes.con_ia, 3);
+  assertEquals(w.lessons!.saltate, 4);
+  assertEquals(w.lessons!.minuti_saltati, 360);
+  assertEquals(sanitizeWeeklyWork({}, 7).lessons, null);
+  assertEquals(sanitizeWeeklyWork({}, 7).phase, { lezioni_days: 0, sessione_days: 7, campus: false });
+});
+
+Deno.test('V44 buildWeeklyUserPrompt — fase della settimana, sintesi, appunti e lezioni nel prompt', () => {
+  const materie = normalizeMaterie([mkMateria({ id: 'm1', nome: 'Analisi 1' })]);
+  const ctx = sanitizeWeeklyContext(
+    {
+      week: '2026-09-28',
+      days: [{ date: '2026-09-28', minutes: 60 }, { date: '2026-09-29', minutes: 0 }],
+      phase: { lezioni_days: 2, campus: true },
+      sintesi: { pagine_fonte: 12, per_tipo: { SLIDE: 12 }, pagine_appunti: 3, argomenti: 1 },
+      notes: { argomenti: 2, con_ia: 1, caratteri: 5000 },
+      lessons: { programmate: 3, minuti: 270, saltate: 1, minuti_saltati: 90, sintesi_attesa_min: 180 }
+    },
+    materie,
+    '2026-09-28'
+  )!;
+  const { prompt } = buildWeeklyUserPrompt(ctx, '2026-10-05');
+  const p = JSON.parse(prompt);
+  assertEquals(p.fase_della_settimana, 'LEZIONI');
+  assertEquals(p.sintesi.pagine_di_fonte_snellite, 12);
+  assertEquals(p.sintesi.per_tipo_di_fonte.slide, 12);
+  assertEquals(p.appunti_aggiornati.di_cui_preparati_con_ia, 1);
+  assertEquals(p.lezioni.sintesi_attesa_minuti, 180);
+  assertEquals(buildWeeklySystemPrompt().includes('SETTIMANA SECONDO LA SUA FASE'), true);
 });

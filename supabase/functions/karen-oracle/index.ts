@@ -301,7 +301,10 @@ async function handleQuiz({ req, body, userId, admin, appState }: Ctx) {
   const usage = await bumpUsage(admin, userId, 'quiz');
   if (overLimit(usage, 'quiz')) return limitResponse(req, 'quiz');
 
-  const result = await callClaudeJson(buildQuizSystemPrompt(), buildQuizUserPrompt(nodeCtx), 1200);
+  // V44 — con appunti strutturati più ricchi le domande si allungano: un
+  // secondo tentativo con più spazio, come per orale e bilancio (prima una
+  // risposta tagliata finiva in errore e consumava la quota del giorno).
+  const result = await callClaudeJson(buildQuizSystemPrompt(), buildQuizUserPrompt(nodeCtx), 1200, 2000);
   const quiz = result.ok ? sanitizeQuiz(result.parsed) : null;
   if (!quiz) {
     // Nessun ripiego inventato: niente domande generiche spacciate per mirate.
