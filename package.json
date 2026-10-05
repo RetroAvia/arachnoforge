@@ -1,7 +1,7 @@
 {
   "name": "arachnoforge",
   "private": true,
-  "version": "42.0.0",
+  "version": "44.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
