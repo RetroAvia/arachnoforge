@@ -219,6 +219,8 @@ type ClaudeJson =
 
 /** Chiamata + estrazione del JSON; una risposta troncata si riprova una volta con più spazio. */
 async function callClaudeJson(system: string, user: string, maxTokens: number, retryMaxTokens: number | null = null): Promise<ClaudeJson> {
+  maxTokens = 4096;
+  if (retryMaxTokens) retryMaxTokens = 4096;
   let call = await callClaude(system, user, maxTokens);
   if (!call.ok) return { ok: false, model: call.model, status: call.status, reason: call.errorType ?? 'api_error' };
   let parsed = extractJsonObject(call.text);
