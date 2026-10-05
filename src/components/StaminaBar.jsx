@@ -1,6 +1,6 @@
 import React from 'react';
 import { Icon } from './Icons.jsx';
-import { FATIGUE_STAMINA_THRESHOLD } from '../utils/xpEngine.js';
+import { FATIGUE_STAMINA_THRESHOLD, staminaReadinessFactor } from '../utils/xpEngine.js';
 
 /**
  * V37.0 — DUE NUMERI DIVERSI, DUE BARRE DIVERSE.
@@ -32,6 +32,9 @@ export default function StaminaBar({ stamina, readinessScore = null, readinessBa
   const showReadiness = readinessScore != null && readinessScore !== '' && Number.isFinite(Number(readinessScore));
   const rMeta = READINESS_META[readinessBand] || READINESS_META.OTTIMALE;
   const rScore = Math.max(0, Math.min(100, Number(readinessScore) || 0));
+  // V43 — la Readiness di oggi regola quanto consuma il Focus.
+  const fattore = showReadiness ? staminaReadinessFactor(rScore) : 1;
+  const effettoPct = Math.round((fattore - 1) * 100);
 
   return (
     <div className="space-y-4">
@@ -61,6 +64,7 @@ export default function StaminaBar({ stamina, readinessScore = null, readinessBa
           <p className="text-xs text-slate-500 mt-2 leading-relaxed">
             Scende con le sessioni di Focus (in proporzione alla tua giornata), risale con le pause, i Daily Protocol e alle 03:00. Sotto il{' '}
             {FATIGUE_STAMINA_THRESHOLD}% gli XP vengono dimezzati.
+            {!showReadiness && ' Con la Readiness di oggi (Suit Telemetry) il consumo si adatta a come hai dormito e a come stai.'}
           </p>
         )}
       </div>
@@ -80,7 +84,11 @@ export default function StaminaBar({ stamina, readinessScore = null, readinessBa
             <span className={rMeta.bar} style={{ width: `${rScore}%` }} />
           </div>
           <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-            Sonno, cuore e Recovery Survey di oggi. Non tocca gli XP: guida i consigli di K.A.R.E.N. e il preset del timer.
+            Sonno, cuore e Recovery Survey di oggi. Regola quanto ti stanca il Focus:{' '}
+            <span className={effettoPct > 0 ? 'text-accent' : effettoPct < 0 ? 'text-emerald-300' : 'text-slate-300'}>
+              {effettoPct === 0 ? 'consumo di Stamina normale' : `consumo di Stamina ${effettoPct > 0 ? '+' : ''}${effettoPct}%`}
+            </span>
+            . Guida anche i consigli di K.A.R.E.N. e il preset del timer.
           </p>
         </div>
       )}

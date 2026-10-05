@@ -1,4 +1,4 @@
-import { daysUntilDateOnly } from '../utils/dateUtils.js';
+import { daysUntilDateOnly, todayDateOnlyKey } from '../utils/dateUtils.js';
 import { computeRemainingHours } from '../utils/materiaMeta.js';
 
 /**
@@ -131,6 +131,17 @@ function materiaDelCorso(course, materie, excludeMateriaId) {
 }
 
 /**
+ * V43 — L'appello obiettivo della propedeutica è stato dichiarato NON
+ * superato? (Le stringhe sono quelle di ESITO_APPELLO in utils/appelli.js:
+ * qui niente import per non legare il catalogo dei corsi ai motori.)
+ */
+function appelloBocciato(materia) {
+  const lista = Array.isArray(materia?.appelli) ? materia.appelli : [];
+  const t = lista.find((a) => a && a.id === materia.appelloTargetId);
+  return t?.esito === 'NON_SUPERATO';
+}
+
+/**
  * V42 — PROPEDEUTICITÀ CONDIZIONALI.
  *
  * Fino alla V41 una propedeutica contava solo quando l'esame era già
@@ -151,7 +162,9 @@ export function getPrerequisiteStatus(courseId, materie, { excludeMateriaId = nu
   const safe = Array.isArray(materie) ? materie : [];
   const missing = getMissingPrerequisites(courseId, safe, excludeMateriaId);
   if (missing.length === 0) return vuoto;
-  const oggi = typeof todayKey === 'string' ? todayKey : new Date().toISOString().slice(0, 10);
+  // V43 — "oggi" è il giorno LOCALE: con toISOString() fra mezzanotte e
+  // le 02:00 (ora italiana) valeva ancora ieri.
+  const oggi = typeof todayKey === 'string' ? todayKey : todayDateOnlyKey();
   const pianificate = [];
   const bloccanti = [];
   missing.forEach((c) => {
@@ -160,8 +173,17 @@ export function getPrerequisiteStatus(courseId, materie, { excludeMateriaId = nu
     // appello (l'orale, se c'è), non il primo.
     const fine = m ? (typeof m.oralDate === 'string' && m.oralDate ? m.oralDate : m.examDate) : null;
     const dataKey = typeof fine === 'string' && fine.length >= 10 ? fine.slice(0, 10) : null;
-    const inTempo = !!dataKey && dataKey >= oggi && typeof dependentExamDate === 'string' && dataKey < dependentExamDate.slice(0, 10);
-    (inTempo ? pianificate : bloccanti).push({ course: c, materia: m, dataKey });
+    const dipendente = typeof dependentExamDate === 'string' ? dependentExamDate.slice(0, 10) : null;
+    const inTempo = !!dataKey && dataKey >= oggi && !!dipendente && dataKey < dipendente;
+    // V43 — APPELLO GIÀ SOSTENUTO, ESITO IN ATTESA. Fino alla V42 una
+    // propedeutica con la data alle spalle e il voto non ancora
+    // registrato era "bloccante": la materia che la richiede restava
+    // congelata a 0 ore proprio nelle settimane in cui va preparata.
+    // L'esame è stato fatto: finché non dichiari che è andato male, il
+    // piano prepara la materia successiva.
+    const inAttesa = !!dataKey && dataKey < oggi && !!dipendente && dataKey < dipendente && !appelloBocciato(m);
+    if (inTempo || inAttesa) pianificate.push({ course: c, materia: m, dataKey, inAttesaEsito: inAttesa });
+    else bloccanti.push({ course: c, materia: m, dataKey });
   });
   return { missing, pianificate, bloccanti };
 }

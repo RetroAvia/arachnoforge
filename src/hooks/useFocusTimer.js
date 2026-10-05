@@ -231,6 +231,11 @@ export function useFocusTimer({
     // sul clock audio ha appena suonato da solo, e non si ripete.
     const prog = rintoccoRef.current;
     const giaSuonato = !!prog && prog.tipo === 'FOCUS' && prog.suonato();
+    // V43 — se NON ha suonato (iOS: lo schermo bloccato sospende l'audio e
+    // ferma il suo orologio) il rintocco programmato va annullato prima di
+    // suonare adesso: restava in coda e risuonava più tardi, a caso,
+    // magari in mezzo alla pausa.
+    if (prog && !giaSuonato) prog.annulla();
     rintoccoRef.current = null;
     if (!giaSuonato) audio.playBlockComplete();
     const { materiaId, sfidaId, intent } = activeFocusRef.current;
@@ -261,6 +266,11 @@ export function useFocusTimer({
   const handleBreakComplete = useCallback(() => {
     const prog = rintoccoRef.current;
     const giaSuonato = !!prog && prog.tipo === 'BREAK' && prog.suonato();
+    // V43 — se NON ha suonato (iOS: lo schermo bloccato sospende l'audio e
+    // ferma il suo orologio) il rintocco programmato va annullato prima di
+    // suonare adesso: restava in coda e risuonava più tardi, a caso,
+    // magari in mezzo alla pausa.
+    if (prog && !giaSuonato) prog.annulla();
     rintoccoRef.current = null;
     if (!giaSuonato) audio.playBreakOver();
     // V42 — una pausa fatta davvero ricarica Stamina.
@@ -716,7 +726,10 @@ export function useFocusTimer({
           // V42 — esercizi svolti (modo Esercizi) e giudizio del ripasso (modo Ripasso).
           eserciziFatti: forgia?.eserciziFatti || 0,
           eserciziCorretti: forgia?.eserciziCorretti || 0,
-          reviewRating: forgia?.reviewRating || null
+          reviewRating: forgia?.reviewRating || null,
+          // V43 — la tecnica usata e quella consigliata (memoria delle tecniche).
+          tecnica: forgia?.tecnica || null,
+          tecnicaConsigliata: forgia?.tecnicaConsigliata || null
         }
       });
       audio.playSuccessChime();

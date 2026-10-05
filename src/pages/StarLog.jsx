@@ -136,6 +136,68 @@ function CardHead({ icon, iconTone = 'text-slate-300', title, subtitle, children
   );
 }
 
+/**
+ * V43 — LE TUE TECNICHE: cosa ha funzionato, misurato sugli esiti dopo le
+ * sessioni in cui hai dichiarato la tecnica (Debriefing). La stessa
+ * memoria va a K.A.R.E.N. per scegliere i consigli.
+ */
+function TechniqueMemorySection({ memory }) {
+  const lista = Array.isArray(memory?.tecniche) ? memory.tecniche : [];
+  return (
+    <section className={`${CARD} space-y-4`} aria-label="Le tue tecniche di studio">
+      <CardHead
+        icon="sparkles"
+        iconTone="text-secondary"
+        title="Le tue tecniche"
+        subtitle="Esiti di ripassi, interrogazioni ed esercizi dopo le sessioni in cui hai usato ogni tecnica"
+      />
+      {lista.length === 0 ? (
+        <EmptyState
+          variant="log"
+          compact
+          title="Nessuna tecnica dichiarata"
+          subtitle="Nel Debriefing di fine sessione scegli la tecnica che hai usato: da lì l'app misura cosa funziona per te, e K.A.R.E.N. lo usa per i consigli."
+        />
+      ) : (
+        <ul className="space-y-3">
+          {lista.map((t) => {
+            const esiti = t.buoni + t.difficili;
+            const pct = t.tasso != null ? Math.round(t.tasso * 100) : null;
+            const tono = pct == null ? 'bg-slate-500' : pct >= 70 ? 'bg-emerald-400' : pct >= 50 ? 'bg-accent' : 'bg-primary';
+            const migliori = t.perMateria.filter((x) => x.tasso != null).slice(0, 3);
+            return (
+              <li key={t.id} className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2 text-sm">
+                  <span className="font-medium text-slate-100">{t.label}</span>
+                  <span className="text-xs text-slate-400 ds-num">
+                    {minutiLabel(t.minuti)} · {formatInt(t.sessioni)} {t.sessioni === 1 ? 'sessione' : 'sessioni'}
+                    {' · '}
+                    {pct != null ? (
+                      <span className="text-slate-200 font-semibold">{pct}% esiti buoni</span>
+                    ) : esiti > 0 ? (
+                      `${esiti} ${esiti === 1 ? 'esito' : 'esiti'}: ancora pochi`
+                    ) : (
+                      'nessun esito ancora'
+                    )}
+                  </span>
+                </div>
+                <div className="ds-progress">
+                  <span className={tono} style={{ width: `${pct ?? 0}%` }} />
+                </div>
+                {migliori.length > 0 && (
+                  <p className="text-xs text-slate-500">
+                    {migliori.map((x) => `${x.nome}: ${Math.round(x.tasso * 100)}% (${x.buoni + x.difficili})`).join(' · ')}
+                  </p>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 /** V16.0 (Pillar 5) — un evento della cronologia mensile. */
 function TimelineEntry({ entry }) {
   if (entry.type === 'FOCUS_SESSION') {
@@ -866,6 +928,9 @@ export default function StarLog() {
           )}
         </section>
       </div>
+
+      {/* V43 — la memoria delle tecniche. */}
+      <TechniqueMemorySection memory={derived.techniqueMemory} />
 
       {/* Radar Spider-Sense — i ripassi in sospeso, da fare qui in fila. */}
       <section className={`${CARD} space-y-4`} aria-label="Radar Spider-Sense">

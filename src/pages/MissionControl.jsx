@@ -29,6 +29,7 @@ import { ESITO_APPELLO, nextAppelloAfter } from '../utils/appelli.js';
 import { PROTOCOL_MAX_STAMINA, PROTOCOL_MAX_XP, PROTOCOL_STAMINA_DAY_CAP, PROTOCOL_XP_DAY_CAP } from '../state/reducer.js';
 import { formatInt, minutiLabel } from '../utils/format.js';
 import { INTENT, useIntent } from '../utils/uiIntents.js';
+import { techniqueOfAdvice } from '../data/studyTechniques.js';
 import { CARD, BTN_PRIMARY, BTN_SECONDARY, BTN_AMBER, BTN_GHOST, BTN_DANGER, BTN_LG, BTN_SM, INPUT, LABEL, BADGE } from '../utils/designSystem.js';
 
 /**
@@ -544,12 +545,15 @@ export default function MissionControl() {
   // V42 — la Stamina si misura sulla TUA giornata (capacità calibrata) e
   // Maximum Carnage non la rende più gratis.
   const staminaCapacityHours = Number(derived.calibration?.hoursPerDay) > 0 ? Number(derived.calibration.hoursPerDay) : 4.5;
+  // V43 — e sulla Readiness di oggi (stessa regola del reducer).
+  const staminaReadiness = karenBriefingToday && karen.readinessKnown && Number.isFinite(Number(readinessScore)) ? Number(readinessScore) : null;
   const previewStaminaCost = computeFocusStaminaCost(
     effectiveFocusMinutes,
     previewDifficulty,
     derived.skillEffects.staminaCostMultiplier,
     derived.isMaxCarnageActive,
-    staminaCapacityHours
+    staminaCapacityHours,
+    staminaReadiness
   );
 
   // V34.5 — "Timer pulito": le Materie già superate (esame passato,
@@ -674,9 +678,19 @@ export default function MissionControl() {
       nodo ? nodo.difficulty : DIFFICULTY.MEDIUM,
       derived.skillEffects.staminaCostMultiplier,
       derived.isMaxCarnageActive,
-      staminaCapacityHours
+      staminaCapacityHours,
+      staminaReadiness
     );
-  }, [nowTarget, materie, effectiveFocusMinutes, derived.skillEffects.staminaCostMultiplier, derived.isMaxCarnageActive, staminaCapacityHours, previewStaminaCost]);
+  }, [
+    nowTarget,
+    materie,
+    effectiveFocusMinutes,
+    derived.skillEffects.staminaCostMultiplier,
+    derived.isMaxCarnageActive,
+    staminaCapacityHours,
+    staminaReadiness,
+    previewStaminaCost
+  ]);
 
   /** Avvio in un solo gesto dalla card "ADESSO": seleziona il bersaglio
    * (così i due Dropdown restano coerenti con ciò che sta girando) e fa
@@ -930,6 +944,14 @@ export default function MissionControl() {
     if (!debriefMateria || !Array.isArray(debriefMateria.sfide)) return null;
     return debriefMateria.sfide.find((s) => s.id === timer.pendingFocusSfidaId) || null;
   }, [debriefMateria, timer.pendingFocusSfidaId]);
+
+  // V43 — la tecnica che K.A.R.E.N. ha consigliato oggi per QUESTO argomento:
+  // il Debriefing la propone già selezionata (la cambi con un tocco).
+  const debriefTecnicaConsigliata = useMemo(() => {
+    const ap = karenDirectivesToday?.study_focus?.argomento_principale;
+    if (!ap || !debriefSfida || ap.sfidaId !== debriefSfida.id) return null;
+    return techniqueOfAdvice(ap);
+  }, [karenDirectivesToday, debriefSfida]);
 
   // V42 — il lavoro dichiarato alla partenza vince sul suggerito.
   const modoConsigliato = useMemo(() => {
@@ -1542,7 +1564,9 @@ export default function MissionControl() {
           <div className={derived.fatigued ? 'ds-card ds-card-alert' : CARD}>
             <StaminaBar
               stamina={state.profile.stamina}
-              readinessScore={karen.hasSession && karen.briefing && karen.readinessKnown ? readinessScore : null}
+              readinessScore={
+                karen.hasSession && karen.briefing && karen.readinessKnown && karen.briefing.date === karen.todayStr ? readinessScore : null
+              }
               readinessBand={karen.readinessBand}
             />
           </div>
@@ -1656,6 +1680,7 @@ export default function MissionControl() {
         materia={debriefMateria}
         intent={timer.pendingFocusIntent}
         calibration={derived.calibration}
+        tecnicaConsigliata={debriefTecnicaConsigliata}
       />
 
       <CloseDayModal

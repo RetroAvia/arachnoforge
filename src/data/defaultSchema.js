@@ -9,6 +9,7 @@ import { HOURS_PER_NODE_DAY } from '../utils/materiaMeta.js';
 import { pruneStarLog } from '../utils/starLogMaintenance.js';
 import { normalizeFonti } from '../utils/sintesiEngine.js';
 import { createDefaultCampus, normalizeCampus } from '../utils/campusEngine.js';
+import { normalizeTechniqueList } from '../utils/techniqueMemory.js';
 
 /**
  * Schema di default ArachnoForge — versione dati 10.0.0 "Piano Reale"
@@ -265,6 +266,7 @@ const MAX_RIPASSI_PER_NODO = 12;
 const MAX_QUIZ_ESITI_PER_NODO = 12;
 const MAX_SINTESI_MANUALE_PER_NODO = 20;
 const MAX_SIMULAZIONI_PER_MATERIA = 20;
+const MAX_NOTE_LOG_PER_NODO = 12;
 export const MAX_DAY_CLOSURES = 90;
 
 function nonNegInt(v) {
@@ -468,6 +470,15 @@ function migrateSfida(raw, index, arr) {
       parziale: nonNegInt(e.parziale),
       no: nonNegInt(e.no),
       modo: e.modo === 'ORALE' ? 'ORALE' : 'QUIZ'
+    })),
+    // V43 — le tecniche di studio usate sul nodo (memoria delle tecniche).
+    tecniche: normalizeTechniqueList(raw.tecniche),
+    // V44 — registro degli appunti: quando sono cambiati, quanto, a mano o con l'IA.
+    noteAggiornataAt: typeof raw.noteAggiornataAt === 'string' ? raw.noteAggiornataAt : null,
+    noteLog: recentList(raw.noteLog, MAX_NOTE_LOG_PER_NODO, (e) => ({
+      at: e.at,
+      caratteri: nonNegInt(e.caratteri),
+      fonte: e.fonte === 'IA' ? 'IA' : 'MANUALE'
     })),
     sintesiManuale: recentList(raw.sintesiManuale, MAX_SINTESI_MANUALE_PER_NODO, (e) => ({
       at: e.at,

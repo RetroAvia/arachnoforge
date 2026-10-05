@@ -11,6 +11,7 @@ import { planningExamDate } from '../utils/appelli.js';
 import { todayDateOnlyKey } from '../utils/dateUtils.js';
 import { pagineLabel } from '../utils/format.js';
 import { INPUT_SM, LABEL, BADGE } from '../utils/designSystem.js';
+import { STUDY_TECHNIQUE_ORDER, STUDY_TECHNIQUE_META, isStudyTechnique } from '../data/studyTechniques.js';
 
 const RATING_ORDER = [FOCUS_QUALITY.FLOW, FOCUS_QUALITY.NORMAL, FOCUS_QUALITY.DISTRACTED];
 const RECALL_ORDER = [REVIEW_RATING.AGAIN, REVIEW_RATING.HARD, REVIEW_RATING.MEDIUM, REVIEW_RATING.EASY];
@@ -57,7 +58,9 @@ export default function DebriefModal({
   sfida = null,
   materia = null,
   intent = null,
-  calibration = null
+  calibration = null,
+  // V43 — la tecnica che K.A.R.E.N. ha consigliato per QUESTO argomento (o null).
+  tecnicaConsigliata = null
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [mode, setMode] = useState(WORK_MODE.STUDIO);
@@ -68,6 +71,9 @@ export default function DebriefModal({
   const [recall, setRecall] = useState(null);
   const [eserciziFatti, setEserciziFatti] = useState('');
   const [eserciziCorretti, setEserciziCorretti] = useState('');
+  // V43 — memoria delle tecniche: quale tecnica hai usato (facoltativo).
+  const [tecnica, setTecnica] = useState(null);
+  const consigliata = isStudyTechnique(tecnicaConsigliata) ? tecnicaConsigliata : null;
   const appuntiId = useId();
   const baseId = useId();
 
@@ -152,10 +158,11 @@ export default function DebriefModal({
       setRecall(null);
       setEserciziFatti('');
       setEserciziCorretti('');
+      setTecnica(consigliata);
       setMode(iniziale);
     }
     eraAperto.current = open;
-  }, [open, sfida, nodoIniziale, sintesiDichiarata, intent]);
+  }, [open, sfida, nodoIniziale, sintesiDichiarata, intent, consigliata]);
 
   // Se cambia l'argomento e il modo non è più fra quelli possibili, si passa al primo.
   useEffect(() => {
@@ -197,7 +204,10 @@ export default function DebriefModal({
       completaNodo: mostraTermina && completaNodo,
       eserciziFatti: fatti,
       eserciziCorretti: fatti > 0 ? Math.min(fatti, intero(eserciziCorretti)) : 0,
-      reviewRating: chiediRicordo ? recall : null
+      reviewRating: chiediRicordo ? recall : null,
+      // V43 — solo su un argomento preciso: è lì che se ne misura l'effetto.
+      tecnica: nodo && tecnica ? tecnica : null,
+      tecnicaConsigliata: consigliata
     });
   };
 
@@ -446,6 +456,44 @@ export default function DebriefModal({
                 </p>
               </div>
             )}
+          </div>
+        )}
+
+        {nodo && (
+          <div className="ds-well p-4 space-y-2.5">
+            <p className="ds-eyebrow flex items-center gap-1.5">
+              <Icon name="sparkles" className="w-3.5 h-3.5 text-secondary" />
+              Tecnica usata
+              <span className="normal-case tracking-normal font-normal text-slate-500">· facoltativa</span>
+            </p>
+            <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Tecnica di studio usata">
+              {STUDY_TECHNIQUE_ORDER.map((id) => {
+                const meta = STUDY_TECHNIQUE_META[id];
+                const attiva = tecnica === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    role="radio"
+                    aria-checked={attiva}
+                    disabled={submitting}
+                    title={meta.hint}
+                    onClick={() => setTecnica((t) => (t === id ? null : id))}
+                    className={`rounded-full border px-2.5 py-1 text-xs transition-colors disabled:opacity-40 ${
+                      attiva ? 'border-secondary/60 bg-secondary/10 text-secondary font-semibold' : 'border-line bg-surface text-slate-300 hover:border-line-strong'
+                    }`}
+                  >
+                    {meta.short}
+                    {id === consigliata && <span className="ml-1 text-[10px] text-slate-500">· K.A.R.E.N.</span>}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              {tecnica
+                ? STUDY_TECHNIQUE_META[tecnica].hint
+                : 'Dichiararla insegna a K.A.R.E.N. quale tecnica funziona per te: lo misura dai ripassi, dalle interrogazioni e dagli esercizi che seguono.'}
+            </p>
           </div>
         )}
 

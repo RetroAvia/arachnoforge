@@ -23,6 +23,7 @@ import { useArachnoForge, useFocusTimerContext } from '../context/ArachnoForgeCo
 import { Icon } from '../components/Icons.jsx';
 import Modal from '../components/Modal.jsx';
 import AiIndexMatrixModal from '../components/AiIndexMatrixModal.jsx';
+import AiNotesModal from '../components/AiNotesModal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import Dropdown from '../components/Dropdown.jsx';
 import Drawer from '../components/Drawer.jsx';
@@ -136,6 +137,10 @@ export default function QuadrantHub() {
   const [deleteMateriaTarget, setDeleteMateriaTarget] = useState(null);
   const [sfidaModalOpen, setSfidaModalOpen] = useState(false);
   const [aiIndexModalOpen, setAiIndexModalOpen] = useState(false);
+  // V44 — Appunti con l'IA esterna: dallo Skill Tree (più argomenti) o dall'editor (uno).
+  const [aiNotesOpen, setAiNotesOpen] = useState(false);
+  const [aiNotesEditorOpen, setAiNotesEditorOpen] = useState(false);
+  const [editNoteFonte, setEditNoteFonte] = useState(null);
   const [nodeDetail, setNodeDetail] = useState(null);
   const [deleteNodeTarget, setDeleteNodeTarget] = useState(null);
   // V34.4 — "Riporta a da completare": conferma dedicata, così un clic
@@ -593,6 +598,7 @@ export default function QuadrantHub() {
     setEditPreviste(Number(node.pagineAppuntiPreviste) > 0 ? String(node.pagineAppuntiPreviste) : '');
     setEditDifficulty(node.difficulty);
     setEditNote(node.note || '');
+    setEditNoteFonte(null);
     setEditParentId(node.parentId || '');
     setNodeSaveState('idle');
     setNodeEditMode(true);
@@ -625,7 +631,7 @@ export default function QuadrantHub() {
         note: editNote,
         parentId: editParentId || null
       };
-      const result = await actions.updateSfidaAndSync(selectedMateria.id, node.id, patch);
+      const result = await actions.updateSfidaAndSync(selectedMateria.id, node.id, patch, { noteFonte: editNoteFonte });
       setNodeDetail((prev) => (prev && prev.id === node.id ? { ...prev, ...patch } : prev));
       setNodeEditMode(false);
       setNodeSaveState('idle');
@@ -635,7 +641,23 @@ export default function QuadrantHub() {
         pushToast('Modifiche salvate su questo dispositivo. Il Cloud non ha risposto: ritento in automatico.', 'warning');
       }
     },
-    [selectedMateria, editNome, editObiettivo, editOreStimate, editPagine, editFonti, editAppuntiCompleti, editPreviste, editDifficulty, editNote, editParentId, nodeSaveState, actions, pushToast]
+    [
+      selectedMateria,
+      editNome,
+      editObiettivo,
+      editOreStimate,
+      editPagine,
+      editFonti,
+      editAppuntiCompleti,
+      editPreviste,
+      editDifficulty,
+      editNote,
+      editNoteFonte,
+      editParentId,
+      nodeSaveState,
+      actions,
+      pushToast
+    ]
   );
 
   /** V36.0 — l'interrogazione si salva DENTRO il nodo, con la stessa azione di ogni altra modifica. */
@@ -688,14 +710,51 @@ export default function QuadrantHub() {
   );
 
   // V34.2 — Selezione multipla.
-  const toggleNodeSelection = useCallback((sfidaId) => {
-    setSelectedNodeIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(sfidaId)) next.delete(sfidaId);
-      else next.add(sfidaId);
-      return next;
-    });
-  }, []);
+  // V44 — selezionare un argomento con sotto-argomenti (un capitolo)
+  // seleziona anche tutto quello che ha sotto; deselezionarlo li toglie.
+  // Si può sempre togliere a mano un singolo sotto-argomento.
+  const discendentiDi = useCallback(
+    (sfidaId) => {
+      const figli = new Map();
+      selectedSfide.forEach((s) => {
+        if (!s || !s.parentId) return;
+        if (!figli.has(s.parentId)) figli.set(s.parentId, []);
+        figli.get(s.parentId).push(s.id);
+      });
+      const out = [];
+      const coda = [...(figli.get(sfidaId) || [])];
+      const visti = new Set();
+      while (coda.length > 0) {
+        const id = coda.shift();
+        if (visti.has(id)) continue;
+        visti.add(id);
+        out.push(id);
+        coda.push(...(figli.get(id) || []));
+      }
+      return out;
+    },
+    [selectedSfide]
+  );
+
+  const toggleNodeSelection = useCallback(
+    (sfidaId) => {
+      setSelectedNodeIds((prev) => {
+        const next = new Set(prev);
+        const seleziona = !next.has(sfidaId);
+        [sfidaId, ...discendentiDi(sfidaId)].forEach((id) => {
+          if (seleziona) next.add(id);
+          else next.delete(id);
+        });
+        return next;
+      });
+    },
+    [discendentiDi]
+  );
+
+  const tuttiSelezionati = selectedSfide.length > 0 && selectedNodeIds.size >= selectedSfide.length;
+  const toggleSelectAll = useCallback(() => {
+    setSelectedNodeIds(tuttiSelezionati ? new Set() : new Set(selectedSfide.map((s) => s.id)));
+  }, [tuttiSelezionati, selectedSfide]);
 
   const toggleSelectionMode = useCallback(() => {
     setSelectionMode((prev) => {
@@ -706,10 +765,13 @@ export default function QuadrantHub() {
 
   const confirmBulkDeleteNodes = useCallback(() => {
     if (!selectedMateria || selectedNodeIds.size === 0) return;
+    const eliminaTutto = selectedNodeIds.size >= selectedSfide.length;
     actions.bulkDeleteSfide(selectedMateria.id, Array.from(selectedNodeIds));
     setSelectedNodeIds(new Set());
     setBulkDeleteConfirmOpen(false);
-  }, [selectedMateria, selectedNodeIds, actions]);
+    // V44 — svuotato lo Skill Tree non resta niente da selezionare.
+    if (eliminaTutto) setSelectionMode(false);
+  }, [selectedMateria, selectedNodeIds, selectedSfide.length, actions]);
 
   const reviewsDue = derived.upcomingReviews.length;
   const selectedCourseOfMateria = selectedMateria ? getCourseById(selectedMateria.courseId) : null;
@@ -833,6 +895,16 @@ export default function QuadrantHub() {
                     </button>
                     <button
                       type="button"
+                      onClick={() => setAiNotesOpen(true)}
+                      disabled={selectedSfide.length === 0}
+                      title={selectedSfide.length === 0 ? 'Prima crea gli argomenti' : 'Fai preparare gli appunti a un’IA esterna dal tuo materiale'}
+                      className="ds-btn ds-btn-ghost ds-btn-sm"
+                    >
+                      <Icon name="sparkles" className="w-3.5 h-3.5" />
+                      Appunti con l’IA
+                    </button>
+                    <button
+                      type="button"
                       onClick={openAddSfida}
                       disabled={goblinActive}
                       title={goblinActive ? 'Goblin Protocol attivo: niente argomenti nuovi a ridosso dell’esame' : 'Aggiungi un argomento allo Skill Tree'}
@@ -851,12 +923,16 @@ export default function QuadrantHub() {
                     <span className="text-sm font-medium text-slate-100 flex items-center gap-2 ds-num">
                       <Icon name="check" className="w-4 h-4 text-primary" />
                       {selectedNodeIds.size === 0
-                        ? 'Tocca gli argomenti da selezionare'
+                        ? 'Tocca gli argomenti da selezionare (un capitolo porta con sé i suoi sotto-argomenti)'
                         : selectedNodeIds.size === 1
                         ? '1 argomento selezionato'
                         : `${selectedNodeIds.size} argomenti selezionati`}
                     </span>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button type="button" onClick={toggleSelectAll} className="ds-btn ds-btn-ghost ds-btn-sm" aria-pressed={tuttiSelezionati}>
+                        <Icon name={tuttiSelezionati ? 'close' : 'layers'} className="w-3.5 h-3.5" />
+                        {tuttiSelezionati ? 'Deseleziona tutto' : `Seleziona tutto (${selectedSfide.length})`}
+                      </button>
                       <button type="button" onClick={toggleSelectionMode} className="ds-btn ds-btn-ghost ds-btn-sm">
                         Annulla
                       </button>
@@ -1249,6 +1325,23 @@ export default function QuadrantHub() {
         materiaNome={selectedMateria?.nome || ''}
       />
 
+      {/* V44 — Appunti con l'IA esterna. */}
+      <AiNotesModal open={aiNotesOpen} onClose={() => setAiNotesOpen(false)} materia={selectedMateria} />
+      {nodeDetail && (
+        <AiNotesModal
+          open={aiNotesEditorOpen}
+          onClose={() => setAiNotesEditorOpen(false)}
+          materia={selectedMateria}
+          sfidaFissa={nodeDetail}
+          noteAttuali={editNote}
+          onApply={(testo) => {
+            setEditNote(testo);
+            setEditNoteFonte('IA');
+            pushToast('Appunti inseriti: controllali e premi Salva.', 'info');
+          }}
+        />
+      )}
+
       {/* Modale: nuovo argomento */}
       <Modal
         open={sfidaModalOpen}
@@ -1419,15 +1512,22 @@ export default function QuadrantHub() {
                   </div>
 
                   <div>
-                    <label className={`${LABEL} flex items-center gap-1.5`} htmlFor="wm-edit-note">
-                      <Icon name="note" className="w-3.5 h-3.5 text-secondary" />
-                      Appunti
-                    </label>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className={`${LABEL} flex items-center gap-1.5`} htmlFor="wm-edit-note">
+                        <Icon name="note" className="w-3.5 h-3.5 text-secondary" />
+                        Appunti
+                        {editNote.trim() ? <span className="text-slate-500 font-normal ds-num">· {editNote.trim().length} car.</span> : null}
+                      </label>
+                      <button type="button" onClick={() => setAiNotesEditorOpen(true)} disabled={isSaving} className="ds-btn ds-btn-quiet ds-btn-sm mb-1.5">
+                        <Icon name="sparkles" className="w-3.5 h-3.5 text-secondary" />
+                        Con l’IA
+                      </button>
+                    </div>
                     <textarea
                       id="wm-edit-note"
                       value={editNote}
                       onChange={(e) => setEditNote(e.target.value)}
-                      rows={6}
+                      rows={10}
                       className={`${INPUT} resize-y font-mono text-[13px] leading-relaxed`}
                       placeholder={'Formule, passaggi chiave, errori tipici, pagina della dispensa…\nQuello che serve per ripassare senza cercare altrove.'}
                       disabled={isSaving}
@@ -1762,8 +1862,16 @@ export default function QuadrantHub() {
         open={bulkDeleteConfirmOpen}
         onClose={() => setBulkDeleteConfirmOpen(false)}
         onConfirm={confirmBulkDeleteNodes}
-        title={selectedNodeIds.size === 1 ? "Eliminare l'argomento selezionato?" : `Eliminare ${selectedNodeIds.size} argomenti?`}
-        message="I sotto-argomenti non selezionati non si perdono: diventano argomenti principali."
+        title={
+          selectedNodeIds.size === 1
+            ? "Eliminare l'argomento selezionato?"
+            : selectedSfide.length > 0 && selectedNodeIds.size >= selectedSfide.length
+            ? `Eliminare tutto lo Skill Tree (${selectedNodeIds.size} argomenti)?`
+            : `Eliminare ${selectedNodeIds.size} argomenti?`
+        }
+        message={`I sotto-argomenti non selezionati non si perdono: diventano argomenti principali. Tempo di studio, appunti e ripassi degli argomenti eliminati spariscono${
+          selectedNodeIds.size >= 5 ? ': prima viene salvato un punto di ripristino (Impostazioni → Backup)' : ''
+        }; per qualche secondo puoi annullare dal messaggio in basso.`}
         confirmLabel="Elimina"
       />
 

@@ -178,7 +178,7 @@ export function QuotaRow({ q, todayKey }) {
       )}
       {q.prereqPianificate?.length > 0 && !q.frozen && (
         <p className="text-[11px] text-slate-500 mt-1.5">
-          Propedeutica in programma prima: {q.prereqPianificate.map((b) => `${b.nome} (${formatDateShort(b.dataKey, todayKey)})`).join(', ')}.
+          Propedeutica in programma prima: {q.prereqPianificate.map((b) => `${b.nome} (${b.inAttesaEsito ? `sostenuta il ${formatDateShort(b.dataKey, todayKey)}, esito in attesa` : formatDateShort(b.dataKey, todayKey)})`).join(', ')}.
         </p>
       )}
     </div>
@@ -330,7 +330,9 @@ export default function TodayPanel({ plan, quotas = [], calibration, monotask = 
                   </div>
                   <p className="text-[11px] text-slate-500 mt-1.5">
                     circa {formatHoursMinutes(rev.targetHours || 0)}
-                    {rev.rinviati > 0 ? ` · ${plurale(rev.rinviati, 'rinviato', 'rinviati')} a domani (giornata piena)` : ''}
+                    {rev.rinviati > 0
+                      ? ` · ${plurale(rev.rinviati, 'rinviato', 'rinviati')} ${(rev.rinviatiPerGiorno?.length || 0) > 1 ? `nei prossimi ${rev.rinviatiPerGiorno.length} giorni` : 'a domani'} (giornata piena)`
+                      : ''}
                   </p>
                 </div>
               )}

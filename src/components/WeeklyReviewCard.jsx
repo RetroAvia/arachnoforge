@@ -51,9 +51,11 @@ export default function WeeklyReviewCard() {
         materie: state.materie,
         quotas: derived.karenQuotas,
         streak: derived.streak,
-        todayKey: oggi
+        todayKey: oggi,
+        techniqueMemory: derived.techniqueMemory,
+        campus: state.campus
       }),
-    [weekKey, state.starLog, state.dayClosures, state.materie, derived.karenQuotas, derived.streak, oggi]
+    [weekKey, state.starLog, state.dayClosures, state.materie, derived.karenQuotas, derived.streak, oggi, derived.techniqueMemory, state.campus]
   );
 
   const genera = async (force = false) => {
@@ -65,6 +67,55 @@ export default function WeeklyReviewCard() {
     }
     actions.saveKarenWeekly(weekKey, res.weekly, { generatedAt: res.generatedAt, weekClosed: res.weekClosed });
   };
+
+  // V44 — le tessere seguono la fase della settimana: in periodo di lezioni
+  // contano le lezioni sistemate (sintesi, pagine, appunti), in sessione lo
+  // studio sui tuoi appunti (ripassi, esercizi, interrogazioni).
+  const ph = contesto.phase || { lezioni_days: 0, sessione_days: contesto.days.length, campus: false };
+  const settimanaDiLezioni = ph.campus && ph.lezioni_days >= ph.sessione_days && ph.lezioni_days > 0;
+  const fase = !ph.campus ? null : ph.lezioni_days === 0 ? 'Settimana di sessione' : ph.sessione_days === 0 ? 'Settimana di lezioni' : 'Lezioni e sessione';
+  const tessere = useMemo(() => {
+    const si = contesto.sintesi || { pagine_fonte: 0, pagine_appunti: 0, argomenti: 0 };
+    const nt = contesto.notes || { argomenti: 0, con_ia: 0 };
+    const ls = contesto.lessons;
+    const qz = contesto.quizzes || { count: 0, sapevo: 0, parziale: 0, no: 0 };
+    const domande = qz.sapevo + qz.parziale + qz.no;
+    const t = {
+      studio: { k: 'studio', label: 'Studio', valore: minutiLabel(contesto.total_minutes), nota: contesto.modes?.SINTESI ? `di cui sintesi ${minutiLabel(contesto.modes.SINTESI)}` : null },
+      sintesi: {
+        k: 'sintesi',
+        label: 'Pagine snellite',
+        valore: `${si.pagine_fonte} pag.`,
+        nota: si.pagine_appunti > 0 ? `→ ${si.pagine_appunti} pag. di appunti` : si.argomenti > 0 ? `${si.argomenti} argomenti` : null
+      },
+      appunti: {
+        k: 'appunti',
+        label: 'Appunti aggiornati',
+        valore: `${nt.argomenti} ${nt.argomenti === 1 ? 'argomento' : 'argomenti'}`,
+        nota: nt.con_ia > 0 ? `di cui ${nt.con_ia} con l’IA` : null
+      },
+      lezioni: ls
+        ? {
+            k: 'lezioni',
+            label: 'Lezioni',
+            valore: `${ls.programmate - ls.saltate}/${ls.programmate} seguite`,
+            nota: ls.sintesi_attesa_min > 0 ? `sintesi ${minutiLabel(contesto.modes?.SINTESI || 0)} di ${minutiLabel(ls.sintesi_attesa_min)}` : null
+          }
+        : null,
+      ripassi: { k: 'ripassi', label: 'Ripassi', valore: String(contesto.reviews.count), nota: contesto.topics_completed > 0 ? `${contesto.topics_completed} argomenti chiusi` : null },
+      esercizi: {
+        k: 'esercizi',
+        label: 'Esercizi corretti',
+        valore: `${contesto.exercises.correct}/${contesto.exercises.done}`,
+        nota: domande > 0 ? `interrogazioni: ${qz.sapevo}/${domande} sapute` : null
+      },
+      chiuse: { k: 'chiuse', label: 'Giornate chiuse', valore: `${contesto.days.filter((d) => d.closed).length}/${contesto.days.length}`, nota: null }
+    };
+    const ordine = settimanaDiLezioni
+      ? ['studio', 'lezioni', 'sintesi', 'appunti', 'ripassi', 'chiuse']
+      : ['studio', 'ripassi', 'esercizi', 'sintesi', 'appunti', 'chiuse'];
+    return ordine.map((k) => t[k]).filter(Boolean);
+  }, [contesto, settimanaDiLezioni]);
 
   const inCorso = karen.aiBusy === 'weekly';
   const fine = addDaysToDateOnly(weekKey, 6);
@@ -104,27 +155,25 @@ export default function WeeklyReviewCard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        <div className="ds-well px-3 py-2.5">
-          <p className="text-[11px] text-slate-500">Studio</p>
-          <p className="text-sm font-semibold text-white ds-num">{minutiLabel(contesto.total_minutes)}</p>
-        </div>
-        <div className="ds-well px-3 py-2.5">
-          <p className="text-[11px] text-slate-500">Ripassi</p>
-          <p className="text-sm font-semibold text-white ds-num">{contesto.reviews.count}</p>
-        </div>
-        <div className="ds-well px-3 py-2.5">
-          <p className="text-[11px] text-slate-500">Esercizi corretti</p>
-          <p className="text-sm font-semibold text-white ds-num">
-            {contesto.exercises.correct}/{contesto.exercises.done}
-          </p>
-        </div>
-        <div className="ds-well px-3 py-2.5">
-          <p className="text-[11px] text-slate-500">Giornate chiuse</p>
-          <p className="text-sm font-semibold text-white ds-num">
-            {contesto.days.filter((d) => d.closed).length}/{contesto.days.length}
-          </p>
-        </div>
+      {fase && (
+        <p className="text-xs text-slate-400 -mt-1 flex items-center gap-2 flex-wrap">
+          <span className={settimanaDiLezioni ? BADGE.cyan : BADGE.amber}>{fase}</span>
+          <span>
+            {settimanaDiLezioni
+              ? 'Il bilancio guarda soprattutto alle lezioni sistemate: sintesi, pagine e appunti.'
+              : 'Il bilancio guarda allo studio sui tuoi appunti: ripassi, esercizi, interrogazioni.'}
+          </span>
+        </p>
+      )}
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+        {tessere.map((t) => (
+          <div key={t.k} className="ds-well px-3 py-2.5 min-w-0">
+            <p className="text-[11px] text-slate-500">{t.label}</p>
+            <p className="text-sm font-semibold text-white ds-num truncate">{t.valore}</p>
+            {t.nota && <p className="text-[11px] text-slate-500 ds-num truncate">{t.nota}</p>}
+          </div>
+        ))}
       </div>
 
       {salvato ? (
@@ -176,7 +225,7 @@ export default function WeeklyReviewCard() {
           <p className="text-sm text-slate-400 leading-relaxed max-w-xl">
             {contesto.total_minutes === 0
               ? 'Nessuna sessione registrata in questa settimana: il bilancio si prepara quando c’è qualcosa da guardare.'
-              : 'K.A.R.E.N. legge i numeri della settimana e ti dice cosa ha funzionato, cosa cambiare e una tecnica di studio da provare, con le priorità per la prossima.'}
+              : 'K.A.R.E.N. legge i numeri della settimana (studio, sintesi e lezioni, appunti, ripassi, esercizi) e ti dice cosa ha funzionato, cosa cambiare e una tecnica di studio da provare, con le priorità per la prossima.'}
           </p>
           <button type="button" onClick={() => genera(false)} disabled={inCorso || contesto.total_minutes === 0} className={BTN_SECONDARY}>
             <Icon name={inCorso ? 'refresh' : 'sparkles'} className={`w-4 h-4 ${inCorso ? 'animate-spin' : ''}`} />

@@ -63,6 +63,11 @@ import {
 } from '../utils/localBackups.js';
 import { createSessionId, getDeviceId, classifyRemoteWrite } from '../utils/syncIdentity.js';
 import { useKarenBrain } from './KarenBrainContext.jsx';
+import { computeTechniqueMemory } from '../utils/techniqueMemory.js';
+import { mergeNote, NOTE_MODE } from '../utils/aiNotes.js';
+
+/** V44 — da quanti argomenti eliminati insieme si salva un punto di ripristino. */
+const BULK_DELETE_SNAPSHOT_MIN = 5;
 
 const ArachnoForgeContext = createContext(null);
 
@@ -318,7 +323,7 @@ export function ArachnoForgeProvider({ children }) {
   // che l'utente vedeva (bersaglio di oggi, capacità, lezioni in coda):
   // missioni e Stamina usano gli stessi numeri della UI, senza che il
   // reducer debba ricalcolarli (e magari diversamente).
-  const timerCtxRef = useRef({ primaryTargetMateriaId: undefined, capacityHours: 4.5, lessonMateriaIds: [] });
+  const timerCtxRef = useRef({ primaryTargetMateriaId: undefined, capacityHours: 4.5, readinessScore: null, lessonMateriaIds: [] });
   const timerDispatch = useCallback((action) => {
     if (action && action.type === 'FOCUS_COMPLETED') {
       const c = timerCtxRef.current;
@@ -327,6 +332,7 @@ export function ArachnoForgeProvider({ children }) {
         payload: {
           primaryTargetMateriaId: c.primaryTargetMateriaId,
           capacityHours: c.capacityHours,
+          readinessScore: c.readinessScore,
           lessonMateriaIds: c.lessonMateriaIds,
           ...action.payload
         }
@@ -844,6 +850,17 @@ export function ArachnoForgeProvider({ children }) {
     };
   }, [state, user.id, storageMode, runPersist, enterConflictState]);
 
+  // V43 — Prima di ogni chiamata a K.A.R.E.N. il lavoro in attesa va sul
+  // Cloud: l'IA legge gli appunti da lì (vedi useSuitTelemetry,
+  // registerBeforeAiCall). Solo in modalità Cloud: Ospite e Sandbox non
+  // scrivono su Supabase, e il loro flush non cambierebbe ciò che legge il
+  // server.
+  const registerBeforeAiCall = karenBrain.registerBeforeAiCall;
+  useEffect(() => {
+    if (typeof registerBeforeAiCall !== 'function' || storageMode !== 'cloud') return undefined;
+    return registerBeforeAiCall(flushSave);
+  }, [registerBeforeAiCall, flushSave, storageMode]);
+
   // V37.0 — Flush d'uscita. `visibilitychange -> hidden` è l'unico evento
   // su cui si può contare su mobile (iOS non garantisce `beforeunload`, e
   // una PWA messa in background può essere uccisa senza altro preavviso);
@@ -1343,14 +1360,22 @@ export function ArachnoForgeProvider({ children }) {
     [materiePiano, calibration, focusTopId, karenAutoRouter.byMateriaId, dayKey]
   );
 
+  // V43 — la Readiness di OGGI (Suit Telemetry), solo se misurata: regola
+  // quanto consuma la Stamina. Un briefing di ieri non conta.
+  const staminaReadinessScore =
+    karenBrain.readinessKnown && karenBrain.briefing && karenBrain.briefing.date === karenBrain.todayStr && Number.isFinite(Number(karenBrain.readinessScore))
+      ? Number(karenBrain.readinessScore)
+      : null;
+
   // V42 — il contesto del piano che accompagna ogni chiusura di sessione.
   useEffect(() => {
     timerCtxRef.current = {
       primaryTargetMateriaId: primaryTarget ? primaryTarget.materia.id : null,
       capacityHours: Number(calibration.hoursPerDay) > 0 ? Number(calibration.hoursPerDay) : 4.5,
+      readinessScore: staminaReadinessScore,
       lessonMateriaIds: (campusSnapshot.coda || []).map((l) => l.materiaId)
     };
-  }, [primaryTarget, calibration.hoursPerDay, campusSnapshot.coda]);
+  }, [primaryTarget, calibration.hoursPerDay, staminaReadinessScore, campusSnapshot.coda]);
 
   // Daily Patrol Engine (V23.0, Modulo 2) — Rigenerazione giornaliera:
   // quando la dateKey persistita non corrisponde a "oggi" (primo avvio,
@@ -1518,8 +1543,9 @@ export function ArachnoForgeProvider({ children }) {
       // individuato dal suo identificativo unico (sfidaId). Ritorna una
       // Promise { success, error } così il chiamante può pilotare il
       // proprio feedback di salvataggio/errore in tempo reale.
-      updateSfidaAndSync: async (materiaId, sfidaId, patch) => {
-        const action = { type: 'UPDATE_SFIDA', payload: { materiaId, sfidaId, patch } };
+      updateSfidaAndSync: async (materiaId, sfidaId, patch, opts = {}) => {
+        // V44 — `noteFonte: 'IA'` quando gli appunti arrivano dall'IA esterna (registro del nodo).
+        const action = { type: 'UPDATE_SFIDA', payload: { materiaId, sfidaId, patch, noteFonte: opts && opts.noteFonte === 'IA' ? 'IA' : null } };
         dispatch(action);
         // V40.0 — lo stato da salvare subito è quello che produce il
         // reducer stesso (con `sintesiAggiornataAt` e ogni altra regola),
@@ -1569,6 +1595,16 @@ export function ArachnoForgeProvider({ children }) {
       // coerente col resto dell'app che finisce su Supabase come JSONB).
       bulkDeleteSfide: (materiaId, sfidaIds) => {
         const undo = captureSfideRemoval(stateRef.current, materiaId, sfidaIds);
+        // V44 — un'eliminazione grossa (anche tutto lo Skill Tree in un
+        // colpo) lascia un punto di ripristino: l'"Annulla" del messaggio
+        // dura pochi secondi, la copia resta.
+        if (undo && undo.removed.length >= BULK_DELETE_SNAPSHOT_MIN) {
+          const m = findMateria(stateRef.current, materiaId);
+          saveSnapshot(user.id, stateRef.current, {
+            reason: SNAPSHOT_REASON.PRE_DELETE,
+            label: `${undo.removed.length} argomenti${m ? ` · ${m.nome}` : ''}`
+          }).catch(() => undefined);
+        }
         dispatch({ type: 'BULK_DELETE_SFIDE', payload: { materiaId, sfidaIds } });
         if (undo) {
           const n = undo.removed.length;
@@ -1703,6 +1739,39 @@ export function ArachnoForgeProvider({ children }) {
       // (parsing/validazione vivono interamente in aiIndexParser.js, mai
       // nel reducer). Ritorna l'esito così la modale può mostrare l'errore
       // o chiudersi con un toast di successo.
+      // V44 — appunti preparati da un'IA esterna (utils/aiNotes.js), più
+      // argomenti in un colpo. Punto di ripristino se si sovrascrive del
+      // testo esistente, e "Annulla" dal messaggio.
+      importAiNotes: (materiaId, blocchi, mode = NOTE_MODE.SOSTITUISCI) => {
+        const materia = findMateria(stateRef.current, materiaId);
+        if (!materia || !Array.isArray(blocchi) || blocchi.length === 0) return { count: 0 };
+        const byId = new Map(materia.sfide.map((s) => [s.id, s]));
+        const entries = [];
+        const prima = [];
+        blocchi.forEach((b) => {
+          const s = b && byId.get(b.sfidaId);
+          if (!s) return;
+          const note = mergeNote(s.note, b.note, mode);
+          if (note === (typeof s.note === 'string' ? s.note.trim() : '')) return;
+          entries.push({ sfidaId: s.id, note });
+          prima.push({ sfidaId: s.id, note: typeof s.note === 'string' ? s.note : '', noteAggiornataAt: s.noteAggiornataAt || null });
+        });
+        if (entries.length === 0) {
+          pushToast('Niente da aggiornare: gli appunti sono già questi.', 'info');
+          return { count: 0 };
+        }
+        if (prima.some((p) => p.note.trim())) {
+          saveSnapshot(user.id, stateRef.current, { reason: SNAPSHOT_REASON.PRE_IMPORT, label: `Appunti IA · ${materia.nome}` }).catch(() => undefined);
+        }
+        const at = new Date().toISOString();
+        dispatch({ type: 'IMPORT_NOTE_IA', payload: { materiaId, entries, at } });
+        pushToast(`Appunti salvati in ${entries.length} ${entries.length === 1 ? 'argomento' : 'argomenti'}.`, 'success', {
+          duration: 9000,
+          action: { label: 'Annulla', onClick: () => dispatch({ type: 'RESTORE_NOTE_IA', payload: { materiaId, entries: prima, at } }) }
+        });
+        audio.playDataImport();
+        return { count: entries.length };
+      },
       bulkImportSkillTree: (materiaId, parsedNodes) => {
         const result = createSfideTreeFromAiIndex(parsedNodes);
         if (!result.valid) return result;
@@ -1941,6 +2010,10 @@ export function ArachnoForgeProvider({ children }) {
       todayKey
     };
 
+    // V43 — quale tecnica di studio funziona per te (dai ripassi, dalle
+    // interrogazioni e dagli esercizi dopo le sessioni in cui l'hai usata).
+    const techniqueMemory = computeTechniqueMemory(state.materie);
+
     // V42 — il piano di oggi da consegnare a K.A.R.E.N. a ogni rigenerazione.
     const karenPlanContext = buildKarenPlanContext({
       planToday: karenAutoRouter.today,
@@ -1949,10 +2022,12 @@ export function ArachnoForgeProvider({ children }) {
       campus: campusSnapshot,
       streak,
       starLog: state.starLog,
-      todayKey
+      todayKey,
+      techniqueMemory
     });
 
     return {
+      techniqueMemory,
       fatigued,
       nextExam,
       upcomingExams,
