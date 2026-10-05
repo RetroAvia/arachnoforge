@@ -278,12 +278,56 @@ export function xpRequiredForLevelV1(level) {
  * @param {number} [capacityHours] capacità giornaliera (calibrazione)
  */
 export const STAMINA_DAY_FACTOR = 1.3;
-export function computeFocusStaminaCost(focusMinutes, difficulty = DIFFICULTY.MEDIUM, staminaCostMultiplier = 1, _isMaxCarnage = false, capacityHours = 4.5) {
+
+/**
+ * V43 — LA RISERVA NON SCENDE SOTTO UNA GIORNATA VERA.
+ *
+ * La "giornata" su cui si tara la Stamina era la capacità MEDIA del
+ * planner: ore di studio divise per TUTTI i giorni del mese, compresi
+ * quelli a zero. Con qualche giorno saltato la media scende a 1-1,5 ore,
+ * e la Stamina finiva dopo 80-120 minuti di Focus (minimo era 1 ora:
+ * 78 minuti per svuotarla). Ma la media serve a pianificare il mese, non
+ * dice quanto reggi in UNA giornata. Ora la riserva vale almeno 4h30
+ * (la giornata tipo dell'app) e al massimo 9 ore; se studi abitualmente
+ * di più, cresce con te.
+ */
+export const STAMINA_MIN_DAY_HOURS = 4.5;
+export const STAMINA_MAX_DAY_HOURS = 9;
+
+/**
+ * V43 — QUANTO TI STANCA OGGI: dalla Readiness della Suit Telemetry.
+ * Readiness 100 → il Focus consuma l'85% del normale; 75 → circa il
+ * normale; 45 → +10%; 0 → +30%. Senza una Readiness misurata oggi
+ * (nessun briefing, o dati insufficienti) → 1: nessun effetto.
+ */
+export const STAMINA_READINESS_MIN_FACTOR = 0.85;
+export const STAMINA_READINESS_MAX_FACTOR = 1.3;
+export function staminaReadinessFactor(readinessScore) {
+  if (readinessScore == null || readinessScore === '') return 1;
+  const s = Number(readinessScore);
+  if (!Number.isFinite(s)) return 1;
+  const r = Math.max(0, Math.min(100, s)) / 100;
+  const f = STAMINA_READINESS_MAX_FACTOR - (STAMINA_READINESS_MAX_FACTOR - STAMINA_READINESS_MIN_FACTOR) * r;
+  return Math.round(f * 100) / 100;
+}
+
+/** V43 — Minuti di Focus (difficoltà media) che svuotano 100 di Stamina. */
+export function staminaDayMinutes(capacityHours = STAMINA_MIN_DAY_HOURS) {
+  const cap = Number(capacityHours) > 0 ? Number(capacityHours) : STAMINA_MIN_DAY_HOURS;
+  return Math.min(STAMINA_MAX_DAY_HOURS, Math.max(STAMINA_MIN_DAY_HOURS, cap)) * 60 * STAMINA_DAY_FACTOR;
+}
+
+export function computeFocusStaminaCost(
+  focusMinutes,
+  difficulty = DIFFICULTY.MEDIUM,
+  staminaCostMultiplier = 1,
+  _isMaxCarnage = false,
+  capacityHours = STAMINA_MIN_DAY_HOURS,
+  readinessScore = null
+) {
   const meta = DIFFICULTY_META[difficulty] || DIFFICULTY_META.MEDIUM;
-  const cap = Number(capacityHours) > 0 ? Math.min(10, Math.max(1, Number(capacityHours))) : 4.5;
-  const minutiGiornata = cap * 60 * STAMINA_DAY_FACTOR;
-  const base = (Math.max(0, Number(focusMinutes) || 0) / minutiGiornata) * 100;
-  return Math.max(1, Math.ceil(base * meta.staminaMultiplier * staminaCostMultiplier));
+  const base = (Math.max(0, Number(focusMinutes) || 0) / staminaDayMinutes(capacityHours)) * 100;
+  return Math.max(1, Math.ceil(base * meta.staminaMultiplier * staminaCostMultiplier * staminaReadinessFactor(readinessScore)));
 }
 
 /**

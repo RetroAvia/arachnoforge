@@ -92,10 +92,12 @@ export function computePlanScenarios(materiePiano, inputs, basePlan, { todayKey 
     });
   });
 
-  // Un'ora in più al giorno (stessi giorni di riposo).
+  // Un'ora in più in ogni giorno di studio (stessi giorni di riposo).
+  // V43 — +1h SOPRA il profilo vero (giorni della settimana, lezioni,
+  // fase): `bonusHours`, non più `manualHours` che lo sostituiva.
   const cal = inputs.calibration || {};
   const ore = (Number(cal.manualHours) > 0 ? Number(cal.manualHours) : Number(cal.hoursPerDay) || 4.5) + 1;
-  const piuOre = ricalcola(materiePiano, { ...inputs, calibration: { ...cal, manualHours: ore, hoursPerDay: ore } });
+  const piuOre = ricalcola(materiePiano, { ...inputs, calibration: { ...cal, bonusHours: (Number(cal.bonusHours) || 0) + 1 } });
   out.push({
     id: 'ora-in-piu',
     kind: 'ORA_IN_PIU',

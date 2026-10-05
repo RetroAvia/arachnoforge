@@ -200,8 +200,23 @@ export function computeDailyCapacity(starLog, { todayKey = todayDateOnlyKey(), p
  * @param {object} calibration pacchetto di computeCalibration
  * @param {{phaseOf?:Function, lectureHoursOf?:Function}} [ctx]
  */
-export function capacityForDate(dateKey, calibration, { phaseOf = null, lectureHoursOf = null } = {}) {
+export function capacityForDate(dateKey, calibration, ctx = {}) {
   const cal = calibration || NEUTRAL_CALIBRATION;
+  const base = baseCapacityForDate(dateKey, cal, ctx);
+  // V43 — `bonusHours`: ore in più su OGNI giorno di studio, sopra il
+  // profilo misurato (lo scenario "un'ora in più al giorno"). Prima lo
+  // scenario passava per `manualHours`, che sostituisce tutto il profilo
+  // (giorni della settimana, lezioni, riposo spalmato): il guadagno vero
+  // poteva essere +0,5h o +1,7h, non +1h.
+  const bonus = Number(cal.bonusHours);
+  if (!(bonus > 0) || base <= 0) return base;
+  const w = isoWeekdayOfDateKey(dateKey);
+  const riposo = Array.isArray(cal.restDays) ? cal.restDays : [];
+  if (riposo.includes(w)) return base;
+  return Math.round((base + bonus) * 100) / 100;
+}
+
+function baseCapacityForDate(dateKey, cal, { phaseOf = null, lectureHoursOf = null } = {}) {
   const w = isoWeekdayOfDateKey(dateKey);
   const riposo = Array.isArray(cal.restDays) ? cal.restDays : [];
   if (riposo.includes(w)) return 0;

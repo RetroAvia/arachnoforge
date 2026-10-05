@@ -51,7 +51,7 @@
 // Modulo PURO: nessun React, nessun orologio letto di nascosto (todayKey
 // entra come parametro), nessuna mutazione degli input.
 // =====================================================================
-import { addDaysToDateOnly, daysBetweenDateKeys, todayDateOnlyKey, isValidDateKey } from './dateUtils.js';
+import { addDaysToDateOnly, daysBetweenDateKeys, todayDateOnlyKey, isValidDateKey, localDateKeyOf } from './dateUtils.js';
 import { nodeWorkBreakdown } from './sintesiEngine.js';
 import { capacityForDate, DEFAULT_REVIEW_MINUTES } from './calibration.js';
 import { CHECKPOINT_WINDOWS } from './spiderSense.js';
@@ -155,7 +155,7 @@ export function finalReviewJobs(materia, examKey, todayKey, reviewMinutes) {
     const coperti = sfide.filter((s) => {
       if (s.status !== 'COMPLETED') return false;
       if (s.nextReviewDate && s.nextReviewDate >= start && s.nextReviewDate <= end) return true;
-      const ultimo = typeof s.lastReviewedAt === 'string' ? s.lastReviewedAt.slice(0, 10) : '';
+      const ultimo = localDateKeyOf(s.lastReviewedAt) || '';
       return !!ultimo && ultimo >= start && ultimo <= end;
     }).length;
     const argomenti = Math.max(0, sfide.length - coperti);
@@ -283,7 +283,7 @@ export function reviewsToday(materie, todayKey, reviewMinutes) {
       if (s.nextReviewDate && s.nextReviewDate <= todayKey) {
         d += 1;
         ids.push(s.id);
-      } else if (typeof s.lastReviewedAt === 'string' && s.lastReviewedAt.slice(0, 10) === todayKey && Number(s.reviewCount) > 0) {
+      } else if (localDateKeyOf(s.lastReviewedAt) === todayKey && Number(s.reviewCount) > 0) {
         f += 1;
       }
     });
@@ -605,6 +605,23 @@ export function computeStudyPlan(
   const reviewDoneHours = round2((rev.done * reviewMinutes) / 60);
   avail[0] = Math.max(0, capToday - reviewTargetHours);
 
+  // V43 — L'ARRETRATO RINVIATO OCCUPA DAVVERO I GIORNI DOPO. Fino alla
+  // V42 i ripassi oltre la metà di oggi "scivolavano ai prossimi giorni"
+  // solo a parole: domani riceveva comunque tutta la capacità di studio
+  // nuovo, e il piano (fine prevista, stato) era più ottimista del vero.
+  // Ora l'arretrato si spalma da domani, al massimo metà di ogni giornata,
+  // finché non è smaltito.
+  const reviewBacklogCount = Math.max(0, rev.total - reviewTargetCount);
+  let backlogLeft = (reviewBacklogCount * reviewMinutes) / 60;
+  const backlogByDay = [];
+  for (let d = 1; d <= horizon && backlogLeft > EPS; d += 1) {
+    const quota = Math.min(backlogLeft, capacity[d] * REVIEW_SHARE_MAX, avail[d]);
+    if (quota <= EPS) continue;
+    avail[d] = Math.max(0, avail[d] - quota);
+    backlogLeft -= quota;
+    backlogByDay.push({ dateKey: addDaysToDateOnly(todayKey, d), hours: round2(quota) });
+  }
+
   // --- 1. ALAP: il minimo di oggi ------------------------------------------
   const alap = alapPass(jobs, subjects, avail, lastDeadline);
   const todayAlloc = jobs.map(() => 0);
@@ -756,7 +773,7 @@ export function computeStudyPlan(
       haLavoro: s.haLavoro,
       frozen: s.frozen,
       prereqBloccanti: s.prereq.bloccanti.map((b) => ({ nome: b.course.nome, dataKey: b.dataKey, materiaId: b.materia?.id || null })),
-      prereqPianificate: s.prereq.pianificate.map((b) => ({ nome: b.course.nome, dataKey: b.dataKey, materiaId: b.materia?.id || null })),
+      prereqPianificate: s.prereq.pianificate.map((b) => ({ nome: b.course.nome, dataKey: b.dataKey, materiaId: b.materia?.id || null, inAttesaEsito: !!b.inAttesaEsito })),
       missingPrereqNames: s.prereq.bloccanti.map((b) => b.course.nome),
       hoursRemaining: round2(s.sintesiNow + s.studioNow),
       sintesiHours: s.sintesiNow,
@@ -813,7 +830,7 @@ export function computeStudyPlan(
       capacityHours: capToday,
       baseCapacityHours: baseToday,
       loadAdjustmentPct: safePct,
-      reviews: { ...rev, targetHours: reviewTargetHours, doneHours: reviewDoneHours, targetCount: reviewTargetCount, rinviati: Math.max(0, rev.total - reviewTargetCount) },
+      reviews: { ...rev, targetHours: reviewTargetHours, doneHours: reviewDoneHours, targetCount: reviewTargetCount, rinviati: reviewBacklogCount, rinviatiPerGiorno: backlogByDay },
       lessons: {
         voci,
         richiestaOre: round2(richiestaOre),

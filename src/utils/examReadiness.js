@@ -27,7 +27,7 @@
 // confidenza. SOSTIENI solo con copertura ≥ 90%, memoria ≥ 75%,
 // confidenza ≥ 75% e — se c'è uno scritto — pratica misurata.
 // =====================================================================
-import { daysBetweenDateKeys, todayDateOnlyKey, addDaysToDateOnly } from './dateUtils.js';
+import { daysBetweenDateKeys, todayDateOnlyKey, addDaysToDateOnly, localDateKeyOf } from './dateUtils.js';
 import { nodeWorkBreakdown } from './sintesiEngine.js';
 import { nodeRetrievability, retrievabilityAt } from './spiderSense.js';
 import { haProvaScritta, formatoMeta } from './appelli.js';
@@ -108,20 +108,20 @@ export function computePractice(materia, todayKey = todayDateOnlyKey()) {
   let totaleQuiz = 0;
   sfide.forEach((s) => {
     (Array.isArray(s?.esercizi) ? s.esercizi : []).forEach((e) => {
-      if (!e || String(e.at || '').slice(0, 10) < limiteEs) return;
+      if (!e || (localDateKeyOf(e.at) || '') < limiteEs) return;
       const f = Math.max(0, Number(e.fatti) || 0);
       fatti += f;
       corretti += Math.min(f, Math.max(0, Number(e.corretti) || 0));
     });
     (Array.isArray(s?.quizEsiti) ? s.quizEsiti : []).forEach((q) => {
-      if (!q || String(q.at || '').slice(0, 10) < limiteEs) return;
+      if (!q || (localDateKeyOf(q.at) || '') < limiteEs) return;
       sapevo += Math.max(0, Number(q.sapevo) || 0);
       parziale += Math.max(0, Number(q.parziale) || 0);
       totaleQuiz += Math.max(0, Number(q.sapevo) || 0) + Math.max(0, Number(q.parziale) || 0) + Math.max(0, Number(q.no) || 0);
     });
   });
   const simulazioni = (Array.isArray(materia?.simulazioni) ? materia.simulazioni : [])
-    .filter((x) => x && String(x.at || '').slice(0, 10) >= limiteSim && Number.isFinite(Number(x.punteggioPct)))
+    .filter((x) => x && (localDateKeyOf(x.at) || '') >= limiteSim && Number.isFinite(Number(x.punteggioPct)))
     .sort((a, b) => String(b.at).localeCompare(String(a.at)))
     .slice(0, 3)
     .map((x) => clamp01(Number(x.punteggioPct) / 100));

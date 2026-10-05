@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '../../utils/supabaseClient.js';
+import { awaitSaveBeforeAi } from '../../utils/aiSaveGuard.js';
 
 /**
  * K.A.R.E.N. AI Engine — Suit Telemetry Hook — v2 "Recovery Survey &
@@ -170,6 +171,19 @@ export function useSuitTelemetry() {
   const quizInFlightRef = useRef(false);
   const [quizGenerating, setQuizGenerating] = useState(false);
   const saveInFlightRef = useRef(false);
+  // V43 — SALVA PRIMA DI CHIEDERE. Le chiamate all'IA leggono gli appunti
+  // dal Cloud (mai dal client): con il salvataggio automatico in ritardo
+  // di 2,5 s, scrivere gli appunti e premere subito "Prepara le domande"
+  // faceva lavorare K.A.R.E.N. sulla versione vecchia (o rispondere "nodo
+  // non trovato" per un argomento appena creato). ArachnoForgeProvider
+  // registra qui il suo `flushSave`; la dipendenza resta a senso unico.
+  const beforeAiRef = useRef(null);
+  const registerBeforeAiCall = useCallback((fn) => {
+    beforeAiRef.current = typeof fn === 'function' ? fn : null;
+    return () => {
+      if (beforeAiRef.current === fn) beforeAiRef.current = null;
+    };
+  }, []);
   const currentDateRef = useRef(todayDateOnlyKey());
   // V37.0 — al cambio di giorno `todayStr` deve cambiare anche per chi
   // legge il valore di ritorno. V41: è uno stato vero (prima un contatore
@@ -284,6 +298,7 @@ export function useSuitTelemetry() {
       scanInFlightRef.current = true;
       setScanning(true);
       setError(null);
+      await awaitSaveBeforeAi(beforeAiRef.current);
       const force = options.force === true;
       const targetDate = currentDateRef.current || todayDateOnlyKey();
       // V42 — il piano REALE di oggi (materie, obiettivi, ripassi, lezioni,
@@ -355,6 +370,7 @@ export function useSuitTelemetry() {
     }
     quizInFlightRef.current = true;
     if (mountedRef.current) setQuizGenerating(true);
+    await awaitSaveBeforeAi(beforeAiRef.current);
 
     // V37.0 — la data viaggia anche in modalità quiz: è il "secchio"
     // giornaliero su cui l'Edge Function conta le generazioni
@@ -401,6 +417,7 @@ export function useSuitTelemetry() {
     if (aiInFlightRef.current.has(key)) return { data: null, error: 'Richiesta già in corso.' };
     aiInFlightRef.current.add(key);
     if (mountedRef.current) setAiBusy(key);
+    await awaitSaveBeforeAi(beforeAiRef.current);
     const invokeOnce = () => supabase.functions.invoke('karen-oracle', { body: { ...body, date: currentDateRef.current || todayDateOnlyKey() } });
     try {
       let { data, error: invokeError } = await invokeOnce();
@@ -582,6 +599,7 @@ export function useSuitTelemetry() {
       generateOralExam,
       evaluateOralAnswer,
       generateWeeklyReview,
+      registerBeforeAiCall,
       aiBusy,
       refresh
     }),
@@ -607,6 +625,7 @@ export function useSuitTelemetry() {
       generateOralExam,
       evaluateOralAnswer,
       generateWeeklyReview,
+      registerBeforeAiCall,
       aiBusy,
       refresh
     ]

@@ -42,7 +42,7 @@ export const SNAPSHOT_REASON_LABEL = {
   'pre-reset': 'Prima del reset totale',
   'pre-conflict': 'Prima di risolvere un conflitto',
   'pre-restore': 'Prima di un ripristino',
-  'pre-delete': 'Prima di eliminare una materia',
+  'pre-delete': 'Prima di un’eliminazione',
   manual: 'Copia manuale'
 };
 

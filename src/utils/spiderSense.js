@@ -1,4 +1,4 @@
-import { addDaysToDateOnly, todayDateOnlyKey, daysUntilDateOnly, daysBetweenDateKeys, isValidDateKey } from './dateUtils.js';
+import { addDaysToDateOnly, todayDateOnlyKey, daysUntilDateOnly, daysBetweenDateKeys, localDateKeyOf } from './dateUtils.js';
 
 /**
  * Spider-Sense Engine — motore di ripetizione dilazionata.
@@ -102,10 +102,9 @@ function clampS(s) {
   return clamp(s, MIN_STABILITY, MAX_STABILITY);
 }
 
+// V43 — giorno LOCALE dell'istante (vedi dateUtils.localDateKeyOf).
 function dateKeyOf(value) {
-  if (typeof value !== 'string' || value.length < 10) return null;
-  const k = value.slice(0, 10);
-  return isValidDateKey(k) ? k : null;
+  return localDateKeyOf(value);
 }
 
 /* ------------------------------------------------------------------ *

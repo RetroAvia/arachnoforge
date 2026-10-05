@@ -15,6 +15,7 @@
 // =====================================================================
 import { nextProvaTipo, formatoMeta } from '../../utils/appelli.js';
 import { addDaysToDateOnly } from '../../utils/dateUtils.js';
+import { techniqueMemoryForKaren } from '../../utils/techniqueMemory.js';
 
 export const PLAN_CONTEXT_VERSION = 1;
 const MAX_SUBJECTS = 8;
@@ -54,8 +55,9 @@ function minutiIeri(starLog, todayKey) {
  * @param {object} [a.streak]     derived.streak
  * @param {Array}  [a.starLog]
  * @param {string} a.todayKey
+ * @param {object} [a.techniqueMemory] V43 — utils/techniqueMemory.computeTechniqueMemory
  */
-export function buildKarenPlanContext({ planToday, quotas = [], materie = [], campus = null, streak = null, starLog = [], todayKey }) {
+export function buildKarenPlanContext({ planToday, quotas = [], materie = [], campus = null, streak = null, starLog = [], todayKey, techniqueMemory = null }) {
   if (!planToday || typeof todayKey !== 'string') return null;
   const byId = new Map((Array.isArray(materie) ? materie : []).filter(Boolean).map((m) => [m.id, m]));
   const oggi = (planToday.subjects || []).slice(0, MAX_SUBJECTS).map((p) => {
@@ -117,6 +119,8 @@ export function buildKarenPlanContext({ planToday, quotas = [], materie = [], ca
       queue: (Array.isArray(campus?.coda) ? campus.coda : []).slice(0, 6).map((l) => ({ materia_id: l.materiaId, lessons: Math.max(1, Number(l.lezioniDaSistemare) || 1) }))
     },
     streak: streak ? { days: Math.max(0, Number(streak.streak) || 0), valid_today: !!streak.validaOggi, rest_left: Math.max(0, Number(streak.riposiRimasti) || 0) } : null,
-    yesterday: minutiIeri(starLog, todayKey)
+    yesterday: minutiIeri(starLog, todayKey),
+    // V43 — la memoria delle tecniche: cosa ha funzionato con te, e dove.
+    tecniche_memoria: techniqueMemoryForKaren(techniqueMemory)
   };
 }

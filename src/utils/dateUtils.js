@@ -151,6 +151,23 @@ export function isValidDateKey(v) {
   return addDaysToDateOnly(v, 0) === v;
 }
 
+/**
+ * V43 — Il giorno LOCALE di un istante salvato come ISO (`toISOString`).
+ * Tagliare i primi 10 caratteri dava il giorno UTC: un ripasso fatto alle
+ * 00:30 in Italia finiva sul giorno prima. Una data-only "YYYY-MM-DD"
+ * passa così com'è. Valore assente o illeggibile → null.
+ */
+export function localDateKeyOf(value) {
+  if (typeof value !== 'string' || value.length < 10) return null;
+  if (value.length === 10) return isValidDateKey(value) ? value : null;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) {
+    const k = value.slice(0, 10);
+    return isValidDateKey(k) ? k : null;
+  }
+  return getDateKey(new Date(ms));
+}
+
 /** V42 — Giorni interi da `fromKey` a `toKey` (positivo se `toKey` viene dopo). */
 export function daysBetweenDateKeys(fromKey, toKey) {
   const a = dateOnlyToUtcMs(fromKey);

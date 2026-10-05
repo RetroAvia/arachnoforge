@@ -61,6 +61,8 @@ import { computeDailyPlan } from '../utils/quotaEngine.js';
 import { syncAppelli, planningExamDate, withPlanningDates, nextAppelloAfter, ESITO_APPELLO } from '../utils/appelli.js';
 import { advanceStreak, restAllowance, STREAK_DAY_MIN_MINUTES } from '../utils/streakEngine.js';
 import { findDuplicateMateria, isUngradedMateria } from '../data/vanvitelliCourseMap.js';
+import { isStudyTechnique } from '../data/studyTechniques.js';
+import { MAX_TECNICHE_PER_NODO } from '../utils/techniqueMemory.js';
 
 /** Tetto del Combat Log: 50 voci, tagliate in testa. È il motivo per
  * cui nessun edge-trigger può basarsi sulla LUNGHEZZA dell'array — vedi
@@ -82,6 +84,20 @@ const MAX_RIPASSI_LOG = 12;
 const MAX_ESERCIZI_LOG = 30;
 const MAX_QUIZ_LOG = 12;
 const MAX_SINTESI_MANUALE = 20;
+/** V44 — voci del registro degli appunti di un nodo (quando, quanto, a mano o con l'IA). */
+export const MAX_NOTE_LOG = 12;
+
+/** V44 — una modifica degli appunti lascia una voce nel registro del nodo. */
+function conRegistroAppunti(prima, dopo, fonte, at) {
+  const a = typeof prima?.note === 'string' ? prima.note.trim() : '';
+  const b = typeof dopo?.note === 'string' ? dopo.note.trim() : '';
+  if (a === b) return dopo;
+  return {
+    ...dopo,
+    noteAggiornataAt: at,
+    noteLog: appendCapped(prima?.noteLog, { at, caratteri: b.length, fonte: fonte === 'IA' ? 'IA' : 'MANUALE' }, MAX_NOTE_LOG)
+  };
+}
 const MAX_SIMULAZIONI = 20;
 
 export function pushLog(combatLog, message, tag = 'INFO') {
@@ -780,7 +796,9 @@ export function reducer(state, action) {
       return updateMateriaSfide(state, action.payload.materiaId, (sfide) =>
         sfide.map((s) => {
           if (s.id !== action.payload.sfidaId) return s;
-          const next = { ...s, ...action.payload.patch };
+          let next = { ...s, ...action.payload.patch };
+          // V44 — appunti cambiati: registro (a mano, o incollati dall'IA esterna).
+          if (action.payload.patch && 'note' in action.payload.patch) next = conRegistroAppunti(s, next, action.payload.noteFonte, nowIso());
           // V40.0 — la sintesi fatta FUORI dall'app e registrata a mano
           // lascia un segno temporale per la coda delle lezioni.
           // V42 — e QUANTO lavoro: pagine di fonte e di appunti in più.
@@ -798,6 +816,52 @@ export function reducer(state, action) {
         })
       );
 
+
+    // V44 — APPUNTI DALL'IA ESTERNA, più argomenti in un colpo (utils/aiNotes.js).
+    // `entries`: [{ sfidaId, note }] con il testo FINALE (già unito se
+    // "aggiungi sotto"). `at` arriva dal chiamante: serve all'annullamento.
+    case 'IMPORT_NOTE_IA': {
+      const { materiaId, entries, at } = action.payload || {};
+      const materia = findMateria(state, materiaId);
+      if (!materia || !Array.isArray(entries) || entries.length === 0) return state;
+      const byId = new Map(entries.filter((e) => e && typeof e.sfidaId === 'string' && typeof e.note === 'string').map((e) => [e.sfidaId, e.note]));
+      const quando = typeof at === 'string' ? at : nowIso();
+      let toccati = 0;
+      const next = updateMateriaSfide(state, materiaId, (sfide) =>
+        sfide.map((s) => {
+          if (!byId.has(s.id)) return s;
+          const dopo = conRegistroAppunti(s, { ...s, note: byId.get(s.id) }, 'IA', quando);
+          if (dopo !== s && dopo.note !== s.note) toccati += 1;
+          return dopo;
+        })
+      );
+      if (toccati === 0) return state;
+      return {
+        ...next,
+        combatLog: pushLog(state.combatLog, `Appunti dall'IA: ${toccati} ${toccati === 1 ? 'argomento aggiornato' : 'argomenti aggiornati'} in ${materia.nome}.`, 'HUB')
+      };
+    }
+
+    // V44 — "Annulla" dopo IMPORT_NOTE_IA: rimette il testo di prima e toglie
+    // dal registro le voci di quell'import (stesso `at`).
+    case 'RESTORE_NOTE_IA': {
+      const { materiaId, entries, at } = action.payload || {};
+      const materia = findMateria(state, materiaId);
+      if (!materia || !Array.isArray(entries) || entries.length === 0) return state;
+      const byId = new Map(entries.filter((e) => e && typeof e.sfidaId === 'string').map((e) => [e.sfidaId, e]));
+      return updateMateriaSfide(state, materiaId, (sfide) =>
+        sfide.map((s) => {
+          const e = byId.get(s.id);
+          if (!e) return s;
+          return {
+            ...s,
+            note: typeof e.note === 'string' ? e.note : '',
+            noteAggiornataAt: typeof e.noteAggiornataAt === 'string' ? e.noteAggiornataAt : null,
+            noteLog: (Array.isArray(s.noteLog) ? s.noteLog : []).filter((x) => !(x && x.at === at && x.fonte === 'IA'))
+          };
+        })
+      );
+    }
 
     case 'DELETE_SFIDA': {
       const materia = findMateria(state, action.payload.materiaId);
@@ -1090,6 +1154,9 @@ export function reducer(state, action) {
       const pagineAppuntiProdotte = workMode === WORK_MODE.SINTESI ? Math.max(0, Math.round(Number(p.pagineAppuntiProdotte) || 0)) : 0;
       const eserciziFatti = workMode === WORK_MODE.ESERCIZI ? Math.max(0, Math.min(200, Math.round(Number(p.eserciziFatti) || 0))) : 0;
       const eserciziCorretti = Math.max(0, Math.min(eserciziFatti, Math.round(Number(p.eserciziCorretti) || 0)));
+      // V43 — la tecnica usata (Debriefing) e quella che K.A.R.E.N. aveva consigliato.
+      const tecnica = isStudyTechnique(p.tecnica) ? p.tecnica : null;
+      const tecnicaConsigliata = isStudyTechnique(p.tecnicaConsigliata) ? p.tecnicaConsigliata : null;
 
       const materia = materiaId ? findMateria(state, materiaId) : null;
       const targetNode = materia && sfidaId ? materia.sfide.find((s) => s.id === sfidaId) : null;
@@ -1138,7 +1205,9 @@ export function reducer(state, action) {
       });
       // V42 — Stamina tarata sulla capacità giornaliera (passata dal Provider).
       const capacityHours = Number(p.capacityHours) > 0 ? Number(p.capacityHours) : 4.5;
-      const staminaCost = computeFocusStaminaCost(focusMinutes, difficulty, skillEffects.staminaCostMultiplier, false, capacityHours);
+      // V43 — e sulla Readiness di oggi della Suit Telemetry (null = non misurata).
+      const readinessScore = Number.isFinite(Number(p.readinessScore)) && p.readinessScore !== null ? Number(p.readinessScore) : null;
+      const staminaCost = computeFocusStaminaCost(focusMinutes, difficulty, skillEffects.staminaCostMultiplier, false, capacityHours, readinessScore);
       // V42 — bonus proporzionale ai minuti, solo per sessioni da almeno 20'.
       const spiderSenseBonus = materia ? computeSpiderSenseSurgeXp(materia.perceivedDifficulty, focusMinutes) : 0;
 
@@ -1180,7 +1249,9 @@ export function reducer(state, action) {
         pagineFontePerTipo: Object.keys(pagineFontePerTipo).length > 0 ? pagineFontePerTipo : null,
         pagineAppuntiProdotte,
         eserciziFatti,
-        eserciziCorretti
+        eserciziCorretti,
+        tecnica,
+        tecnicaConsigliata
       });
 
       let nextState = { ...state, profile, starLog };
@@ -1201,6 +1272,9 @@ export function reducer(state, action) {
               minutiEsercizi: (Number(s.minutiEsercizi) || 0) + (workMode === WORK_MODE.ESERCIZI ? focusMinutes : 0),
               minutiRipasso: (Number(s.minutiRipasso) || 0) + (workMode === WORK_MODE.RIPASSO ? focusMinutes : 0)
             };
+            if (tecnica) {
+              aggiornato.tecniche = appendCapped(s.tecniche, { at: key, tecnica, minuti: focusMinutes, modo: workMode }, MAX_TECNICHE_PER_NODO);
+            }
             if (workMode === WORK_MODE.ESERCIZI && eserciziFatti > 0) {
               aggiornato.esercizi = appendCapped(s.esercizi, { at: key, fatti: eserciziFatti, corretti: eserciziCorretti, minuti: focusMinutes }, MAX_ESERCIZI_LOG);
             }
